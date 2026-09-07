@@ -1,0 +1,270 @@
+package org.hongtu.service.impl;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import lombok.extern.slf4j.Slf4j;
+import org.hongtu.DAO.CouponMapper;
+import org.hongtu.DAO.UserCouponMapper;
+import org.hongtu.DTO.Coupon;
+import org.hongtu.DTO.CouponDishItem;
+import org.hongtu.DTO.UserCoupon;
+import org.hongtu.Result.Result;
+import org.hongtu.enums.CouponStatusEnum;
+import org.hongtu.enums.CouponTypeEnum;
+import org.hongtu.enums.OnOrOffShelfEnum;
+import org.hongtu.service.CouponDishItemService;
+import org.hongtu.service.CouponService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+
+import jakarta.annotation.Resource;
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * <p>
+ * 优惠券 服务实现类
+ * </p>
+ *
+ * @author Honghong
+ * @since 2025-06-29
+ */
+@Slf4j
+@Service
+public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> implements CouponService {
+
+    @Resource
+    private UserCouponMapper userCouponMapper;
+
+    @Resource
+    private CouponDishItemService couponDishItemService;
+
+    // ==================== 优惠券查询 ====================
+
+    /**
+     * 分页查询优惠券列表
+     */
+    @Override
+    public Result<Page<Coupon>> getCouponList(Integer currentPage, Integer pageSize, String name, OnOrOffShelfEnum status) {
+        Page<Coupon> page = new Page<>(currentPage, pageSize);
+        LambdaQueryWrapper<Coupon> queryWrapper = new LambdaQueryWrapper<>();
+        // 名称模糊查询
+        if (StringUtils.hasText(name)) {
+            queryWrapper.like(Coupon::getName, name);
+        }
+        // 状态筛选
+        if (status != null) {
+            queryWrapper.eq(Coupon::getStatus, status);
+        }
+        // 按创建时间倒序
+        queryWrapper.orderByDesc(Coupon::getCreateTime);
+        Page<Coupon> result = page(page, queryWrapper);
+        return Result.success(result);
+    }
+
+    // ==================== 优惠券增删改 ====================
+
+    /**
+     * 创建优惠券
+     * 支持类型：满减券(0)、整单折扣券(2)、菜品免单券(3)
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result<Coupon> createCoupon(Coupon coupon) {
+        // 参数校验
+        if (coupon == null || !StringUtils.hasText(coupon.getName())) {
+            return Result.error("优惠券名称不能为空");
+        }
+        if (coupon.getType() == null) {
+            return Result.error("优惠券类型不能为空");
+        }
+        // 菜品免单券不需要value，其它类型必填
+        if (coupon.getType() != CouponTypeEnum.DISH_FREE && coupon.getValue() == null) {
+            return Result.error("优惠券面值/折扣率/套餐价格不能为空");
+        }
+        if (coupon.getTotalCount() == null || coupon.getTotalCount() <= 0) {
+            return Result.error("发放总数必须大于0");
+        }
+        // 需要关联菜品的类型校验
+        if (needDishItems(coupon.getType())) {
+            if (coupon.getDishItems() == null || coupon.getDishItems().isEmpty()) {
+                return Result.error("该类型优惠券必须关联至少一个菜品");
+            }
+        }
+        // 设置默认值
+        coupon.setRemainCount(coupon.getTotalCount());
+        coupon.setCreateTime(LocalDateTime.now());
+        if (coupon.getStatus() == null) {
+            coupon.setStatus(OnOrOffShelfEnum.OFF_SHELF); // 默认下架
+        }
+        // 保存优惠券主表
+        boolean saved = save(coupon);
+        if (saved) {
+            // 保存关联菜品
+            if (needDishItems(coupon.getType()) && coupon.getDishItems() != null) {
+                couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
+            }
+            log.info("优惠券创建成功：id={}, name={}, type={}", coupon.getId(), coupon.getName(), coupon.getType());
+            return Result.success("创建成功", coupon);
+        }
+        return Result.error("创建失败");
+    }
+
+    /**
+     * 更新优惠券
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result<Coupon> updateCoupon(Coupon coupon) {
+        if (coupon == null || coupon.getId() == null) {
+            return Result.error("优惠券ID不能为空");
+        }
+        // 检查是否存在
+        Coupon existCoupon = getById(coupon.getId());
+        if (existCoupon == null) {
+            return Result.error("优惠券不存在");
+        }
+        org.hongtu.security.OperationPermission.requireChange("marketing:coupon:status", existCoupon.getStatus(), coupon.getStatus());
+        // 如果修改了总数，需要同步调整剩余数量
+        if (coupon.getTotalCount() != null && !coupon.getTotalCount().equals(existCoupon.getTotalCount())) {
+            int diff = coupon.getTotalCount() - existCoupon.getTotalCount();
+            int newRemainCount = existCoupon.getRemainCount() + diff;
+            if (newRemainCount < 0) {
+                return Result.error("调整后的库存不能小于0，当前已发放：" + (existCoupon.getTotalCount() - existCoupon.getRemainCount()));
+            }
+            coupon.setRemainCount(newRemainCount);
+        }
+        // 更新主表
+        boolean updated = updateById(coupon);
+        if (updated) {
+            // 更新关联菜品（如果传了dishItems，则重新保存）
+            CouponTypeEnum type = coupon.getType() != null ? coupon.getType() : existCoupon.getType();
+            if (needDishItems(type) && coupon.getDishItems() != null) {
+                couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
+            }
+            log.info("优惠券更新成功：id={}", coupon.getId());
+            // 查询完整数据返回
+            Coupon result = getById(coupon.getId());
+            result.setDishItems(couponDishItemService.getItemsByCouponId(coupon.getId()));
+            return Result.success("更新成功", result);
+        }
+        return Result.error("更新失败");
+    }
+
+    /**
+     * 删除优惠券
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result deleteCoupon(Long id) {
+        if (id == null) {
+            return Result.error("优惠券ID不能为空");
+        }
+        // 检查是否存在
+        Coupon coupon = getById(id);
+        if (coupon == null) {
+            return Result.error("优惠券不存在");
+        }
+        // 检查是否有用户持有该优惠券
+        LambdaQueryWrapper<UserCoupon> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(UserCoupon::getCouponId, id)
+                .in(UserCoupon::getStatus, CouponStatusEnum.NOT_EFFECTIVE, CouponStatusEnum.NOT_USE);
+        Long count = userCouponMapper.selectCount(queryWrapper);
+        if (count > 0) {
+            return Result.error("该优惠券还有用户持有，无法删除");
+        }
+        // 删除关联菜品
+        couponDishItemService.deleteItemsByCouponId(id);
+        // 删除优惠券
+        boolean removed = removeById(id);
+        if (removed) {
+            log.info("优惠券删除成功：id={}", id);
+            return Result.success(200, "删除成功");
+        }
+        return Result.error("删除失败");
+    }
+
+    /**
+     * 根据ID获取优惠券详情（带关联菜品）
+     */
+    @Override
+    public Result<Coupon> getCouponById(Long id) {
+        if (id == null) {
+            return Result.error("优惠券ID不能为空");
+        }
+        Coupon coupon = getById(id);
+        if (coupon == null) {
+            return Result.error("优惠券不存在");
+        }
+        // 查询关联菜品
+        if (needDishItems(coupon.getType())) {
+            coupon.setDishItems(couponDishItemService.getItemsByCouponId(id));
+        }
+        return Result.success(coupon);
+    }
+
+    // ==================== 优惠券状态管理 ====================
+
+    /**
+     * 批量下架过期优惠券（定时任务调用）
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int batchOffShelfExpiredCoupons() {
+        int updatedCount = baseMapper.batchOffShelfExpiredCoupons();
+        if (updatedCount > 0) {
+            log.info("批量下架过期优惠券成功，下架数量：{}", updatedCount);
+        }
+        return updatedCount;
+    }
+
+    // ==================== 私有工具方法 ====================
+
+    /**
+     * 判断该优惠券类型是否需要关联菜品
+     */
+    private boolean needDishItems(CouponTypeEnum type) {
+        return type != null && type.needDishItems();
+    }
+
+    /**
+     * 切换优惠券上下架状态（自动取反）
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result toggleCouponStatus(Long id) {
+        if (id == null) {
+            return Result.error("优惠券ID不能为空");
+        }
+        Coupon coupon = getById(id);
+        if (coupon == null) {
+            return Result.error("优惠券不存在");
+        }
+        // 获取当前状态，切换为相反状态
+        OnOrOffShelfEnum currentStatus = coupon.getStatus();
+        OnOrOffShelfEnum targetStatus = (currentStatus == OnOrOffShelfEnum.ON_SHELF)
+                ? OnOrOffShelfEnum.OFF_SHELF
+                : OnOrOffShelfEnum.ON_SHELF;
+        // 上架时校验
+        if (targetStatus == OnOrOffShelfEnum.ON_SHELF) {
+            if (coupon.getEndTime() != null && coupon.getEndTime().isBefore(LocalDateTime.now())) {
+                return Result.error("优惠券已过期，无法上架");
+            }
+            if (coupon.getRemainCount() == null || coupon.getRemainCount() <= 0) {
+                return Result.error("优惠券库存不足，无法上架");
+            }
+        }
+        // 更新状态
+        coupon.setStatus(targetStatus);
+        boolean updated = updateById(coupon);
+        if (updated) {
+            String message = (targetStatus == OnOrOffShelfEnum.ON_SHELF) ? "上架成功" : "下架成功";
+            log.info("优惠券状态切换成功：id={}, {} -> {}", id, currentStatus.getDesc(), targetStatus.getDesc());
+            return Result.success(200,message);
+        }
+        return Result.error("操作失败");
+    }
+
+}

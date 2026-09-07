@@ -1,0 +1,10 @@
+server:
+  port: 9007
+
+spring:
+  application:
+    name: liteShop-file-service
+  config:
+    # Nacos 连接参数与配置导入统一由 liteShop-nacos-starter 提供，修改请编辑
+    # liteShop-nacos-starter/src/main/resources/liteshop-nacos.yml
+    import: "classpath:liteshop-nacos.yml"

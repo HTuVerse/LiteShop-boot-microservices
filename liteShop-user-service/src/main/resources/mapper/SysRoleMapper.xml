@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.hongtu.DAO.SysRoleMapper">
+
+    <!-- 根据用户ID查询角色编码集合 -->
+    <select id="selectRoleCodesByUserId" resultType="java.lang.String">
+        SELECT DISTINCT r.role_code
+        FROM sys_role r
+                 INNER JOIN sys_user_role ur ON r.id = ur.role_id
+        WHERE ur.user_id = #{userId}
+          AND r.status = 1
+        ORDER BY r.role_code
+    </select>
+
+    <!-- 查询角色拥有的所有权限详情列表 -->
+    <select id="selectPermissionsByRoleId" resultType="org.hongtu.DTO.SysPermission">
+        SELECT p.*
+        FROM sys_permission p
+                 INNER JOIN sys_role_permission rp ON p.id = rp.permission_id
+        WHERE rp.role_id = #{roleId}
+          AND p.status = 1
+        ORDER BY p.sort, p.id
+    </select>
+
+</mapper>

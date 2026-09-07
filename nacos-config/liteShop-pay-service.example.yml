@@ -1,0 +1,28 @@
+app:
+  server-host: ${PUBLIC_SERVER_HOST:localhost}
+  server-port: ${PUBLIC_GATEWAY_PORT:8080}
+
+wx:
+  appid: ${WX_APP_ID}
+  secret: ${WX_APP_SECRET}
+
+alipay:
+  app-id: ${ALIPAY_APP_ID}
+  private-key: ${ALIPAY_PRIVATE_KEY}
+  public-key: ${ALIPAY_PUBLIC_KEY}
+  notify-url: ${ALIPAY_NOTIFY_URL:http://${app.server-host}:${app.server-port}/pay/alipay/notify}
+  return-url: ${ALIPAY_RETURN_URL:http://${app.server-host}:${app.server-port}/pay/alipay/return}
+  sign-type: RSA2
+  charset: utf-8
+  gateway-url: https://openapi.alipay.com/gateway.do
+  sandbox-gateway-url: https://openapi-sandbox.dl.alipaydev.com/gateway.do
+  sandbox: ${ALIPAY_SANDBOX:true}
+
+wechat:
+  pay:
+    app-id: ${WECHAT_PAY_APP_ID}
+    mch-id: ${WECHAT_PAY_MCH_ID}
+    mch-serial-no: ${WECHAT_PAY_MCH_SERIAL_NO}
+    private-key-path: ${WECHAT_PAY_PRIVATE_KEY_PATH}
+    api-v3-key: ${WECHAT_PAY_API_V3_KEY}
+    sandbox: ${WECHAT_PAY_SANDBOX:false}

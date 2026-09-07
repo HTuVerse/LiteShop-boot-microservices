@@ -1,0 +1,62 @@
+spring:
+  datasource:
+    # 垂直拆库后 jdbc url 由各服务自己的配置文件提供（liteShop-xxx-service.yml），
+    # 这里只保留公共的驱动、账号与连接池配置
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
+    hikari:
+      minimum-idle: ${MYSQL_POOL_MIN_IDLE:5}
+      maximum-pool-size: ${MYSQL_POOL_MAX_SIZE:20}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: ${RABBITMQ_VIRTUAL_HOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+  data:
+    redis:
+      database: ${REDIS_DATABASE:1}
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 200
+          max-wait: -1ms
+          max-idle: 10
+          min-idle: 5
+
+mybatis-plus:
+  configuration:
+    default-enum-type-handler: org.apache.ibatis.type.EnumOrdinalTypeHandler
+
+liteshop:
+  internal-call:
+    secret: ${INTERNAL_CALL_SECRET:}
+  # 雪花 ID 生成器：同一服务多实例部署时，每个实例必须配置不同的 worker-id（0~31）
+  id:
+    worker-id: ${SNOWFLAKE_WORKER_ID:1}
+    datacenter-id: ${SNOWFLAKE_DATACENTER_ID:1}
+  # 多租户开关（预留）：启用后 MyBatis-Plus 自动为 SQL 追加 tenant_id 条件
+  tenant:
+    enabled: ${TENANT_ENABLED:true}
+
+sa-token:
+  token-name: satoken
+  timeout: 604800
+  active-timeout: -1
+  is-concurrent: true
+  is-share: false
+  jwt-secret-key: ${SA_TOKEN_JWT_SECRET}
+  token-style: uuid
+  is-log: false

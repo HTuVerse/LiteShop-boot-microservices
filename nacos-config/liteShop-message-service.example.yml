@@ -1,0 +1,20 @@
+spring:
+  mail:
+    host: ${MAIL_HOST:smtp.163.com}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    from: ${MAIL_FROM:${MAIL_USERNAME:}}
+    default-encoding: UTF-8
+    protocol: smtps
+
+sms:
+  appKey: ${SMS_APP_KEY:}
+  appSecret: ${SMS_APP_SECRET:}
+  templateId: ${SMS_TEMPLATE_ID:}
+  appcode: ${SMS_APPCODE:}
+  host: ${SMS_HOST:}
+
+app:
+  webSite:
+    name: ${APP_WEBSITE_NAME:LiteShop}

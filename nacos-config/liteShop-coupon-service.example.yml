@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL_COUPON:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_coupon?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+  quartz:
+    auto-startup: true
+    wait-for-jobs-to-complete-on-shutdown: true
+
+lite-shop:
+  config-loaded: true

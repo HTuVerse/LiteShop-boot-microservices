@@ -1,0 +1,42 @@
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: user-service
+              uri: lb://liteShop-user-service
+              predicates:
+                - Path=/user/**,/surplus-record/**,/sys-role/**,/user-level/**,/sys-role-permission/**,/sys-permission/**,/user-points-record/**,/sys-user-role/**,/sys-user-store/**,/sys-tenant/**
+            - id: coupon-service
+              uri: lb://liteShop-coupon-service
+              predicates:
+                - Path=/coupon/**,/user-coupon/**,/verify-record/**
+            - id: lottery-service
+              uri: lb://liteShop-lottery-service
+              predicates:
+                - Path=/lottery-activity/**,/lottery-prize/**,/activity-prize/**,/lottery-record/**,/user-activity-chance/**
+            - id: restaurant-service
+              uri: lb://liteShop-restaurant-service
+              predicates:
+                - Path=/dish/**,/store-info/**,/table-info/**,/table-session/**,/shared-cart/**,/restaurant-order/**,/restaurant-order-item/**,/restaurant-analysis/**,/printTemplateApi/**,/orderPrintApi/**,/feieyunApi/**,/table-reservation/**
+            - id: pay-service
+              uri: lb://liteShop-pay-service
+              predicates:
+                - Path=/pay/**
+            - id: message-service
+              uri: lb://liteShop-message-service
+              predicates:
+                - Path=/msg/**
+            - id: file-service
+              uri: lb://liteShop-file-service
+              predicates:
+                - Path=/file-upload/**,/images/**
+            - id: config-service
+              uri: lb://liteShop-config-service
+              predicates:
+                - Path=/config/**
+            - id: ai-service
+              uri: lb://liteShop-ai-service
+              predicates:
+                - Path=/ai/**

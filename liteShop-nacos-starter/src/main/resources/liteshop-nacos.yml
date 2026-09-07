@@ -1,0 +1,34 @@
+# ============================================================================
+# LiteShop 统一 Nacos 接入配置（由 liteShop-nacos-starter 模块提供）
+#
+# 所有服务的本地 application.yml 只需保留端口、服务名，并写一行：
+#   spring.config.import: "classpath:liteshop-nacos.yml"
+# 即可完成 Nacos 注册中心 + 配置中心接入。
+#
+# 修改 Nacos 地址、分组、命名空间、账号，只需要改这一个文件（或注入环境变量）。
+#
+# 注意：Nacos 连接参数与 nacos: import 必须位于同一份文档中，
+# Spring Boot ConfigData 解析 nacos: 地址时才能读到连接参数，请勿拆分。
+# ============================================================================
+spring:
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_DISCOVERY_GROUP:LITESHOP_GROUP}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_CONFIG_GROUP:LITESHOP_GROUP}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+  config:
+    import:
+      # 公共配置（数据库/Redis/MQ/Sa-Token 等）。对未引入相应 starter 的服务
+      # （如 gateway、ai-service），这些属性不会被绑定，属于无害配置。
+      - "nacos:liteshop-shared.yml?group=${NACOS_CONFIG_GROUP:LITESHOP_GROUP}&refreshEnabled=true"
+      # 服务专属配置，后导入者优先级更高，可覆盖公共配置
+      - "nacos:${spring.application.name}.yml?group=${NACOS_CONFIG_GROUP:LITESHOP_GROUP}&refreshEnabled=true"

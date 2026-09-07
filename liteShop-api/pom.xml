@@ -1,0 +1,37 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.hongtu</groupId>
+        <artifactId>liteShop-cloud</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>liteShop-api</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.artifactId}</name>
+    <description>服务间契约层：Feign Client 接口 + 跨服务共享实体/枚举 + 远程 StpInterface</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+        <!-- 公共底座（Result、BusinessException、公共枚举、MyBatis-Plus 注解等） -->
+        <dependency>
+            <groupId>org.hongtu</groupId>
+            <artifactId>liteShop-common</artifactId>
+        </dependency>
+
+        <!-- OpenFeign（@FeignClient 注解） -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+    </dependencies>
+</project>

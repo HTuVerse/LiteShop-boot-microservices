@@ -1,0 +1,161 @@
+package org.hongtu.restaurant.VO;
+
+import lombok.Data;
+import org.hongtu.restaurant.DTO.DishSpecOption;
+import org.hongtu.restaurant.enums.SceneTypeEnum;
+import org.hongtu.enums.BooleanEnum;
+import org.hongtu.enums.OnOrOffShelfEnum;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * 菜品信息VO
+ * @author Ht
+ * @since 2025-09-19
+ */
+@Data
+public class DishVO {
+
+    /**
+     * 主键ID
+     */
+    private Long id;
+
+    /**
+     * 门店ID
+     */
+    private Long storeId;
+
+    /**
+     * 分类ID
+     */
+    private Long categoryId;
+
+    /**
+     * 分类名称
+     */
+    private String categoryName;
+
+    /**
+     * 菜品名称
+     */
+    private String dishName;
+
+    /**
+     * 菜品描述
+     */
+    private String dishDesc;
+
+    /**
+     * 菜品图片（JSON数组）
+     */
+    private String dishPics;
+
+    /**
+     * 主图
+     */
+    private String mainPic;
+
+    /**
+     * 售价
+     */
+    private BigDecimal price;
+
+    /**
+     * 原价
+     */
+    private BigDecimal originalPrice;
+
+    /**
+     * 成本价
+     */
+    private BigDecimal costPrice;
+
+    /**
+     * 单位
+     */
+    private String unit;
+
+    /**
+     * 库存数量
+     */
+    private Integer stock;
+
+    /**
+     * 销量
+     */
+    private Integer salesCount;
+
+    /**
+     * 浏览量
+     */
+    private Integer viewCount;
+
+    /**
+     * 是否推荐：0-否，1-是
+     */
+    private BooleanEnum isRecommend;
+
+    /**
+     * 是否热门：0-否，1-是
+     */
+    private BooleanEnum isHot;
+
+    /**
+     * 是否新品：0-否，1-是
+     */
+    private BooleanEnum isNew;
+
+    /**
+     * 适用场景：1-仅外卖，2-仅堂食，3-通用
+     */
+    private SceneTypeEnum sceneType;
+
+    /**
+     * 销售状态：0-下架，1-上架
+     */
+    private OnOrOffShelfEnum saleStatus;
+
+    /**
+     * 排序值，数字越小越靠前
+     */
+    private Integer sortOrder;
+
+    /**
+     * 商品标签（JSON数组）
+     */
+    private String tags;
+
+    /**
+     * 过敏原信息
+     */
+    private String allergens;
+
+    /**
+     * 营养信息（JSON）
+     */
+    private String nutritionInfo;
+
+    /**
+     * 制作时间（分钟）
+     */
+    private Integer cookingTime;
+
+    /**
+     * 规格选项列表
+     */
+    private List<DishSpecOption> specOptions;
+
+    /**
+     * 创建时间
+     */
+    private LocalDateTime createdAt;
+
+    /**
+     * 更新时间
+     */
+    private LocalDateTime updatedAt;
+
+} 

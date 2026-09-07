@@ -1,0 +1,39 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL_RESTAURANT:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_restaurant?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+  quartz:
+    auto-startup: true
+    wait-for-jobs-to-complete-on-shutdown: true
+
+app:
+  server-host: ${PUBLIC_SERVER_HOST:localhost}
+  server-port: ${PUBLIC_GATEWAY_PORT:8080}
+  web-host: ${PUBLIC_WEB_HOST:localhost}
+  web-port: ${PUBLIC_WEB_PORT:80}
+  webSite:
+    name: ${WEBSITE_NAME:乌龙街老茶馆}
+
+wx:
+  appid: ${WX_APP_ID}
+  secret: ${WX_APP_SECRET}
+
+feieyun:
+  printer:
+    api-url: ${FEIEYUN_API_URL:http://api.feieyun.cn/Api/Open/}
+    user: ${FEIEYUN_USER}
+    ukey: ${FEIEYUN_UKEY}
+    sn: ${FEIEYUN_SN}
+    publicKey: ${FEIEYUN_PUBLIC_KEY:}
+
+netty:
+  websocket:
+    port: ${WEBSOCKET_PORT:9090}
+    path: /ws/table-session
+    timeout:
+      read: 300
+      write: 300
+      all: 600

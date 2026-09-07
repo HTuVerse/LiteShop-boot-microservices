@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${websiteName} + ' - 验证码'">网站名称 - 验证码</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --secondary-color: #2980b9;
+            --accent-color: #1abc9c;
+            --light-blue: #e1f5fe;
+            --text-dark: #2c3e50;
+            --text-medium: #546e7a;
+            --text-light: #90a4ae;
+            --white: #ffffff;
+            --light-gray: #f5f7fa;
+            --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-dark);
+            background: linear-gradient(135deg, #e3f2fd, #f0f7ff);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        @keyframes snowfall {
+            0% { transform: translateY(-20px) rotate(0deg); opacity: 0; }
+            20% { opacity: 0.8; }
+            100% { transform: translateY(100px) rotate(360deg); opacity: 0; }
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -1000px 0; }
+            100% { background-position: 1000px 0; }
+        }
+
+        .container {
+            max-width: 680px;
+            width: 100%;
+            margin: 0 auto;
+            background: var(--white);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            animation: fadeIn 0.8s ease-out;
+            position: relative;
+        }
+
+        .header {
+            text-align: center;
+            padding: 30px 20px;
+            background: linear-gradient(135deg, #409eff 0%, #36cfc9 100%);
+            color: var(--white);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .logo-area {
+            position: relative;
+            z-index: 2;
+        }
+
+        .ice-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            display: inline-block;
+            animation: pulse 3s infinite;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+        }
+
+        .brand {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .tagline {
+            font-size: 16px;
+            opacity: 0.9;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .content {
+            padding: 40px 30px;
+            text-align: center;
+        }
+
+        .title {
+            color: var(--primary-color);
+            font-size: 28px;
+            margin-bottom: 25px;
+            font-weight: 600;
+            position: relative;
+            display: inline-block;
+        }
+
+        .title:after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 4px;
+            background: linear-gradient(to right, var(--accent-color), var(--primary-color));
+            border-radius: 2px;
+        }
+
+        .message {
+            color: var(--text-medium);
+            margin-bottom: 30px;
+            font-size: 18px;
+            line-height: 1.7;
+        }
+
+        .code-container {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 40px 0;
+            flex-wrap: wrap;
+        }
+
+        .code-digit {
+            width: 70px;
+            height: 90px;
+            background: linear-gradient(135deg, var(--light-blue), #d1e9fa);
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            font-weight: 700;
+            color: var(--primary-color);
+            box-shadow: 0 8px 20px rgba(52, 152, 219, 0.2);
+            position: relative;
+            overflow: hidden;
+            animation: float 3s infinite ease-in-out;
+        }
+
+        .code-digit:before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        .code-digit:nth-child(1) { animation-delay: 0s; }
+        .code-digit:nth-child(2) { animation-delay: 0.2s; }
+        .code-digit:nth-child(3) { animation-delay: 0.4s; }
+        .code-digit:nth-child(4) { animation-delay: 0.6s; }
+        .code-digit:nth-child(5) { animation-delay: 0.8s; }
+        .code-digit:nth-child(6) { animation-delay: 1s; }
+
+        .highlight {
+            color: var(--secondary-color);
+            font-weight: 700;
+            display: inline-block;
+            position: relative;
+        }
+
+        .highlight:after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: linear-gradient(to right, var(--accent-color), var(--primary-color));
+            border-radius: 2px;
+            animation: pulse 2s infinite;
+        }
+
+        .note {
+            background: var(--light-gray);
+            border-radius: 12px;
+            padding: 25px;
+            margin-top: 35px;
+            text-align: left;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .note:before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 6px;
+            height: 100%;
+            background: linear-gradient(to bottom, var(--accent-color), var(--primary-color));
+        }
+
+        .note-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--primary-color);
+            font-weight: 600;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .note-content {
+            color: var(--text-medium);
+            font-size: 16px;
+            line-height: 1.7;
+        }
+
+        .note-content p {
+            margin-bottom: 12px;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 25px;
+            color: var(--text-light);
+            font-size: 14px;
+            background: var(--light-gray);
+            border-top: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .container {
+                border-radius: 12px;
+            }
+
+            .header {
+                padding: 25px 15px;
+            }
+
+            .ice-icon {
+                font-size: 42px;
+            }
+
+            .brand {
+                font-size: 28px;
+            }
+
+            .content {
+                padding: 30px 20px;
+            }
+
+            .title {
+                font-size: 24px;
+            }
+
+            .message {
+                font-size: 17px;
+            }
+
+            .code-digit {
+                width: 60px;
+                height: 80px;
+                font-size: 36px;
+            }
+        }
+
+        @media (max-width: 576px) {
+            body {
+                padding: 15px;
+            }
+
+            .container {
+                border-radius: 10px;
+            }
+
+            .header {
+                padding: 20px 10px;
+            }
+
+            .ice-icon {
+                font-size: 36px;
+            }
+
+            .brand {
+                font-size: 24px;
+            }
+
+            .tagline {
+                font-size: 14px;
+            }
+
+            .content {
+                padding: 25px 15px;
+            }
+
+            .title {
+                font-size: 22px;
+            }
+
+            .message {
+                font-size: 16px;
+            }
+
+            .code-container {
+                gap: 10px;
+                margin: 30px 0;
+            }
+
+            .code-digit {
+                width: 50px;
+                height: 70px;
+                font-size: 32px;
+            }
+
+            .note {
+                padding: 20px 15px 20px 25px;
+            }
+
+            .note-title {
+                font-size: 16px;
+            }
+
+            .note-content {
+                font-size: 15px;
+            }
+
+            .footer {
+                padding: 20px 15px;
+                font-size: 13px;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .code-digit {
+                width: 45px;
+                height: 65px;
+                font-size: 28px;
+            }
+
+            .title {
+                font-size: 20px;
+            }
+
+            .message {
+                font-size: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="logo-area">
+            <div class="brand" th:text="${websiteName}">网站名称</div>
+        </div>
+    </div>
+
+    <div class="content">
+        <h1 class="title">您的验证码为</h1>
+        <div class="code-container">
+            <!-- 使用传递的digits数组 -->
+            <div class="code-digit"
+                 th:each="digit, iterStat : ${digits}"
+                 th:text="${digit}"
+                 th:style="'animation-delay: ' + ${iterStat.index}*0.2 + 's;'">
+                0
+            </div>
+        </div>
+        <div class="note">
+            <div class="note-title">
+                <i class="fas fa-info-circle"></i>
+                <span>温馨提示</span>
+            </div>
+            <div class="note-content">
+                <p>• 该验证码5分钟内有效</p>
+                <p>• 请勿将此验证码泄露给他人，以保障您的账户安全</p>
+                <p>• 如果您没有进行此操作，请忽略此邮件</p>
+                <p>• 任何问题请通过客服渠道联系我们</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p th:text="'© 2026 ' + ${websiteName} + ' 版权所有'">© 2026 网站名称 版权所有</p>
+        <p>此邮件为系统自动发送，请勿直接回复</p>
+    </div>
+</div>
+</body>
+</html>

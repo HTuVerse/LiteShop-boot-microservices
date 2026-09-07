@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL_FILE:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_file?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+app:
+  server-host: ${PUBLIC_SERVER_HOST:localhost}
+  web-host: ${PUBLIC_WEB_HOST:localhost}
+  web-port: ${PUBLIC_WEB_PORT:80}
+
+file:
+  oss-enabled: ${FILE_OSS_ENABLED:false}
+  upload-path: ${FILE_UPLOAD_PATH:./uploads/images/}
+  base-url: ${FILE_BASE_URL:http://${app.web-host}/images/}
+  allowed-types: jpg,jpeg,png,gif,webp
+  max-size: 10
+
+qiniu:
+  access-key: ${QINIU_ACCESS_KEY:}
+  secret-key: ${QINIU_SECRET_KEY:}
+  bucket: ${QINIU_BUCKET:}
+  domain: ${QINIU_DOMAIN:}

@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL_USER:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_user?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+
+app:
+  webSite:
+    name: ${WEBSITE_NAME:乌龙街老茶馆}
+
+wx:
+  appid: ${WX_APP_ID}
+  secret: ${WX_APP_SECRET}
