@@ -8,6 +8,7 @@ import jakarta.annotation.Resource;
 import org.hongtu.DTO.SysTenant;
 import org.hongtu.Result.Result;
 import org.hongtu.service.SysTenantService;
+import org.hongtu.saas.domain.TenantCreateRequest;
 import org.hongtu.tenant.TenantConstants;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,12 +37,14 @@ public class SysTenantController {
     }
 
     @PostMapping
-    public Result<SysTenant> add(@RequestBody SysTenant tenant) {
-        if (tenant == null || StrUtil.isBlank(tenant.getTenantCode()) || StrUtil.isBlank(tenant.getTenantName())) {
-            return Result.error("租户编码和租户名称不能为空");
+    public Result<SysTenant> add(@RequestBody TenantCreateRequest request) {
+        if (request == null || StrUtil.isBlank(request.getTenantCode()) || StrUtil.isBlank(request.getTenantName())) {
+            return Result.error("商户编码和商户名称不能为空");
         }
-        tenant.setId(null);
-        return tenantService.addTenant(tenant);
+        if (request.getPlanVersionId() == null) {
+            return Result.error("创建商户时必须选择套餐");
+        }
+        return tenantService.addTenant(request);
     }
 
     @PutMapping

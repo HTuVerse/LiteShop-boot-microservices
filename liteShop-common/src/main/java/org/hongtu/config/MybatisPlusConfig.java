@@ -7,8 +7,6 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import org.hongtu.tenant.LiteShopTenantLineHandler;
-import org.hongtu.tenant.StoreDataPermissionHandler;
-import com.baomidou.mybatisplus.extension.plugins.inner.DataPermissionInterceptor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -22,7 +20,7 @@ public class MybatisPlusConfig {
     /**
      * 多租户开关（预留）：置为 true 后自动为 SQL 追加 tenant_id 条件
      */
-    @Value("${liteshop.tenant.enabled:true}")
+    @Value("${liteshop.tenant.enabled:false}")
     private boolean tenantEnabled;
 
     @Bean
@@ -32,7 +30,6 @@ public class MybatisPlusConfig {
         if (tenantEnabled) {
             interceptor.addInnerInterceptor(new TenantLineInnerInterceptor(new LiteShopTenantLineHandler()));
         }
-        interceptor.addInnerInterceptor(new DataPermissionInterceptor(new StoreDataPermissionHandler()));
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL)); // 如果配置多个插件, 切记分页最后添加
         return interceptor;
     }

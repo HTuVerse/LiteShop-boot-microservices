@@ -17,6 +17,9 @@ import org.hongtu.DTO.SysRole;
 import org.hongtu.DTO.SysTenant;
 import org.hongtu.Result.Result;
 import org.hongtu.service.SysTenantService;
+import org.hongtu.saas.domain.SaasTenantSubscription;
+import org.hongtu.saas.domain.TenantCreateRequest;
+import org.hongtu.saas.service.SaasSubscriptionService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.hongtu.enums.StatusEnum;
@@ -35,6 +38,7 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
     @Resource
     private org.hongtu.service.UserLevelSchemeService levelSchemes;
     @Resource private org.springframework.context.ApplicationEventPublisher events;
+    @Resource private SaasSubscriptionService subscriptions;
 
     @Resource
     private SysRoleMapper roleMapper;
@@ -74,7 +78,15 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Result<SysTenant> addTenant(SysTenant tenant) {
+    public Result<SysTenant> addTenant(TenantCreateRequest request) {
+        subscriptions.requirePublishedVersion(request.getPlanVersionId());
+        SysTenant tenant = new SysTenant()
+                .setTenantCode(request.getTenantCode())
+                .setTenantName(request.getTenantName())
+                .setContactName(request.getContactName())
+                .setContactPhone(request.getContactPhone())
+                .setStatus(request.getStatus())
+                .setRemark(request.getRemark());
         tenant.setTenantCode(normalizeCode(tenant.getTenantCode()));
         if (lambdaQuery().eq(SysTenant::getTenantCode, tenant.getTenantCode()).count() > 0) {
             return Result.error("租户编码已存在");
@@ -91,8 +103,16 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
             return Result.error("新增租户失败");
         }
         TenantScope.run(tenant.getId(), () -> { initializeRoles(tenant.getId()); levelSchemes.initializeTenant(); });
+        subscriptions.assign(tenant.getId(), new SaasTenantSubscription()
+                .setPlanVersionId(request.getPlanVersionId())
+                .setBillingCycle(request.getBillingCycle())
+                .setStatus(request.getSubscriptionStatus())
+                .setAutoRenew(request.getAutoRenew())
+                .setCurrentPeriodStart(request.getCurrentPeriodStart())
+                .setCurrentPeriodEnd(request.getCurrentPeriodEnd())
+                .setTrialEndAt(request.getTrialEndAt()));
         events.publishEvent(new org.hongtu.service.TenantCreatedEvent(tenant.getId(), tenant.getTenantName()));
-        return Result.success("新增租户成功", tenant);
+        return Result.success("新增租户成功", getById(tenant.getId()));
     }
 
     @Override
@@ -107,6 +127,8 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
             return Result.error("租户编码已存在");
         }
         tenant.setCreateTime(existing.getCreateTime());
+        // 到期时间由套餐订阅统一维护，编辑商户资料不能绕过订阅生命周期。
+        tenant.setExpireTime(existing.getExpireTime());
         tenant.setUpdateTime(LocalDateTime.now());
         return updateById(tenant) ? Result.success("更新租户成功", tenant) : Result.error("更新租户失败");
     }
@@ -115,6 +137,9 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
     public Result<Void> updateStatus(Long tenantId, Integer status) {
         if (status == null || (status != 0 && status != 1)) {
             return Result.error("租户状态只能是0或1");
+        }
+        if (status == 1 && !subscriptions.hasEffectiveSubscription(tenantId)) {
+            return Result.error("商户没有有效套餐，不能启用");
         }
         boolean updated = lambdaUpdate().eq(SysTenant::getId, tenantId)
                 .set(SysTenant::getStatus, status)

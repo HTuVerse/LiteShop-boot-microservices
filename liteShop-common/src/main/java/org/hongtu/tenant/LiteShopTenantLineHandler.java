@@ -20,7 +20,14 @@ public class LiteShopTenantLineHandler implements TenantLineHandler {
     private static final Set<String> IGNORE_TABLES = Set.of(
             "sys_tenant",
             "sys_permission",
-            "sys_website_config"
+            "sys_website_config",
+            "saas_feature",
+            "saas_display_feature",
+            "saas_plan",
+            "saas_plan_version",
+            "saas_plan_entitlement",
+            "saas_addon",
+            "saas_addon_entitlement"
     );
 
     @Override

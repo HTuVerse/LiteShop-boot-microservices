@@ -6,6 +6,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 /**
  * 用户服务启动类（用户/角色/权限/积分/余额）
@@ -14,6 +15,7 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
 @SpringBootApplication(scanBasePackages = "org.hongtu")
 @EnableDiscoveryClient
 @EnableFeignClients(clients = {RestaurantFeignClient.class, ConfigFeignClient.class})
+@EnableAspectJAutoProxy
 public class UserServiceApplication {
 
     public static void main(String[] args) {

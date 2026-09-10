@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 文件上传配置类
@@ -14,6 +15,11 @@ import java.util.List;
 @Configuration
 @ConfigurationProperties(prefix = "file")
 public class FileUploadConfig {
+    private static final Set<String> IMAGE_TYPES = Set.of("jpg", "jpeg", "png", "gif", "webp");
+    private static final Set<String> ATTACHMENT_TYPES = Set.of(
+            "jpg", "jpeg", "png", "gif", "webp", "pdf", "doc", "docx",
+            "xls", "xlsx", "ppt", "pptx", "txt", "csv", "zip", "rar"
+    );
     /**
      * 是否启用七牛云OSS
      */
@@ -52,4 +58,12 @@ public class FileUploadConfig {
     public boolean isAllowedFileType(String fileExtension) {
         return getAllowedTypesList().contains(fileExtension.toLowerCase());
     }
-} 
+
+    public boolean isAllowedImageType(String fileExtension) {
+        return fileExtension != null && IMAGE_TYPES.contains(fileExtension.toLowerCase());
+    }
+
+    public boolean isAllowedAttachmentType(String fileExtension) {
+        return fileExtension != null && ATTACHMENT_TYPES.contains(fileExtension.toLowerCase());
+    }
+}

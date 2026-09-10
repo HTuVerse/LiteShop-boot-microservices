@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.IService;
 import org.hongtu.DTO.SysTenant;
 import org.hongtu.Result.Result;
+import org.hongtu.saas.domain.TenantCreateRequest;
 
 public interface SysTenantService extends IService<SysTenant> {
 
@@ -11,7 +12,7 @@ public interface SysTenantService extends IService<SysTenant> {
 
     Result<Page<SysTenant>> pageTenants(Integer currentPage, Integer pageSize, String keyword, Integer status);
 
-    Result<SysTenant> addTenant(SysTenant tenant);
+    Result<SysTenant> addTenant(TenantCreateRequest request);
 
     Result<SysTenant> updateTenant(SysTenant tenant);
 

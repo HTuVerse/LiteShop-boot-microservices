@@ -15,8 +15,10 @@ import org.hongtu.service.SysUserService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.impl.InnerBalanceService;
+import org.hongtu.saas.service.SaasSubscriptionService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
+import org.hongtu.tenant.TenantScope;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -60,6 +62,9 @@ public class InnerUserController {
 
     @Resource
     private SysTenantService tenantService;
+
+    @Resource
+    private SaasSubscriptionService subscriptions;
 
     /**
      * 查询用户（替代原跨模块 SysUserService.getById / SysUserMapper.selectById）
@@ -151,7 +156,8 @@ public class InnerUserController {
         boolean active = tenant != null
                 && Integer.valueOf(1).equals(tenant.getStatus())
                 && (tenant.getExpireTime() == null
-                || tenant.getExpireTime().isAfter(LocalDateTime.now()));
+                || tenant.getExpireTime().isAfter(LocalDateTime.now()))
+                && TenantScope.call(tenantId, () -> subscriptions.hasEffectiveSubscription(tenantId));
         return Result.success(active);
     }
 }

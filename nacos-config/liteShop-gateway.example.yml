@@ -7,7 +7,7 @@ spring:
             - id: user-service
               uri: lb://liteShop-user-service
               predicates:
-                - Path=/user/**,/surplus-record/**,/sys-role/**,/user-level/**,/sys-role-permission/**,/sys-permission/**,/user-points-record/**,/sys-user-role/**,/sys-user-store/**,/sys-tenant/**
+                - Path=/user/**,/surplus-record/**,/sys-role/**,/user-level/**,/sys-role-permission/**,/sys-permission/**,/user-points-record/**,/sys-user-role/**,/sys-user-store/**,/sys-tenant/**,/saas/**
             - id: coupon-service
               uri: lb://liteShop-coupon-service
               predicates:
@@ -28,6 +28,9 @@ spring:
               uri: lb://liteShop-message-service
               predicates:
                 - Path=/msg/**
+              metadata:
+                # SSE 是长连接，不能继承网关的普通 HTTP 响应超时。
+                response-timeout: -1
             - id: file-service
               uri: lb://liteShop-file-service
               predicates:

@@ -3,6 +3,8 @@ package org.hongtu.api.client;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.EntitlementDecisionDTO;
+import org.hongtu.api.dto.EntitlementMutationDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -68,7 +70,19 @@ public interface UserFeignClient {
     @GetMapping("/inner/user/tenants/active-ids")
     Result<List<Long>> getActiveTenantIds();
 
-    /** 请求入口使用：校验租户是否存在、启用且未到期。 */
+    /** 请求入口使用：校验租户状态、有效期及有效套餐。 */
     @GetMapping("/inner/user/tenants/{tenantId}/active")
     Result<Boolean> isTenantActive(@PathVariable("tenantId") Long tenantId);
+
+    /** 检查当前调用租户是否拥有功能和剩余额度。 */
+    @PostMapping("/inner/saas/check")
+    Result<EntitlementDecisionDTO> checkEntitlement(@RequestBody EntitlementMutationDTO dto);
+
+    /** 原子消费配额；idempotencyKey 必须由业务操作唯一标识。 */
+    @PostMapping("/inner/saas/consume")
+    Result<EntitlementDecisionDTO> consumeEntitlement(@RequestBody EntitlementMutationDTO dto);
+
+    /** 业务撤销或删除资源时，幂等释放已占用配额。 */
+    @PostMapping("/inner/saas/release")
+    Result<EntitlementDecisionDTO> releaseEntitlement(@RequestBody EntitlementMutationDTO dto);
 }

@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
+import org.hongtu.exception.BusinessException;
 import org.hongtu.restaurant.DTO.StoreInfo;
 import org.hongtu.restaurant.service.StoreInfoService;
 import org.springframework.web.bind.annotation.*;
@@ -87,6 +88,8 @@ public class StoreInfoController {
                 return Result.success("新增门店成功", storeInfo);
             }
             return Result.error("新增门店失败");
+        } catch (BusinessException e) {
+            return Result.error(e.getCode(), e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return Result.error("新增门店失败：" + e.getMessage());
@@ -130,6 +133,8 @@ public class StoreInfoController {
                 return Result.success(200, "删除门店成功");
             }
             return Result.error("删除门店失败");
+        } catch (BusinessException e) {
+            return Result.error(e.getCode(), e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return Result.error("删除门店失败：" + e.getMessage());
@@ -153,6 +158,8 @@ public class StoreInfoController {
                 return Result.success("批量删除门店成功", null);
             }
             return Result.error("批量删除门店失败");
+        } catch (BusinessException e) {
+            return Result.error(e.getCode(), e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
             return Result.error("批量删除门店失败：" + e.getMessage());

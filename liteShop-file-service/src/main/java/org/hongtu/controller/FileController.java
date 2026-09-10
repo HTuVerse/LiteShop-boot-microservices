@@ -48,7 +48,8 @@ public class FileController {
             }
             // 检查文件类型
             String extension = FilenameUtils.getExtension(file.getOriginalFilename());
-            if (!fileUploadConfig.isAllowedFileType(extension)) {
+            if (!fileUploadConfig.isAllowedImageType(extension)
+                    || file.getContentType() == null || !file.getContentType().startsWith("image/")) {
                 return Result.error("不支持的文件类型: " + extension);
             }
             // 上传文件
@@ -68,6 +69,36 @@ public class FileController {
         }
     }
 
+    /** 上传公告附件，允许常见图片、文档和压缩包，单文件最大 20MB。 */
+    @SaCheckLogin
+    @PostMapping("/upload/file")
+    public Result<FileUpload> uploadFile(@RequestParam("file") MultipartFile file) {
+        try {
+            if (file.isEmpty()) return Result.error("上传的文件为空");
+            String extension = FilenameUtils.getExtension(file.getOriginalFilename());
+            if (!fileUploadConfig.isAllowedAttachmentType(extension)) {
+                return Result.error("不支持的附件类型: " + extension);
+            }
+            String fileUrl = fileUploadUtil.uploadAttachment(file);
+            FileUpload uploadDTO = buildUploadRecord(file, fileUrl);
+            fileUploadService.save(uploadDTO);
+            return Result.success("上传成功", uploadDTO);
+        } catch (IOException e) {
+            log.error("附件上传失败", e);
+            return Result.error("附件上传失败: " + e.getMessage());
+        }
+    }
+
+    private FileUpload buildUploadRecord(MultipartFile file, String fileUrl) {
+        FileUpload uploadDTO = new FileUpload();
+        uploadDTO.setOriginalFileName(file.getOriginalFilename());
+        uploadDTO.setSize(file.getSize());
+        uploadDTO.setContentType(file.getContentType());
+        uploadDTO.setUrl(fileUrl);
+        uploadDTO.setStorageType(fileUploadConfig.isOssEnabled() ? "oss" : "local");
+        return uploadDTO;
+    }
+
     /**
      * 上传多个图片
      * @param files 图片文件数组
@@ -85,7 +116,8 @@ public class FileController {
                 MultipartFile file = files[i];
                 // 检查文件类型
                 String extension = FilenameUtils.getExtension(file.getOriginalFilename());
-                if (!fileUploadConfig.isAllowedFileType(extension)) {
+                if (!fileUploadConfig.isAllowedImageType(extension)
+                        || file.getContentType() == null || !file.getContentType().startsWith("image/")) {
                     return Result.error("不支持的文件类型: " + extension);
                 }
                 // 上传文件
@@ -106,4 +138,4 @@ public class FileController {
             return Result.error("文件上传失败: " + e.getMessage());
         }
     }
-} 
+}

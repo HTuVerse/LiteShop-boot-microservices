@@ -11,7 +11,7 @@
     <packaging>jar</packaging>
 
     <name>${project.artifactId}</name>
-    <description>消息服务(9006)：短信/邮件验证码</description>
+    <description>消息服务(9006)：短信/邮件验证码、站内公告与实时推送</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -22,6 +22,11 @@ public class InnerRestaurantController {
     @Resource
     private StoreInfoService storeInfoService;
 
+    @GetMapping("/stores/count")
+    public Result<Long> countStores() {
+        return Result.success(storeInfoService.count());
+    }
+
     @GetMapping("/stores/validate")
     public Result<Boolean> validateStoreIds(@RequestParam List<Long> storeIds) {
         List<Long> normalized = storeIds == null ? List.of()

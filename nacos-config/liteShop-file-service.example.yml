@@ -16,7 +16,7 @@ file:
   upload-path: ${FILE_UPLOAD_PATH:./uploads/images/}
   base-url: ${FILE_BASE_URL:http://${app.web-host}/images/}
   allowed-types: jpg,jpeg,png,gif,webp
-  max-size: 10
+  max-size: 20
 
 qiniu:
   access-key: ${QINIU_ACCESS_KEY:}

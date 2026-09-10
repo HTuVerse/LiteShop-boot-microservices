@@ -42,6 +42,15 @@ public class FileUploadUtil {
      * @throws IOException 上传异常
      */
     public String uploadFile(MultipartFile file) throws IOException {
+        return upload(file, false);
+    }
+
+    /** 上传公告等业务附件，使用固定安全扩展名白名单。 */
+    public String uploadAttachment(MultipartFile file) throws IOException {
+        return upload(file, true);
+    }
+
+    private String upload(MultipartFile file, boolean attachment) throws IOException {
         // 检查文件是否为空
         if (file.isEmpty()) {
             throw new IOException("上传的文件为空");
@@ -50,13 +59,17 @@ public class FileUploadUtil {
         String originalFilename = file.getOriginalFilename();
         String extension = FilenameUtils.getExtension(originalFilename);
         // 检查文件类型是否允许
-        if (!fileUploadConfig.isAllowedFileType(extension)) {
+        boolean allowed = attachment
+                ? fileUploadConfig.isAllowedAttachmentType(extension)
+                : fileUploadConfig.isAllowedFileType(extension);
+        if (!allowed) {
             throw new IOException("不支持的文件类型: " + extension);
         }
         // 检查文件大小
         long fileSize = file.getSize();
-        if (fileSize > fileUploadConfig.getMaxSize() * 1024 * 1024) {
-            throw new IOException("文件大小超过限制: " + fileUploadConfig.getMaxSize() + "MB");
+        int maxSize = attachment ? 20 : fileUploadConfig.getMaxSize();
+        if (fileSize > maxSize * 1024L * 1024L) {
+            throw new IOException("文件大小超过限制: " + maxSize + "MB");
         }
         // 生成新的文件名
         String newFileName = generateFileName(extension);

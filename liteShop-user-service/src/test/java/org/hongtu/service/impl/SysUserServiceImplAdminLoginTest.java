@@ -9,6 +9,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.VO.AdminTenantSelectionVO;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.service.SysTenantService;
+import org.hongtu.saas.service.SaasSubscriptionService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.utils.RateLimitUtil;
 import org.hongtu.utils.RedisCache;
@@ -46,6 +47,8 @@ class SysUserServiceImplAdminLoginTest {
     private SysUserServiceImpl service;
     @Mock
     private org.hongtu.service.AdminLoginSecurity adminLoginSecurity;
+    @Mock
+    private SaasSubscriptionService subscriptions;
 
     @AfterEach
     void clearTenantContext() {
@@ -73,6 +76,8 @@ class SysUserServiceImplAdminLoginTest {
         when(sysUserRoleMapper.getRoleCodesByUserId(102L)).thenReturn(List.of("STORE_ADMIN"));
         when(sysTenantService.getById(1001L)).thenReturn(activeTenant(1001L, "B", "Beta Merchant"));
         when(sysTenantService.getById(1002L)).thenReturn(activeTenant(1002L, "A", "Alpha Merchant"));
+        when(subscriptions.hasEffectiveSubscription(1001L)).thenReturn(true);
+        when(subscriptions.hasEffectiveSubscription(1002L)).thenReturn(true);
 
         Result result = service.adminLogin("operator", "secret123");
 
@@ -91,6 +96,22 @@ class SysUserServiceImplAdminLoginTest {
                 eq(300), eq(TimeUnit.SECONDS));
         assertTrue(payload.getValue().contains("\"1001\":101"));
         assertTrue(payload.getValue().contains("\"1002\":102"));
+    }
+
+    @Test
+    void passwordPreAuthenticationRejectsTenantWithoutEffectiveSubscription() {
+        String encodedPassword = BCrypt.hashpw("secret123");
+        SysUser user = adminUser(101L, 1001L, encodedPassword);
+        when(rateLimitUtil.isAllowed(anyString(), eq(20), eq(60))).thenReturn(true);
+        when(sysUserMapper.selectList(any())).thenReturn(List.of(user));
+        when(sysUserRoleMapper.getRoleCodesByUserId(101L)).thenReturn(List.of("ADMIN"));
+        when(sysTenantService.getById(1001L)).thenReturn(activeTenant(1001L, "B", "Beta Merchant"));
+        when(subscriptions.hasEffectiveSubscription(1001L)).thenReturn(false);
+
+        Result result = service.adminLogin("operator", "secret123");
+
+        assertEquals(Result.CODE_FAIL, result.getCode());
+        assertEquals("当前账号没有可用的管理商户", result.getMsg());
     }
 
     @Test

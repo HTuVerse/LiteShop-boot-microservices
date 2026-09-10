@@ -28,6 +28,7 @@ import org.hongtu.service.SysUserService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.UserLevelService;
+import org.hongtu.saas.service.SaasSubscriptionService;
 import org.hongtu.api.client.RestaurantFeignClient;
 import org.hongtu.api.dto.StoreSummaryDTO;
 import org.hongtu.utils.*;
@@ -101,6 +102,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     private RestaurantFeignClient restaurantFeignClient;
     @Resource
     private org.hongtu.service.AdminLoginSecurity adminLoginSecurity;
+    @Resource
+    private SaasSubscriptionService subscriptions;
 
     @Override
     public Result login(String account,String password) {
@@ -1167,7 +1170,9 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         return tenant != null
                 && Objects.equals(tenant.getStatus(), 1)
                 && (tenant.getExpireTime() == null
-                || !tenant.getExpireTime().isBefore(LocalDateTime.now()));
+                || !tenant.getExpireTime().isBefore(LocalDateTime.now()))
+                && TenantScope.call(tenant.getId(),
+                () -> subscriptions.hasEffectiveSubscription(tenant.getId()));
     }
 
     private SysUser findLoginUser(Long tenantId, String account) {

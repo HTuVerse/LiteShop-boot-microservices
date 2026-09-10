@@ -12,6 +12,10 @@ import java.util.List;
 @FeignClient(name = "liteShop-restaurant-service", contextId = "restaurantFeignClient")
 public interface RestaurantFeignClient {
 
+    /** 查询当前租户有效门店数量，供 SaaS 实时用量展示和校验。 */
+    @GetMapping("/inner/restaurant/stores/count")
+    Result<Long> countStores();
+
     /** 校验门店 ID 是否全部属于当前租户。 */
     @GetMapping("/inner/restaurant/stores/validate")
     Result<Boolean> validateStoreIds(@RequestParam("storeIds") List<Long> storeIds);

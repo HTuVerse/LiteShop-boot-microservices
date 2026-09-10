@@ -4,7 +4,7 @@ import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.stp.StpUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -13,7 +13,7 @@ import java.util.Collection;
 import java.util.List;
 
 /** HTTP 请求使用服务端会话或经过验证的入口信息建立租户与门店范围。 */
-public class TenantInterceptor implements HandlerInterceptor {
+public class TenantInterceptor implements AsyncHandlerInterceptor {
     private final String internalCallSecret;
     private final TenantAccessValidator tenantAccessValidator;
 
@@ -108,6 +108,12 @@ public class TenantInterceptor implements HandlerInterceptor {
         clearScope();
     }
 
+    /** SSE/异步 MVC 会提前释放请求线程，必须立即清理 ThreadLocal 租户范围。 */
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        clearScope();
+    }
+
     private void clearScope() {
         TenantIgnore.suspend();
         TenantContext.clear();
@@ -132,7 +138,7 @@ public class TenantInterceptor implements HandlerInterceptor {
 
     private void requireActiveTenant(Long tenantId) {
         if (!tenantAccessValidator.isActive(tenantId)) {
-            throw new SecurityException("商户不存在、已停用或已到期");
+            throw new SecurityException("商户不存在、已停用、已到期或未分配有效套餐");
         }
     }
 

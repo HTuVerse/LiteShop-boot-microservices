@@ -26,4 +26,14 @@ class TenantContextTest {
         TenantContext.setTenantId(1001L);
         assertEquals(1001L, TenantContext.getTenantId());
     }
+
+    @Test
+    void saasCatalogTablesAreGlobalButUsageTablesRemainTenantScoped() {
+        LiteShopTenantLineHandler handler = new LiteShopTenantLineHandler();
+        assertEquals(true, handler.ignoreTable("saas_plan"));
+        assertEquals(true, handler.ignoreTable("saas_feature"));
+        assertEquals(true, handler.ignoreTable("saas_display_feature"));
+        assertEquals(false, handler.ignoreTable("saas_tenant_subscription"));
+        assertEquals(false, handler.ignoreTable("saas_usage_counter"));
+    }
 }
