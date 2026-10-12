@@ -1,105 +1,46 @@
 package org.hongtu.service;
 
 import org.hongtu.DTO.PaymentNotifyResult;
+import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.params.WeChatPayTradeParam;
 
 import java.util.Map;
 
 /**
- * 微信支付服务接口
- * 
- * @author Ht
- * @since 2025-10-31
+ * 按租户微信账户执行预下单、查单、关单、退款和回调验签。
  */
 public interface WeChatPayService {
 
-    /**
-     * 创建小程序支付（JSAPI）
-     *
-     * @param param 支付参数
-     * @return 支付参数（返回给小程序用于调起支付）
-     */
+    /** 使用服务端金额和订单号创建 JSAPI 预下单。 */
     Map<String, Object> createJsapiPay(WeChatPayTradeParam param);
 
     /**
-     * 创建Native支付（扫码支付）
-     *
-     * @param param 支付参数
-     * @return 二维码链接
+     * 付款码（被扫）支付：收银员扫顾客付款码发起扣款。
+     * 返回 state：SUCCESS 已支付、USERPAYING 需轮询查单、FAIL 失败。
      */
-    String createNativePay(WeChatPayTradeParam param);
+    Map<String, Object> createMicroPay(Long tenantId, String outTradeNo, String description,
+                                       java.math.BigDecimal totalAmountYuan, String authCode);
 
-    /**
-     * 创建H5支付
-     *
-     * @param param 支付参数
-     * @return 支付跳转链接
-     */
-    String createH5Pay(WeChatPayTradeParam param);
+    /** 查询付款码订单支付结果，返回 state：SUCCESS/USERPAYING/FAIL。 */
+    Map<String, Object> queryMicroPay(Long tenantId, String outTradeNo);
 
-    /**
-     * 交易查询
-     *
-     * @param outTradeNo 商户订单号
-     * @return 查询结果
-     */
-    Map<String, Object> queryTrade(String outTradeNo);
+    /** 撤销付款码订单，返回 recall 表示是否需要继续轮询撤销。 */
+    Map<String, Object> reverseMicroPay(Long tenantId, String outTradeNo);
 
-    /**
-     * 关闭订单
-     *
-     * @param outTradeNo 商户订单号
-     * @return 关闭结果
-     */
-    Map<String, Object> closeTrade(String outTradeNo);
+    Map<String, Object> queryTrade(Long tenantId, String outTradeNo);
 
-    /**
-     * 申请退款
-     *
-     * @param outTradeNo   商户订单号
-     * @param outRefundNo  商户退款单号
-     * @param refundAmount 退款金额
-     * @param totalAmount  订单总金额
-     * @param reason       退款原因
-     * @return 退款结果
-     */
-    Map<String, Object> refund(String outTradeNo, String outRefundNo, 
-                               String refundAmount, String totalAmount, String reason);
+    /** 关单结果用 outcome 表示 CLOSED、PAID 或 UNKNOWN。 */
+    Map<String, Object> closeTrade(Long tenantId, String outTradeNo);
 
-    /**
-     * 查询退款
-     *
-     * @param outRefundNo 商户退款单号
-     * @return 退款查询结果
-     */
-    Map<String, Object> queryRefund(String outRefundNo);
+    Map<String, Object> refund(Long tenantId, String outTradeNo, String outRefundNo,
+                               String refundAmount, String totalAmount, String reason, String notifyUrl);
 
-    /**
-     * 验证并解析微信支付回调通知（纯粹的验签和解密，不处理业务）
-     * 【推荐】各业务模块应该调用此方法获取解析后的数据，然后自己处理业务逻辑
-     *
-     * @param requestBody 回调请求体（加密数据）
-     * @param signature   签名
-     * @param timestamp   时间戳
-     * @param nonce       随机串
-     * @param serial      证书序列号
-     * @return 解析后的支付通知数据
-     * @throws RuntimeException 验签失败或解析失败时抛出异常
-     */
-    PaymentNotifyResult parseAndVerifyNotify(
-            String requestBody, String signature, String timestamp, String nonce, String serial);
+    Map<String, Object> queryRefund(Long tenantId, String outRefundNo);
 
-    /**
-     * 处理退款回调通知
-     *
-     * @param requestBody 回调请求体
-     * @param signature   签名
-     * @param timestamp   时间戳
-     * @param nonce       随机串
-     * @param serial      证书序列号
-     * @return 处理结果
-     */
-    String handleRefundNotify(String requestBody, String signature, String timestamp, 
-                             String nonce, String serial);
+    PaymentNotifyResult parseAndVerifyNotify(Long tenantId, String requestBody, String signature,
+                                             String timestamp, String nonce, String serial);
+
+    /** 只验签解密退款通知，不修改订单。 */
+    PaymentRefundNotifyResult parseRefundNotify(Long tenantId, String requestBody, String signature,
+                                                String timestamp, String nonce, String serial);
 }
-
