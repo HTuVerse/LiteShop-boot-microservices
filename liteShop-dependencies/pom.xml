@@ -35,10 +35,13 @@
 
         <!-- 工具类相关依赖版本 -->
         <hutool.version>5.8.37</hutool.version>
-        <fastjson.version>1.2.83</fastjson.version>
+        <!-- 1.2.83 受 CVE-2026-16723 影响，至少升级到官方修复版本。 -->
+        <fastjson.version>1.2.84</fastjson.version>
         <commons-io.version>2.21.0</commons-io.version>
         <wechatpay-api-v3.version>0.6.0</wechatpay-api-v3.version>
         <wechatpay-java.version>0.2.17</wechatpay-java.version>
+        <!-- 微信付款码（被扫）走 v2 接口，官方 wechatpay-java 不支持，用 WxJava 的 pay 模块 -->
+        <weixin-java-pay.version>4.7.5.B</weixin-java-pay.version>
         <alipay.sdk.version>4.40.379.ALL</alipay.sdk.version>
         <!-- 存储相关依赖版本 -->
         <qiniu.version>7.19.0</qiniu.version>
@@ -188,6 +191,13 @@
                 <groupId>com.github.wechatpay-apiv3</groupId>
                 <artifactId>wechatpay-java</artifactId>
                 <version>${wechatpay-java.version}</version>
+            </dependency>
+
+            <!-- WxJava 支付模块：微信付款码（被扫）支付 -->
+            <dependency>
+                <groupId>com.github.binarywang</groupId>
+                <artifactId>weixin-java-pay</artifactId>
+                <version>${weixin-java-pay.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
