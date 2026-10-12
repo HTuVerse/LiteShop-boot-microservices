@@ -2,8 +2,11 @@ package org.hongtu.api.client;
 
 import org.hongtu.DTO.PaymentNotifyResult;
 import org.hongtu.Result.Result;
+import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
+import org.hongtu.params.AlipayBarCodePayParam;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
+import org.hongtu.params.WeChatMicroPayParam;
 import org.hongtu.params.WeChatPayTradeParam;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,59 +17,88 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.util.Map;
 
 /**
- * 支付服务 Feign 客户端
- * 对应 pay-service 的 /inner/pay/** 内部接口
+ * 支付服务内部命令。调用方必须传入订单所属租户，金额和退款单号由订单服务生成。
  */
 @FeignClient(name = "liteShop-pay-service", contextId = "payFeignClient")
 public interface PayFeignClient {
 
-    // ==================== 微信支付 ====================
-
-    /**
-     * 微信 JSAPI 预下单（替代原 restaurant 直接调 WeChatPayService.createJsapiPay）
-     */
     @PostMapping("/inner/pay/wechat/jsapi")
     Result<Map<String, Object>> createWeChatJsapiPay(@RequestBody WeChatPayTradeParam param);
 
-    /**
-     * 微信查单
-     */
+    /** 微信付款码（被扫）支付。 */
+    @PostMapping("/inner/pay/wechat/micropay")
+    Result<Map<String, Object>> createWeChatMicroPay(@RequestBody WeChatMicroPayParam param);
+
+    /** 查询微信付款码订单支付结果。 */
+    @GetMapping("/inner/pay/wechat/micropay/query")
+    Result<Map<String, Object>> queryWeChatMicroPay(@RequestParam("tenantId") Long tenantId,
+                                                    @RequestParam("outTradeNo") String outTradeNo);
+
+    /** 撤销微信付款码订单。 */
+    @PostMapping("/inner/pay/wechat/micropay/reverse")
+    Result<Map<String, Object>> reverseWeChatMicroPay(@RequestParam("tenantId") Long tenantId,
+                                                      @RequestParam("outTradeNo") String outTradeNo);
+
     @GetMapping("/inner/pay/wechat/query")
-    Result<Map<String, Object>> queryWeChatTrade(@RequestParam("outTradeNo") String outTradeNo);
+    Result<Map<String, Object>> queryWeChatTrade(@RequestParam("tenantId") Long tenantId,
+                                                 @RequestParam("outTradeNo") String outTradeNo);
 
-    /**
-     * 微信关单
-     */
     @PostMapping("/inner/pay/wechat/close")
-    Result<Map<String, Object>> closeWeChatTrade(@RequestParam("outTradeNo") String outTradeNo);
+    Result<Map<String, Object>> closeWeChatTrade(@RequestParam("tenantId") Long tenantId,
+                                                 @RequestParam("outTradeNo") String outTradeNo);
 
-    /**
-     * 微信回调验签解密（替代原 WeChatPayService.parseAndVerifyNotify）
-     */
+    /** 发起微信退款，金额单位均为分。 */
+    @PostMapping("/inner/pay/wechat/refund")
+    Result<Map<String, Object>> refundWeChatTrade(@RequestParam("tenantId") Long tenantId,
+                                                   @RequestParam("outTradeNo") String outTradeNo,
+                                                   @RequestParam("outRefundNo") String outRefundNo,
+                                                   @RequestParam("refundAmount") String refundAmount,
+                                                   @RequestParam("totalAmount") String totalAmount,
+                                                   @RequestParam(value = "reason", required = false) String reason,
+                                                   @RequestParam("notifyUrl") String notifyUrl);
+
+    @GetMapping("/inner/pay/wechat/refund/query")
+    Result<Map<String, Object>> queryWeChatRefund(@RequestParam("tenantId") Long tenantId,
+                                                  @RequestParam("outRefundNo") String outRefundNo);
+
     @PostMapping("/inner/pay/wechat/parse-notify")
     Result<PaymentNotifyResult> parseWeChatNotify(@RequestBody WeChatNotifyParseDTO dto);
 
-    // ==================== 支付宝 ====================
+    @PostMapping("/inner/pay/wechat/parse-refund-notify")
+    Result<PaymentRefundNotifyResult> parseWeChatRefundNotify(@RequestBody WeChatNotifyParseDTO dto);
 
-    /**
-     * 支付宝 WAP 支付，返回支付表单 HTML（替代原 AlipayService.createWapPay）
-     */
     @PostMapping("/inner/pay/alipay/wap")
     Result<String> createAlipayWapPay(@RequestBody AlipayTradeWapPayRequestParams param);
 
-    /**
-     * 支付宝查单
-     */
+    /** 支付宝条码（被扫）支付。 */
+    @PostMapping("/inner/pay/alipay/barcode")
+    Result<Map<String, Object>> createAlipayBarCodePay(@RequestBody AlipayBarCodePayParam param);
+
+    /** 撤销支付宝交易（条码支付轮询超时使用）。 */
+    @PostMapping("/inner/pay/alipay/cancel")
+    Result<Map<String, Object>> cancelAlipayTrade(@RequestParam("tenantId") Long tenantId,
+                                                  @RequestParam("outTradeNo") String outTradeNo);
+
     @GetMapping("/inner/pay/alipay/query")
-    Result<Map<String, Object>> queryAlipayTrade(@RequestParam("outTradeNo") String outTradeNo);
+    Result<Map<String, Object>> queryAlipayTrade(@RequestParam("tenantId") Long tenantId,
+                                                 @RequestParam("outTradeNo") String outTradeNo);
 
-    /**
-     * 支付宝关单
-     */
     @PostMapping("/inner/pay/alipay/close")
-    Result<Map<String, Object>> closeAlipayTrade(@RequestParam("outTradeNo") String outTradeNo);
+    Result<Map<String, Object>> closeAlipayTrade(@RequestParam("tenantId") Long tenantId,
+                                                 @RequestParam("outTradeNo") String outTradeNo);
 
-    /** 支付宝异步回调验签（回调参数必须原样传递）。 */
+    @PostMapping("/inner/pay/alipay/refund")
+    Result<Map<String, Object>> refundAlipayTrade(@RequestParam("tenantId") Long tenantId,
+                                                   @RequestParam("outTradeNo") String outTradeNo,
+                                                   @RequestParam("outRequestNo") String outRequestNo,
+                                                   @RequestParam("refundAmount") String refundAmount,
+                                                   @RequestParam(value = "refundReason", required = false) String refundReason);
+
     @PostMapping("/inner/pay/alipay/verify-notify")
-    Result<Boolean> verifyAlipayNotify(@RequestBody Map<String, String> params);
+    Result<Boolean> verifyAlipayNotify(@RequestParam("tenantId") Long tenantId,
+                                       @RequestBody Map<String, String> params);
+
+    @PostMapping("/inner/pay/alipay/parse-refund-notify")
+    Result<PaymentRefundNotifyResult> parseAlipayRefundNotify(@RequestParam("tenantId") Long tenantId,
+                                                              @RequestBody Map<String, String> params);
 }
