@@ -1,75 +1,38 @@
 package org.hongtu.service;
 
-import com.alipay.api.request.AlipayTradePagePayRequest;
-import jakarta.servlet.http.HttpServletRequest;
-import org.hongtu.params.AlipayTradePagePayRequestParams;
+import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
 
 import java.util.Map;
 
 /**
- * 支付宝支付服务接口
+ * 按租户支付宝账户执行预下单、查单、关单、退款和回调验签。
  */
 public interface AlipayService {
 
-    /**
-     * 创建电脑网站支付
-     *
-     * @param request 电脑网站支付请求参数
-     * @return 支付表单HTML
-     */
-    String createPagePay(AlipayTradePagePayRequestParams request);
-
-    /**
-     * 创建手机网站支付
-     *
-     * @param request 手机网站支付请求参数
-     * @return 支付表单HTML
-     */
     String createWapPay(AlipayTradeWapPayRequestParams request);
 
     /**
-     * 交易查询
-     *
-     * @param outTradeNo 商户订单号
-     * @return 查询结果
+     * 条码支付（被扫）：收银员扫顾客付款码发起扣款。
+     * 返回 state：SUCCESS 已支付、WAITING 需轮询查单、FAIL 失败。
      */
-    Map<String, Object> queryTrade(String outTradeNo);
+    Map<String, Object> createBarCodePay(Long tenantId, String outTradeNo, String subject,
+                                         java.math.BigDecimal totalAmountYuan, String authCode);
 
-    /**
-     * 交易退款
-     *
-     * @param outTradeNo   商户订单号
-     * @param refundAmount 退款金额
-     * @param refundReason 退款原因
-     * @return 退款结果
-     */
-    Map<String, Object> refundTrade(String outTradeNo, String refundAmount, String refundReason);
+    /** 撤销交易，用于条码支付轮询超时，返回 retryFlag、action。 */
+    Map<String, Object> cancelTrade(Long tenantId, String outTradeNo);
 
-    /**
-     * 交易关闭
-     *
-     * @param outTradeNo 商户订单号
-     * @return 关闭结果
-     */
-    Map<String, Object> closeTrade(String outTradeNo);
+    Map<String, Object> queryTrade(Long tenantId, String outTradeNo);
 
-    /**
-     * 异步通知处理
-     *
-     * @param request 请求对象
-     * @return 处理结果
-     */
-    String notifyProcess(HttpServletRequest request);
+    /** 关单结果用 outcome 表示 CLOSED、PAID 或 UNKNOWN。 */
+    Map<String, Object> closeTrade(Long tenantId, String outTradeNo);
 
-    /**
-     * 同步回调处理
-     *
-     * @param request 请求对象
-     * @return 处理结果
-     */
-    String returnProcess(HttpServletRequest request);
+    Map<String, Object> refundTrade(Long tenantId, String outTradeNo, String refundAmount,
+                                    String refundReason, String outRequestNo);
 
-    /** 验证支付宝异步通知签名及应用ID。 */
-    boolean verifyNotify(Map<String, String> params);
+    /** 验签并确认通知属于该租户的应用。 */
+    boolean verifyNotify(Long tenantId, Map<String, String> params);
+
+    /** 验签后退款通知字段，供订单服务核对。 */
+    PaymentRefundNotifyResult parseRefundNotify(Long tenantId, Map<String, String> params);
 }

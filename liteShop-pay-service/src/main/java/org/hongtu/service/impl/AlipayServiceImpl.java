@@ -2,363 +2,273 @@ package org.hongtu.service.impl;
 
 import com.alibaba.fastjson.JSON;
 import com.alipay.api.AlipayApiException;
-import com.alipay.api.AlipayClient;
 import com.alipay.api.internal.util.AlipaySignature;
-import com.alipay.api.request.*;
-import com.alipay.api.response.*;
-import jakarta.annotation.Resource;
-import jakarta.servlet.http.HttpServletRequest;
+import com.alipay.api.request.AlipayTradeCloseRequest;
+import com.alipay.api.request.AlipayTradeQueryRequest;
+import com.alipay.api.request.AlipayTradeRefundRequest;
+import com.alipay.api.request.AlipayTradeWapPayRequest;
+import com.alipay.api.response.AlipayTradeCloseResponse;
+import com.alipay.api.response.AlipayTradeQueryResponse;
+import com.alipay.api.response.AlipayTradeRefundResponse;
+import com.alipay.api.response.AlipayTradeWapPayResponse;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.hongtu.Config.AlipayConfig;
-import org.hongtu.params.AlipayTradePagePayRequestParams;
+import org.hongtu.api.dto.PaymentRefundNotifyResult;
+import org.hongtu.api.dto.TenantPaymentRuntimeDTO;
+import org.hongtu.exception.BusinessException;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
 import org.hongtu.service.AlipayService;
+import org.hongtu.service.TenantPaymentClientFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 支付宝支付服务实现类
+ * 使用租户自己的支付宝应用完成收单和退款。
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class AlipayServiceImpl implements AlipayService {
-
-    @Resource
-     AlipayClient alipayClient;
-    
-    @Resource
-    AlipayConfig alipayConfig;
-
-    @Override
-    public String createPagePay(AlipayTradePagePayRequestParams pagePayRequest) {
-        AlipayTradePagePayRequest request = new AlipayTradePagePayRequest();
-        request.setNotifyUrl(pagePayRequest.getNotifyUrl());//填业务的回调地址
-//        request.setReturnUrl(alipayConfig.getReturnUrl());
-
-        // 构建业务请求参数（biz_content）- 严格基于官方文档参数
-        Map<String, Object> bizContent = new HashMap<>();
-
-        // 必填参数
-        bizContent.put("out_trade_no", pagePayRequest.getOutTradeNo());
-        bizContent.put("total_amount", pagePayRequest.getTotalAmount().toString());
-        bizContent.put("subject", pagePayRequest.getSubject());
-        bizContent.put("product_code", pagePayRequest.getProductCode());
-
-        // 可选参数 - 只添加非空值（严格按照官方文档）
-        addIfNotEmpty(bizContent, "qr_pay_mode", pagePayRequest.getQrPayMode());
-        if (pagePayRequest.getQrcodeWidth() != null) {
-            bizContent.put("qrcode_width", pagePayRequest.getQrcodeWidth());
-        }
-        addIfNotEmpty(bizContent, "goods_detail", pagePayRequest.getGoodsDetail());
-        addIfNotEmpty(bizContent, "time_expire", pagePayRequest.getTimeExpire());
-        addIfNotEmpty(bizContent, "sub_merchant", pagePayRequest.getSubMerchant());
-        addIfNotEmpty(bizContent, "extend_params", pagePayRequest.getExtendParams());
-        addIfNotEmpty(bizContent, "business_params", pagePayRequest.getBusinessParams());
-        addIfNotEmpty(bizContent, "promo_params", pagePayRequest.getPromoParams());
-        addIfNotEmpty(bizContent, "integration_type", pagePayRequest.getIntegrationType());
-        addIfNotEmpty(bizContent, "request_from_url", pagePayRequest.getRequestFromUrl());
-        addIfNotEmpty(bizContent, "store_id", pagePayRequest.getStoreId());
-        addIfNotEmpty(bizContent, "merchant_order_no", pagePayRequest.getMerchantOrderNo());
-        addIfNotEmpty(bizContent, "ext_user_info", pagePayRequest.getExtUserInfo());
-        addIfNotEmpty(bizContent, "invoice_info", pagePayRequest.getInvoiceInfo());
-
-        request.setBizContent(JSON.toJSONString(bizContent));
-
-        try {
-            AlipayTradePagePayResponse response = alipayClient.pageExecute(request);
-            if (response.isSuccess()) {
-                log.info("支付宝电脑网站支付表单生成成功，订单号：{}", pagePayRequest.getOutTradeNo());
-                return response.getBody();
-            } else {
-                log.error("创建支付宝电脑网站支付失败，订单号：{}，错误码：{}，错误信息：{}",
-                        pagePayRequest.getOutTradeNo(), response.getSubCode(), response.getSubMsg());
-                return null;
-            }
-        } catch (AlipayApiException e) {
-            log.error("创建支付宝电脑网站支付异常，订单号：{}", pagePayRequest.getOutTradeNo(), e);
-            return null;
-        }
-    }
+    private final TenantPaymentClientFactory clients;
 
     @Override
     public String createWapPay(AlipayTradeWapPayRequestParams wapPayRequest) {
+        if (wapPayRequest == null || wapPayRequest.getTenantId() == null) {
+            throw new BusinessException("支付宝支付命令缺少租户");
+        }
+        if (!StringUtils.hasText(wapPayRequest.getOutTradeNo())
+                || !StringUtils.hasText(wapPayRequest.getSubject())
+                || !StringUtils.hasText(wapPayRequest.getNotifyUrl())
+                || !StringUtils.hasText(wapPayRequest.getProductCode())
+                || wapPayRequest.getTotalAmount() == null
+                || wapPayRequest.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("支付宝支付参数不完整");
+        }
+        var client = clients.alipay(wapPayRequest.getTenantId());
         AlipayTradeWapPayRequest request = new AlipayTradeWapPayRequest();
         request.setNotifyUrl(wapPayRequest.getNotifyUrl());
-//        request.setReturnUrl(alipayConfig.getReturnUrl());
-        // 构建业务请求参数（biz_content）- 严格基于官方文档参数
         Map<String, Object> bizContent = new HashMap<>();
-        // 必填参数
         bizContent.put("out_trade_no", wapPayRequest.getOutTradeNo());
-        bizContent.put("total_amount", wapPayRequest.getTotalAmount().toString());
+        bizContent.put("total_amount", wapPayRequest.getTotalAmount()
+                .setScale(2, RoundingMode.UNNECESSARY).toPlainString());
         bizContent.put("subject", wapPayRequest.getSubject());
         bizContent.put("product_code", wapPayRequest.getProductCode());
-        // 可选参数 - 只添加非空值（严格按照官方文档）
-        addIfNotEmpty(bizContent, "auth_token", wapPayRequest.getAuthToken());
-        addIfNotEmpty(bizContent, "quit_url", wapPayRequest.getQuitUrl());
-        addIfNotEmpty(bizContent, "goods_detail", wapPayRequest.getGoodsDetail());
-        addIfNotEmpty(bizContent, "time_expire", wapPayRequest.getTimeExpire());
-        addIfNotEmpty(bizContent, "extend_params", wapPayRequest.getExtendParams());
-        addIfNotEmpty(bizContent, "business_params", wapPayRequest.getBusinessParams());
-        addIfNotEmpty(bizContent, "passback_params", wapPayRequest.getPassbackParams());
-        addIfNotEmpty(bizContent, "merchant_order_no", wapPayRequest.getMerchantOrderNo());
-        addIfNotEmpty(bizContent, "ext_user_info", wapPayRequest.getExtUserInfo());
+        put(bizContent, "time_expire", wapPayRequest.getTimeExpire());
+        put(bizContent, "passback_params", wapPayRequest.getPassbackParams());
+        put(bizContent, "quit_url", wapPayRequest.getQuitUrl());
         request.setBizContent(JSON.toJSONString(bizContent));
-
         try {
-            AlipayTradeWapPayResponse response = alipayClient.pageExecute(request);
-            if (response.isSuccess()) {
-                log.info("支付宝手机网站支付表单生成成功，订单号：{}", wapPayRequest.getOutTradeNo());
-                return response.getBody();
-            } else {
-                log.error("创建支付宝手机网站支付失败，订单号：{}，错误码：{}，错误信息：{}",
-                        wapPayRequest.getOutTradeNo(), response.getSubCode(), response.getSubMsg());
-                return null;
+            AlipayTradeWapPayResponse response = client.pageExecute(request);
+            if (!response.isSuccess()) {
+                throw new BusinessException("创建支付宝支付失败");
             }
-        } catch (AlipayApiException e) {
-            log.error("创建支付宝手机网站支付异常，订单号：{}", wapPayRequest.getOutTradeNo(), e);
-            return null;
+            return response.getBody();
+        } catch (AlipayApiException exception) {
+            log.error("创建支付宝支付失败, tenantId={}", wapPayRequest.getTenantId(), exception);
+            throw new BusinessException("创建支付宝支付失败");
         }
     }
 
     @Override
-    public Map<String, Object> queryTrade(String outTradeNo) {
-        AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
-
+    public Map<String, Object> createBarCodePay(Long tenantId, String outTradeNo, String subject,
+                                                BigDecimal totalAmountYuan, String authCode) {
+        if (tenantId == null) {
+            throw new BusinessException("支付宝条码支付命令缺少租户");
+        }
+        if (!StringUtils.hasText(outTradeNo) || !StringUtils.hasText(subject)
+                || !StringUtils.hasText(authCode) || totalAmountYuan == null
+                || totalAmountYuan.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("支付宝条码支付参数不完整");
+        }
+        String amount;
+        try {
+            amount = totalAmountYuan.setScale(2, RoundingMode.UNNECESSARY).toPlainString();
+        } catch (ArithmeticException exception) {
+            throw new BusinessException("支付宝条码支付金额精度非法");
+        }
+        com.alipay.api.request.AlipayTradePayRequest request = new com.alipay.api.request.AlipayTradePayRequest();
         Map<String, Object> bizContent = new HashMap<>();
         bizContent.put("out_trade_no", outTradeNo);
-
+        bizContent.put("scene", "bar_code");
+        bizContent.put("auth_code", authCode);
+        bizContent.put("subject", subject);
+        bizContent.put("total_amount", amount);
         request.setBizContent(JSON.toJSONString(bizContent));
-
         try {
-            AlipayTradeQueryResponse response = alipayClient.execute(request);
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", response.isSuccess());
-            result.put("code", response.getCode());
-            result.put("msg", response.getMsg());
-            result.put("subCode", response.getSubCode());
-            result.put("subMsg", response.getSubMsg());
-            
-            if (response.isSuccess()) {
-                result.put("tradeNo", response.getTradeNo());
-                result.put("outTradeNo", response.getOutTradeNo());
-                result.put("buyerLogonId", response.getBuyerLogonId());
-                result.put("tradeStatus", response.getTradeStatus());
-                result.put("totalAmount", response.getTotalAmount());
-                result.put("receiptAmount", response.getReceiptAmount());
-                result.put("buyerPayAmount", response.getBuyerPayAmount());
-                result.put("pointAmount", response.getPointAmount());
-                result.put("invoiceAmount", response.getInvoiceAmount());
-                result.put("sendPayDate", response.getSendPayDate());
-                result.put("storeId", response.getStoreId());
-                result.put("terminalId", response.getTerminalId());
-                result.put("storeName", response.getStoreName());
-                result.put("buyerUserId", response.getBuyerUserId());
-            }
-            
+            com.alipay.api.response.AlipayTradePayResponse response = clients.alipay(tenantId).execute(request);
+            Map<String, Object> result = base(response.isSuccess(), response.getCode(), response.getMsg(),
+                    response.getSubCode(), response.getSubMsg());
+            // 10000 支付成功；10003 等待用户输入密码，需要轮询查单；其余判失败。
+            String state = "10000".equals(response.getCode()) ? "SUCCESS"
+                    : ("10003".equals(response.getCode()) ? "WAITING" : "FAIL");
+            result.put("state", state);
+            result.put("tradeNo", response.getTradeNo());
+            result.put("outTradeNo", response.getOutTradeNo());
             return result;
-        } catch (AlipayApiException e) {
-            log.error("查询支付宝交易异常", e);
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", false);
-            result.put("msg", e.getMessage());
+        } catch (AlipayApiException exception) {
+            log.error("支付宝条码支付失败, tenantId={}, outTradeNo={}", tenantId, outTradeNo, exception);
+            Map<String, Object> result = unknown(exception.getMessage());
+            result.put("state", "FAIL");
             return result;
         }
     }
 
     @Override
-    public Map<String, Object> refundTrade(String outTradeNo, String refundAmount, String refundReason) {
-        AlipayTradeRefundRequest request = new AlipayTradeRefundRequest();
+    public Map<String, Object> cancelTrade(Long tenantId, String outTradeNo) {
+        com.alipay.api.request.AlipayTradeCancelRequest request = new com.alipay.api.request.AlipayTradeCancelRequest();
+        request.setBizContent(JSON.toJSONString(Map.of("out_trade_no", outTradeNo)));
+        try {
+            com.alipay.api.response.AlipayTradeCancelResponse response = clients.alipay(tenantId).execute(request);
+            Map<String, Object> result = base(response.isSuccess(), response.getCode(), response.getMsg(),
+                    response.getSubCode(), response.getSubMsg());
+            result.put("retryFlag", response.getRetryFlag());
+            result.put("action", response.getAction());
+            return result;
+        } catch (AlipayApiException exception) {
+            log.error("撤销支付宝交易失败, tenantId={}, outTradeNo={}", tenantId, outTradeNo, exception);
+            Map<String, Object> result = unknown(exception.getMessage());
+            result.put("retryFlag", "Y");
+            return result;
+        }
+    }
 
+    @Override
+    public Map<String, Object> queryTrade(Long tenantId, String outTradeNo) {
+        TenantPaymentRuntimeDTO account = clients.alipayAccount(tenantId);
+        AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
+        request.setBizContent(JSON.toJSONString(Map.of("out_trade_no", outTradeNo)));
+        try {
+            AlipayTradeQueryResponse response = clients.alipay(tenantId).execute(request);
+            Map<String, Object> result = base(response.isSuccess(), response.getCode(), response.getMsg(),
+                    response.getSubCode(), response.getSubMsg());
+            result.put("tradeStatus", response.getTradeStatus());
+            result.put("tradeNo", response.getTradeNo());
+            result.put("outTradeNo", response.getOutTradeNo());
+            result.put("totalAmount", response.getTotalAmount());
+            result.put("currency", "CNY");
+            result.put("merchantMatched", response.isSuccess());
+            result.put("appId", account.getAppId());
+            return result;
+        } catch (AlipayApiException exception) {
+            log.error("查询支付宝交易失败, tenantId={}", tenantId, exception);
+            return unknown(exception.getMessage());
+        }
+    }
+
+    @Override
+    public Map<String, Object> closeTrade(Long tenantId, String outTradeNo) {
+        AlipayTradeCloseRequest request = new AlipayTradeCloseRequest();
+        request.setBizContent(JSON.toJSONString(Map.of("out_trade_no", outTradeNo)));
+        try {
+            AlipayTradeCloseResponse response = clients.alipay(tenantId).execute(request);
+            if (response.isSuccess() || "ACQ.TRADE_NOT_EXIST".equals(response.getSubCode())) {
+                return outcome("CLOSED", response.getSubMsg());
+            }
+            if ("ACQ.TRADE_STATUS_ERROR".equals(response.getSubCode())) {
+                return outcome("UNKNOWN", response.getSubMsg());
+            }
+            return outcome("UNKNOWN", response.getSubMsg());
+        } catch (AlipayApiException exception) {
+            log.warn("关闭支付宝交易结果不明确, tenantId={}", tenantId, exception);
+            return unknown(exception.getMessage());
+        }
+    }
+
+    @Override
+    public Map<String, Object> refundTrade(Long tenantId, String outTradeNo, String refundAmount,
+                                           String refundReason, String outRequestNo) {
+        AlipayTradeRefundRequest request = new AlipayTradeRefundRequest();
         Map<String, Object> bizContent = new HashMap<>();
         bizContent.put("out_trade_no", outTradeNo);
         bizContent.put("refund_amount", refundAmount);
         bizContent.put("refund_reason", refundReason);
-
+        bizContent.put("out_request_no", outRequestNo);
         request.setBizContent(JSON.toJSONString(bizContent));
-
         try {
-            AlipayTradeRefundResponse response = alipayClient.execute(request);
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", response.isSuccess());
-            result.put("code", response.getCode());
-            result.put("msg", response.getMsg());
-            result.put("subCode", response.getSubCode());
-            result.put("subMsg", response.getSubMsg());
-            
-            if (response.isSuccess()) {
-                result.put("tradeNo", response.getTradeNo());
-                result.put("outTradeNo", response.getOutTradeNo());
-                result.put("buyerLogonId", response.getBuyerLogonId());
-                result.put("fundChange", response.getFundChange());
-                result.put("refundFee", response.getRefundFee());
-                result.put("gmtRefundPay", response.getGmtRefundPay());
-                result.put("buyerUserId", response.getBuyerUserId());
-            }
-            
+            AlipayTradeRefundResponse response = clients.alipay(tenantId).execute(request);
+            Map<String, Object> result = base(response.isSuccess(), response.getCode(), response.getMsg(),
+                    response.getSubCode(), response.getSubMsg());
+            result.put("tradeNo", response.getTradeNo());
+            result.put("outTradeNo", response.getOutTradeNo());
+            result.put("refundFee", response.getRefundFee());
+            result.put("fundChange", response.getFundChange());
+            result.put("status", response.isSuccess() ? "SUCCESS" : "FAILED");
+            result.put("merchantMatched", response.isSuccess());
             return result;
-        } catch (AlipayApiException e) {
-            log.error("支付宝交易退款异常", e);
-            Map<String, Object> result = new HashMap<>();
+        } catch (AlipayApiException exception) {
+            log.error("支付宝退款失败, tenantId={}", tenantId, exception);
+            Map<String, Object> result = unknown(exception.getMessage());
             result.put("success", false);
-            result.put("msg", e.getMessage());
+            result.put("status", "FAILED");
             return result;
         }
     }
 
     @Override
-    public Map<String, Object> closeTrade(String outTradeNo) {
-        AlipayTradeCloseRequest request = new AlipayTradeCloseRequest();
-
-        Map<String, Object> bizContent = new HashMap<>();
-        bizContent.put("out_trade_no", outTradeNo);
-
-        request.setBizContent(JSON.toJSONString(bizContent));
-
-        try {
-            AlipayTradeCloseResponse response = alipayClient.execute(request);
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", response.isSuccess());
-            result.put("code", response.getCode());
-            result.put("msg", response.getMsg());
-            result.put("subCode", response.getSubCode());
-            result.put("subMsg", response.getSubMsg());
-            
-            if (response.isSuccess()) {
-                result.put("tradeNo", response.getTradeNo());
-                result.put("outTradeNo", response.getOutTradeNo());
-            }
-            
-            return result;
-        } catch (AlipayApiException e) {
-            log.error("关闭支付宝交易异常", e);
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", false);
-            result.put("msg", e.getMessage());
-            return result;
-        }
-    }
-
-    @Override
-    public String notifyProcess(HttpServletRequest request) {
-        Map<String, String> params = convertRequestParamsToMap(request);
-        try {
-            boolean signVerified = verifyNotify(params);
-
-            if (signVerified) {
-                // 验签成功
-                String outTradeNo = params.get("out_trade_no");
-                String tradeNo = params.get("trade_no");
-                String tradeStatus = params.get("trade_status");
-                String totalAmount = params.get("total_amount");
-                String buyerId = params.get("buyer_id");
-                String appId = params.get("app_id");
-                
-                // 支付宝交易状态
-                // WAIT_BUYER_PAY：交易创建，等待买家付款
-                // TRADE_CLOSED：未付款交易超时关闭，或支付完成后全额退款
-                // TRADE_SUCCESS：交易支付成功
-                // TRADE_FINISHED：交易结束，不可退款
-                if ("TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus)) {
-                    // 支付成功，处理业务逻辑
-                    // 更新订单状态等操作...
-                    log.info("支付宝异步通知：订单[{}]支付成功，交易号：{}", outTradeNo, tradeNo);
-                }
-                // 返回 success 告诉支付宝处理成功，不再重复通知
-                return "success";
-            } else {
-                // 验签失败
-                log.error("支付宝异步通知验签失败");
-                return "failure";
-            }
-        } catch (Exception e) {
-            log.error("支付宝异步通知处理异常", e);
-            return "failure";
-        }
-    }
-
-    @Override
-    public boolean verifyNotify(Map<String, String> params) {
-        if (params == null || params.isEmpty()) {
+    public boolean verifyNotify(Long tenantId, Map<String, String> params) {
+        TenantPaymentRuntimeDTO account = clients.alipayAccount(tenantId);
+        if (params == null || !account.getAppId().equals(params.get("app_id"))) {
             return false;
         }
         try {
-            boolean signatureValid = AlipaySignature.rsaCheckV1(
-                    params,
-                    alipayConfig.getPublicKey(),
-                    alipayConfig.getCharset(),
-                    alipayConfig.getSignType()
-            );
-            boolean appIdValid = alipayConfig.getAppId() != null
-                    && alipayConfig.getAppId().equals(params.get("app_id"));
-            if (!signatureValid || !appIdValid) {
-                log.warn("支付宝回调校验失败: signatureValid={}, appIdValid={}",
-                        signatureValid, appIdValid);
-            }
-            return signatureValid && appIdValid;
-        } catch (AlipayApiException e) {
-            log.error("支付宝回调验签异常", e);
+            return AlipaySignature.rsaCheckV1(params, account.getAlipayPublicKey(), "utf-8", "RSA2");
+        } catch (AlipayApiException exception) {
+            log.warn("支付宝回调验签失败, tenantId={}", tenantId, exception);
             return false;
         }
     }
 
     @Override
-    public String returnProcess(HttpServletRequest request) {
-        Map<String, String> params = convertRequestParamsToMap(request);
-        try {
-            boolean signVerified = AlipaySignature.rsaCheckV1(
-                    params,
-                    alipayConfig.getPublicKey(),
-                    alipayConfig.getCharset(),
-                    alipayConfig.getSignType()
-            );
-
-            if (signVerified) {
-                // 验签成功
-                String outTradeNo = params.get("out_trade_no");
-                String tradeNo = params.get("trade_no");
-                String totalAmount = params.get("total_amount");
-                
-                // 处理业务逻辑
-                log.info("支付宝同步回调：订单[{}]支付成功，交易号：{}", outTradeNo, tradeNo);
-                
-                // 返回结果，可以是跳转到成功页面
-                return "支付成功";
-            } else {
-                // 验签失败
-                log.error("支付宝同步回调验签失败");
-                return "验签失败";
-            }
-        } catch (AlipayApiException e) {
-            log.error("支付宝同步回调处理异常", e);
-            return "处理异常";
+    public PaymentRefundNotifyResult parseRefundNotify(Long tenantId, Map<String, String> params) {
+        if (!verifyNotify(tenantId, params)) {
+            throw new BusinessException("支付宝退款回调验签失败");
         }
+        PaymentRefundNotifyResult result = new PaymentRefundNotifyResult();
+        result.setOutTradeNo(params.get("out_trade_no"));
+        result.setOutRefundNo(params.get("out_biz_no"));
+        result.setChannelRefundId(params.get("trade_no"));
+        result.setAppId(params.get("app_id"));
+        result.setMerchantMatched(true);
+        String refundFee = params.get("refund_fee");
+        if (refundFee != null && !refundFee.isBlank()) {
+            result.setRefundAmount(new BigDecimal(refundFee));
+        }
+        result.setStatus("SUCCESS");
+        return result;
     }
 
-    /**
-     * 将请求参数转换为Map
-     */
-    private Map<String, String> convertRequestParamsToMap(HttpServletRequest request) {
-        Map<String, String> params = new HashMap<>();
-        Map<String, String[]> requestParams = request.getParameterMap();
-        for (String name : requestParams.keySet()) {
-            String[] values = requestParams.get(name);
-            String valueStr = "";
-            for (int i = 0; i < values.length; i++) {
-                valueStr = (i == values.length - 1) ? valueStr + values[i] : valueStr + values[i] + ",";
-            }
-            params.put(name, valueStr);
-        }
-        return params;
+    private Map<String, Object> base(boolean success, String code, String msg, String subCode, String subMsg) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", success);
+        result.put("code", code);
+        result.put("msg", msg);
+        result.put("subCode", subCode);
+        result.put("subMsg", subMsg);
+        return result;
     }
 
+    private Map<String, Object> outcome(String outcome, String message) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", true);
+        result.put("outcome", outcome);
+        result.put("msg", message);
+        return result;
+    }
 
-    /**
-     * 添加非空参数到Map
-     */
-    private void addIfNotEmpty(Map<String, Object> map, String key, String value) {
-        if (value != null && !value.isEmpty()) {
-            map.put(key, value);
+    private Map<String, Object> unknown(String message) {
+        Map<String, Object> result = outcome("UNKNOWN", message);
+        result.put("success", false);
+        return result;
+    }
+
+    private void put(Map<String, Object> target, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            target.put(key, value);
         }
     }
-} 
+}
