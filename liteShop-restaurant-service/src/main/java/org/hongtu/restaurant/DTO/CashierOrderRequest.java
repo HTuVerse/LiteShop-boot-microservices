@@ -16,6 +16,9 @@ import java.util.List;
 @Data
 public class CashierOrderRequest {
 
+    /** 收银直接下单幂等键，同一次收款重试必须保持不变。 */
+    private String idempotencyKey;
+
     /**
      * 门店ID（可选，如果不传则使用默认门店）
      */
@@ -67,6 +70,11 @@ public class CashierOrderRequest {
      * 实收金额（现金支付时可能与订单金额不同，用于找零）
      */
     private BigDecimal actualAmount;
+
+    /**
+     * 顾客付款码（扫码枪读取，一次性）。仅扫码支付（被扫）使用。
+     */
+    private String authCode;
 
     /**
      * 购物车商品列表

@@ -19,6 +19,10 @@ import org.hongtu.restaurant.enums.OrderStatusEnum;
 import org.hongtu.restaurant.enums.PaymentTypeEnum;
 import org.hongtu.restaurant.service.RestaurantOrderService;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
+import org.hongtu.api.client.UserFeignClient;
+import org.hongtu.api.util.FeignResultUtil;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -44,6 +48,12 @@ public class RestaurantOrderController {
     private RestaurantOrderService restaurantOrderService;
     @Resource
     private TableSessionService tableSessionService;
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
+    @Resource
+    private UserFeignClient userFeignClient;
+    @Resource
+    private HttpServletRequest currentRequest;
 
     /**
      * 创建订单（从购物车生成订单）
@@ -51,30 +61,82 @@ public class RestaurantOrderController {
      * @return 创建的订单信息（包含订单明细）
      */
     @PostMapping("/create")
-    public Result<RestaurantOrderVO> createOrder(@RequestBody CreateOrderRequest request) {
+    public Result<RestaurantOrderVO> createOrder(
+            @RequestBody CreateOrderRequest request,
+            @RequestHeader(value = TableSessionTokenService.HEADER_NAME, required = false) String sessionToken) {
         try {
-            // 打印接收到的优惠券ID列表（调试用）
-            log.info("[createOrder] 接收到的优惠券ID列表: userCouponIds={}, 类型={}",
-                    request.getUserCouponIds(),
-                    request.getUserCouponIds() != null ? request.getUserCouponIds().getClass().getName() : "null");
-
             // 参数校验
+            if (StrUtil.isBlank(request.getIdempotencyKey())
+                    || request.getIdempotencyKey().length() < 8
+                    || request.getIdempotencyKey().length() > 64) {
+                return Result.error("下单幂等键长度必须为8到64个字符");
+            }
             if (request.getCartItems() == null || request.getCartItems().isEmpty()) {
                 return Result.error("购物车不能为空");
             }
             if (request.getTotalPrice() == null || request.getTotalPrice().doubleValue() < 0) {
                 return Result.error("订单金额不正确");
             }
-            if(!StrUtil.isBlank(request.getSessionNo())){
+            boolean cashierOperator = isCashierOperator();
+            request.setUserId(StpUtil.getLoginIdAsLong());
+            if (!StrUtil.isBlank(request.getSessionNo())) {
+                if (!cashierOperator) {
+                    tableSessionTokenService.verifyForSession(
+                            sessionToken, request.getSessionNo(), org.hongtu.tenant.TenantContext.getTenantId());
+                }
                 tableSessionService.validateSession(request.getSessionNo());
             }
             // 创建订单
             RestaurantOrderVO response = restaurantOrderService.createOrder(request);
             return Result.success("创建订单成功", response);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("创建订单失败：" + e.getMessage());
+        } catch (DuplicateKeyException e) {
+            RestaurantOrderVO existing = restaurantOrderService.getByRequestKey(request.getIdempotencyKey());
+            return existing == null
+                    ? Result.error("订单正在创建，请使用相同幂等键重试")
+                    : Result.success("重复请求，返回已创建订单", existing);
         }
+    }
+
+    /**
+     * 收银员代会员下单。会员归属、优惠券和会员价只使用这里指定的会员，不接受普通下单接口里的 userId。
+     */
+    @PostMapping("/cashier/proxyOrder")
+    @SaCheckPermission(value = {"operations:direct-cashier", "operations:table-cashier", "operations:console"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<RestaurantOrderVO> proxyCreateOrder(@RequestBody CreateOrderRequest request) {
+        try {
+            if (StrUtil.isBlank(request.getIdempotencyKey())
+                    || request.getIdempotencyKey().length() < 8
+                    || request.getIdempotencyKey().length() > 64) {
+                return Result.error("下单幂等键长度必须为8到64个字符");
+            }
+            if (request.getUserId() == null) {
+                return Result.error("代客下单必须指定会员");
+            }
+            if (request.getCartItems() == null || request.getCartItems().isEmpty()) {
+                return Result.error("购物车不能为空");
+            }
+            if (FeignResultUtil.unwrap(userFeignClient.getUserById(request.getUserId())) == null) {
+                return Result.error("所选会员不存在");
+            }
+            if (!StrUtil.isBlank(request.getSessionNo())) {
+                tableSessionService.validateSession(request.getSessionNo());
+            }
+            Long operatorId = StpUtil.getLoginIdAsLong();
+            RestaurantOrderVO response = restaurantOrderService.createProxyOrder(request, request.getUserId(), operatorId);
+            return Result.success("代客下单成功", response);
+        } catch (DuplicateKeyException e) {
+            RestaurantOrderVO existing = restaurantOrderService.getByRequestKey(request.getIdempotencyKey());
+            return existing == null
+                    ? Result.error("订单正在创建，请使用相同幂等键重试")
+                    : Result.success("重复请求，返回已创建订单", existing);
+        }
+    }
+
+    private boolean isCashierOperator() {
+        return StpUtil.hasRole("SUPER_ADMIN") || List.of(
+                "restaurant:order", "operations:direct-cashier",
+                "operations:table-cashier", "operations:console")
+                .stream().anyMatch(StpUtil::hasPermission);
     }
 
     /**
@@ -95,7 +157,7 @@ public class RestaurantOrderController {
      */
     @PostMapping("/addItems")
     public Result<RestaurantOrderVO> addItemsToOrder(@RequestBody AddItemsRequest request) {
-        try {
+        
             // 参数校验
             if (request.getOrderId() == null) {
                 return Result.error("订单ID不能为空");
@@ -115,10 +177,7 @@ public class RestaurantOrderController {
             RestaurantOrderVO response = restaurantOrderService.addItemsToOrder(request);
             return Result.success("追加菜品成功", response);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("追加菜品失败：" + e.getMessage());
-        }
+        
     }
 
     // ================== 退菜功能 ==================
@@ -154,7 +213,7 @@ public class RestaurantOrderController {
     @PostMapping("/refundDish")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:refund", "operations:direct-cashier:refund", "operations:table-cashier:refund", "operations:console:refund"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<RefundDishVO> refundDish(@RequestBody RefundDishRequest request) {
-        try {
+        
             // 参数校验
             if (request.getOrderId() == null) {
                 return Result.error("订单ID不能为空");
@@ -164,6 +223,10 @@ public class RestaurantOrderController {
             }
             if (request.getRefundReason() == null || request.getRefundReason().trim().isEmpty()) {
                 return Result.error("退菜原因不能为空");
+            }
+            if (request.getIdempotencyKey() == null
+                    || !request.getIdempotencyKey().matches("[A-Za-z0-9_-]{8,64}")) {
+                return Result.error("退菜幂等键格式错误");
             }
 
             // 校验退菜项
@@ -176,27 +239,14 @@ public class RestaurantOrderController {
                 }
             }
 
-            // 获取当前登录管理员信息（如果需要）
-            if (request.getOperatorId() == null) {
-                try {
-                    Long operatorId = StpUtil.getLoginIdAsLong();
-                    request.setOperatorId(operatorId);
-                } catch (Exception e) {
-                    log.warn("获取登录管理员信息失败", e);
-                }
-            }
+            // 审计操作人只取当前登录账号，禁止客户端伪造 operatorId。
+            request.setOperatorId(StpUtil.getLoginIdAsLong());
 
             // 调用业务层处理退菜
             RefundDishVO result = restaurantOrderService.refundDish(request);
             return Result.success("退菜成功", result);
 
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            log.error("退菜失败: {}", e.getMessage());
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            log.error("退菜异常", e);
-            return Result.error("退菜失败：" + e.getMessage());
-        }
+        
     }
 
     // ================== 赠菜（标记已有订单项） ==================
@@ -219,7 +269,7 @@ public class RestaurantOrderController {
     @PostMapping("/markOrderItemsGift")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:gift", "operations:direct-cashier:gift", "operations:table-cashier:gift", "operations:console:gift"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<RestaurantOrderVO> markOrderItemsGift(@RequestBody MarkOrderItemsGiftRequest request) {
-        try {
+        
             if (request.getOrderId() == null) {
                 return Result.error("订单ID不能为空");
             }
@@ -234,10 +284,7 @@ public class RestaurantOrderController {
             }
             RestaurantOrderVO response = restaurantOrderService.markOrderItemsGift(request);
             return Result.success(request.getIsGift() == 1 ? "赠菜成功" : "已取消赠菜", response);
-        } catch (Exception e) {
-            log.error("标记赠菜失败", e);
-            return Result.error("操作失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -249,10 +296,11 @@ public class RestaurantOrderController {
      */
     @GetMapping("/getBySessionNo")
     public Result<RestaurantOrderVO> getOrderBySessionNo(@RequestParam String sessionNo) {
-        try {
+        
             if (sessionNo == null || sessionNo.isEmpty()) {
                 return Result.error("会话编号不能为空");
             }
+            requireSessionAccess(sessionNo);
             tableSessionService.validateSession(sessionNo);
 
             RestaurantOrder order = restaurantOrderService.getOrderBySessionNo(sessionNo);
@@ -263,10 +311,7 @@ public class RestaurantOrderController {
             RestaurantOrderVO orderVO = restaurantOrderService.getOrderDetail(order.getId());
             return Result.success("查询成功", orderVO);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -278,17 +323,14 @@ public class RestaurantOrderController {
     @PutMapping("/updateStatus")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:status", "operations:direct-cashier:status", "operations:table-cashier:status", "operations:console:status"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> updateOrderStatus(@RequestParam Long orderId, @RequestParam Integer status) {
-        try {
+        
             OrderStatusEnum statusEnum = OrderStatusEnum.getByCode(status);
             if (statusEnum == null) {
                 return Result.error("无效的订单状态");
             }
             boolean success = restaurantOrderService.updateOrderStatus(orderId, statusEnum);
             return success ? Result.success("更新订单状态成功", true) : Result.error("更新订单状态失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("更新订单状态失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -300,14 +342,11 @@ public class RestaurantOrderController {
     @PostMapping("/cancel")
     public Result<Boolean> cancelOrder(@RequestParam Long orderId,
                                        @RequestParam(required = false) String cancelReason) {
-        try {
+        
             requireOrderAccess(orderId, null, "cancel");
             boolean success = restaurantOrderService.cancelOrder(orderId, cancelReason);
             return success ? Result.success("取消订单成功", true) : Result.error("取消订单失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("取消订单失败：" + e.getMessage());
-        }
+        
     }
 
 
@@ -319,7 +358,7 @@ public class RestaurantOrderController {
      */
     @PostMapping("/issuePay")
     public Result<PaymentResponse> createPayment(@RequestBody PaymentRequest request) {
-        try {
+        
             // 参数校验
             if (request.getOrderId() == null) {
                 return Result.error("订单ID不能为空");
@@ -354,12 +393,7 @@ public class RestaurantOrderController {
 
             return Result.success("发起支付成功", response);
 
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("发起支付失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -371,7 +405,7 @@ public class RestaurantOrderController {
      */
     @GetMapping("/queryPayStatus")
     public Result<PaymentStatusVO> getPaymentStatus(@RequestParam Long orderId) {
-        try {
+        
             // 参数校验
             if (orderId == null) {
                 return Result.error("订单ID不能为空");
@@ -382,12 +416,7 @@ public class RestaurantOrderController {
             PaymentStatusVO statusInfo = restaurantOrderService.getPaymentStatus(orderId);
             return Result.success("查询支付状态成功", statusInfo);
 
-        } catch (IllegalStateException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询支付状态失败：" + e.getMessage());
-        }
+        
     }
 
 
@@ -400,7 +429,7 @@ public class RestaurantOrderController {
      */
     @PostMapping("/onlineQueryPayResult")
     public Result<Boolean> queryPaymentResult(@RequestParam Long orderId) {
-        try {
+        
             // 参数校验
             if (orderId == null) {
                 return Result.error("订单ID不能为空");
@@ -411,19 +440,14 @@ public class RestaurantOrderController {
             boolean isPaid = restaurantOrderService.queryAndUpdatePaymentStatus(orderId);
             return Result.success(isPaid ? "订单支付成功" : "订单未支付", isPaid);
 
-        } catch (IllegalStateException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询支付结果失败：" + e.getMessage());
-        }
+        
     }
 
     /**
      * 微信支付回调接口（由微信支付平台异步调用）
      *
      * 【重要】配置微信支付回调地址时，设置为：
-     * https://your-domain.com/restaurant-order/pay/wechat/notify
+     * https://your-domain.com/restaurant-order/wechatPay/notify/{tenantId}
      *
      * 接口说明：
      * 1. 此接口由微信支付平台在支付成功后异步调用
@@ -446,9 +470,18 @@ public class RestaurantOrderController {
      */
     @PostMapping("/wechatPay/notify")
     @SaIgnore
-    public String handleWeChatPayNotify(HttpServletRequest request, @RequestBody String requestBody) {
+    public String handleWeChatPayNotifyLegacy() {
+        return "{\"code\": \"FAIL\", \"message\": \"缺少租户\"}";
+    }
+
+    /**
+     * 微信支付回调。路径中的租户只用于选择密钥。
+     */
+    @PostMapping("/wechatPay/notify/{tenantId}")
+    @SaIgnore
+    public String handleWeChatPayNotify(@PathVariable Long tenantId, HttpServletRequest request,
+                                        @RequestBody String requestBody) {
         try {
-            // 1. 获取请求头中的签名信息（用于验签）
             String signature = request.getHeader("Wechatpay-Signature");
             String timestamp = request.getHeader("Wechatpay-Timestamp");
             String nonce = request.getHeader("Wechatpay-Nonce");
@@ -468,14 +501,25 @@ public class RestaurantOrderController {
             if (requestBody == null || requestBody.isEmpty()) {
                 return "{\"code\": \"FAIL\", \"message\": \"请求体为空\"}";
             }
-            // 这里复用支付模块的验签和解密功能，但由餐厅模块自己处理业务逻辑
-            String result = restaurantOrderService.handleWeChatPayNotify(
-                    requestBody, signature, timestamp, nonce, serial);
-
-            return result;
-
+            return restaurantOrderService.handleWeChatPayNotify(
+                    tenantId, requestBody, signature, timestamp, nonce, serial);
         } catch (Exception e) {
-            // 返回失败响应，微信会稍后重试
+            return "{\"code\": \"FAIL\", \"message\": \"系统异常\"}";
+        }
+    }
+
+    /**
+     * 微信退款回调。核对退款单、原订单和金额后才入账。
+     */
+    @PostMapping("/wechatPay/refund-notify/{tenantId}")
+    @SaIgnore
+    public String handleWeChatRefundNotify(@PathVariable Long tenantId, HttpServletRequest request,
+                                           @RequestBody String requestBody) {
+        try {
+            return restaurantOrderService.handleWeChatRefundNotify(tenantId, requestBody,
+                    request.getHeader("Wechatpay-Signature"), request.getHeader("Wechatpay-Timestamp"),
+                    request.getHeader("Wechatpay-Nonce"), request.getHeader("Wechatpay-Serial"));
+        } catch (Exception e) {
             return "{\"code\": \"FAIL\", \"message\": \"系统异常\"}";
         }
     }
@@ -484,31 +528,51 @@ public class RestaurantOrderController {
      * 支付宝支付回调接口（由支付宝平台异步调用）
      *
      * 【重要】配置支付宝回调地址时，设置为：
-     * https://your-domain.com/restaurant-order/pay/alipay/notify
+     * https://your-domain.com/restaurant-order/alipayPay/notify/{tenantId}
      *
      * @param request 请求对象
      * @return 处理结果（支付宝要求返回"success"或"failure"）
      */
     @PostMapping("/alipayPay/notify")
     @SaIgnore
-    public String handleAlipayNotify(HttpServletRequest request) {
+    public String handleAlipayNotifyLegacy() {
+        return "failure";
+    }
 
+    /**
+     * 支付宝支付回调。路径中的租户只用于选择密钥。
+     */
+    @PostMapping("/alipayPay/notify/{tenantId}")
+    @SaIgnore
+    public String handleAlipayNotify(@PathVariable Long tenantId, HttpServletRequest request) {
         try {
-            // 获取支付宝POST过来的所有参数
-            Map<String, String> params = new HashMap<>();
-            request.getParameterMap().forEach((key, values) -> {
-                if (values != null && values.length > 0) {
-                    params.put(key, values[0]);
-                }
-            });
-            // 调用服务层处理支付宝回调
-            String result = restaurantOrderService.handleAlipayNotify(params);
-
-            return result;
-
+            return restaurantOrderService.handleAlipayNotify(tenantId, readNotifyParams(request));
         } catch (Exception e) {
             return "failure";
         }
+    }
+
+    /**
+     * 支付宝退款通知。核对退款单后再入账。
+     */
+    @PostMapping("/alipayPay/refund-notify/{tenantId}")
+    @SaIgnore
+    public String handleAlipayRefundNotify(@PathVariable Long tenantId, HttpServletRequest request) {
+        try {
+            return restaurantOrderService.handleAlipayRefundNotify(tenantId, readNotifyParams(request));
+        } catch (Exception e) {
+            return "failure";
+        }
+    }
+
+    private Map<String, String> readNotifyParams(HttpServletRequest request) {
+        Map<String, String> params = new HashMap<>();
+        request.getParameterMap().forEach((key, values) -> {
+            if (values != null && values.length > 0) {
+                params.put(key, values[0]);
+            }
+        });
+        return params;
     }
 
     /**
@@ -522,7 +586,7 @@ public class RestaurantOrderController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:cancel", "operations:direct-cashier:cancel", "operations:table-cashier:cancel", "operations:console:cancel"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> handlePaymentTimeout(@RequestParam Long orderId,
                                                 @RequestParam(required = false) String reason) {
-        try {
+        
             // 参数校验
             if (orderId == null) {
                 return Result.error("订单ID不能为空");
@@ -532,10 +596,7 @@ public class RestaurantOrderController {
             boolean success = restaurantOrderService.handlePaymentTimeout(orderId, reason);
             return success ? Result.success("支付超时处理成功", true) : Result.error("支付超时处理失败");
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("支付超时处理失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -550,7 +611,7 @@ public class RestaurantOrderController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:cancel", "operations:direct-cashier:cancel", "operations:table-cashier:cancel", "operations:console:cancel"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> handlePaymentError(@RequestParam Long orderId,
                                               @RequestParam(required = false) String reason) {
-        try {
+        
             // 参数校验
             if (orderId == null) {
                 return Result.error("订单ID不能为空");
@@ -560,10 +621,7 @@ public class RestaurantOrderController {
             boolean success = restaurantOrderService.handlePaymentError(orderId, reason);
             return success ? Result.success("支付失败处理成功", true) : Result.error("支付失败处理失败");
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("支付失败处理失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -574,13 +632,10 @@ public class RestaurantOrderController {
     @DeleteMapping("/delete")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:delete", "operations:direct-cashier:delete", "operations:table-cashier:delete", "operations:console:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> deleteOrder(@RequestParam Long id) {
-        try {
+        
             boolean success = restaurantOrderService.removeById(id);
             return success ? Result.success("删除订单成功", true) : Result.error("删除订单失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("删除订单失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -591,16 +646,13 @@ public class RestaurantOrderController {
     @DeleteMapping("/batchDelete")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:delete", "operations:direct-cashier:delete", "operations:table-cashier:delete", "operations:console:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> batchDeleteOrder(@RequestBody List<Long> ids) {
-        try {
+        
             if (ids == null || ids.isEmpty()) {
                 return Result.error("订单ID列表不能为空");
             }
             boolean success = restaurantOrderService.removeByIds(ids);
             return success ? Result.success("批量删除订单成功", true) : Result.error("批量删除订单失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("批量删除订单失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -629,16 +681,13 @@ public class RestaurantOrderController {
             @RequestParam(required = false) Integer paymentStatus,
             @RequestParam(required = false) String phoneNumber
     ) {
-        try {
+        
             Page<RestaurantOrderVO> page = restaurantOrderService.getOrderPage(
                     currentPage, pageSize, storeId, tableId, userId,
                     orderType, status, paymentStatus, phoneNumber
             );
             return Result.success("查询订单列表成功", page);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询订单列表失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -660,22 +709,20 @@ public class RestaurantOrderController {
             @RequestParam(required = false) Integer SceneType,
             @RequestParam(defaultValue = "1") Integer currentPage,
             @RequestParam(defaultValue = "10") Integer pageSize) {
-        try {
+        
             // 如果没有传userId，使用当前登录用户ID
             Long userId = StpUtil.getLoginIdAsLong();
             if(userId==null){
                 return Result.error(CODE_UNAUTHORIZED,"请先登录");
             }
             if (StrUtil.isNotBlank(sessionNo)) {
+                requireSessionAccess(sessionNo);
                 tableSessionService.validateSession(sessionNo);
             }
             Page<RestaurantOrderVO> orders = restaurantOrderService.getOrdersByUserId(
                     userId, sessionNo, SceneType, currentPage, pageSize);
             return Result.success("查询用户订单成功", orders);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询用户订单失败：" + e.getMessage());
-        }
+        
     }
 
 
@@ -689,14 +736,11 @@ public class RestaurantOrderController {
         if (orderId == null){
             return Result.error("订单ID不能为空");
         }
-        try {
+        
             requireOrderAccess(orderId, null, "");
             RestaurantOrderVO orderDetail = restaurantOrderService.getOrderDetail(orderId);
             return Result.success("查询订单详情成功", orderDetail);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询订单详情失败：" + e.getMessage());
-        }
+        
     }
 
     // ================== 优惠券计算接口 ==================
@@ -720,14 +764,13 @@ public class RestaurantOrderController {
      * @return 计算结果
      */
     @GetMapping("/calc-coupon-discount")
-    public Result calcCouponDiscount(@RequestParam List<Long> userCouponIds,@RequestParam BigDecimal orderTotalAmount) {
-        try {
+    public Result calcCouponDiscount(@RequestParam List<Long> userCouponIds,
+                                     @RequestParam BigDecimal orderTotalAmount,
+                                     @RequestParam(required = false) Long storeId) {
+        
             Long userId = StpUtil.getLoginIdAsLong();
-            return restaurantOrderService.calcCouponDiscount(userId, userCouponIds,orderTotalAmount);
-        } catch (Exception e) {
-            log.error("计算优惠金额失败", e);
-            return Result.error("计算失败：" + e.getMessage());
-        }
+            return restaurantOrderService.calcCouponDiscount(userId, userCouponIds, orderTotalAmount, storeId);
+        
     }
 
     /**
@@ -750,10 +793,21 @@ public class RestaurantOrderController {
             return;
         }
         if (StrUtil.isNotBlank(sessionNo) && Objects.equals(sessionNo, order.getSessionNo())) {
+            requireSessionAccess(sessionNo);
             tableSessionService.validateSession(sessionNo);
             return;
         }
         throw new SecurityException("无权访问该订单");
+    }
+
+    private void requireSessionAccess(String sessionNo) {
+        if (isCashierOperator()) {
+            return;
+        }
+        tableSessionTokenService.verifyForSession(
+                currentRequest.getHeader(TableSessionTokenService.HEADER_NAME),
+                sessionNo,
+                org.hongtu.tenant.TenantContext.getTenantId());
     }
 
     // ================== 收银台专用接口 ==================
@@ -767,7 +821,7 @@ public class RestaurantOrderController {
      * - 需要对接收银台的扫码枪设备
      *
      * 接口流程：
-     * 1. 创建订单（状态为待支付）
+     * 1. 创建订单（履约状态为已下单、支付状态为未支付）
      * 2. 调用支付平台的扫码付接口
      * 3. 等待支付回调
      * 4. 回调成功后更新订单状态
@@ -778,7 +832,7 @@ public class RestaurantOrderController {
     @PostMapping("/cashier/scanPay")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:settle", "operations:direct-cashier:settle", "operations:table-cashier:settle", "operations:console:settle"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Map<String, Object>> cashierScanPay(@RequestBody CashierOrderRequest request) {
-        try {
+        
             // 参数校验
             if (request.getCartItems() == null || request.getCartItems().isEmpty()) {
                 return Result.error("购物车不能为空");
@@ -789,22 +843,15 @@ public class RestaurantOrderController {
             if (request.getPaymentType() == null) {
                 return Result.error("请选择支付方式");
             }
+            if (request.getAuthCode() == null || request.getAuthCode().isBlank()) {
+                return Result.error("请扫描顾客付款码");
+            }
 
-            // 暂未开放
-            return Result.error("扫码支付功能暂未开放，敬请期待");
-
-            // TODO: 实现扫码支付逻辑
-            // RestaurantOrderVO orderVO = restaurantOrderService.cashierScanPay(request);
-            // Map<String, Object> result = new HashMap<>();
-            // result.put("order", orderVO);
-            // result.put("qrCode", "支付二维码URL");
-            // return Result.success("扫码支付订单已创建", result);
-
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            return Result.error("扫码支付失败：" + e.getMessage());
-        }
+            // 扫码支付（被扫）：发起付款码扣款，成功后返回已支付订单。
+            RestaurantOrderVO orderVO = restaurantOrderService.cashierScanPay(request);
+            Map<String, Object> result = new HashMap<>();
+            result.put("order", orderVO);
+            return Result.success("扫码支付成功", result);
     }
 
     /**
@@ -827,6 +874,11 @@ public class RestaurantOrderController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:settle", "operations:direct-cashier:settle", "operations:table-cashier:settle", "operations:console:settle"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<RestaurantOrderVO> cashierDirectOrder(@RequestBody CashierOrderRequest request) {
         try {
+            if (StrUtil.isBlank(request.getIdempotencyKey())
+                    || request.getIdempotencyKey().length() < 8
+                    || request.getIdempotencyKey().length() > 64) {
+                return Result.error("收银幂等键长度必须为8到64个字符");
+            }
             if (request.getCartItems() == null || request.getCartItems().isEmpty()) {
                 return Result.error("购物车不能为空");
             }
@@ -837,10 +889,11 @@ public class RestaurantOrderController {
             RestaurantOrderVO orderVO = restaurantOrderService.cashierDirectOrder(request);
             return Result.success("订单创建成功", orderVO);
 
-        } catch (IllegalStateException | IllegalArgumentException | org.hongtu.exception.BusinessException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            return Result.error("订单创建失败：" + e.getMessage());
+        } catch (DuplicateKeyException e) {
+            RestaurantOrderVO existing = restaurantOrderService.getByRequestKey(request.getIdempotencyKey());
+            return existing == null
+                    ? Result.error("订单正在创建，请使用相同幂等键重试")
+                    : Result.success("重复请求，返回已创建订单", existing);
         }
     }
 
@@ -865,7 +918,7 @@ public class RestaurantOrderController {
     @PostMapping("/cashier/settleSession")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:order:settle", "operations:direct-cashier:settle", "operations:table-cashier:settle", "operations:console:settle"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<RestaurantOrderVO> cashierSettleSession(@RequestBody CashierSettleSessionRequest request) {
-        try {
+        
             if (StrUtil.isBlank(request.getSessionNo())) {
                 return Result.error("会话编号不能为空");
             }
@@ -876,11 +929,7 @@ public class RestaurantOrderController {
             RestaurantOrderVO orderVO = restaurantOrderService.cashierSettleSession(request);
             return Result.success("结算成功", orderVO);
 
-        } catch (IllegalStateException | IllegalArgumentException e) {
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            return Result.error("结算失败：" + e.getMessage());
-        }
+        
     }
 
 }

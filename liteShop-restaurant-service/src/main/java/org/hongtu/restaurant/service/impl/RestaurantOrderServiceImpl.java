@@ -4,7 +4,9 @@ import cn.dev33.satoken.stp.StpUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.Result.Result;
@@ -20,8 +22,11 @@ import org.hongtu.restaurant.DTO.*;
 import org.hongtu.restaurant.VO.*;
 import org.hongtu.restaurant.convert.RestaurantOrderConverter;
 import org.hongtu.restaurant.enums.*;
+import org.hongtu.restaurant.enums.PricingEnums.AdjustmentType;
 import org.hongtu.restaurant.netty.NettyWebSocketPushService;
 import org.hongtu.restaurant.service.*;
+import org.hongtu.restaurant.utils.CashierAmountGuard;
+import org.hongtu.restaurant.utils.ChannelPayment;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.hongtu.DTO.Coupon;
 import org.hongtu.DTO.CouponDishItem;
@@ -32,22 +37,42 @@ import org.hongtu.api.client.CouponFeignClient;
 import org.hongtu.api.client.PayFeignClient;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.restaurant.payment.PaymentNotifyUrls;
+import org.hongtu.restaurant.payment.ScanPayOutcome;
+import org.hongtu.restaurant.payment.PaymentTransitionPolicy;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.hongtu.tenant.TenantScope;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.Collections;
 import java.util.stream.Collectors;
+import org.hongtu.utils.RedisCache;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 import static org.hongtu.enums.CodeMsg.ORDER_CANCEL_FAIL;
 import static org.hongtu.enums.CodeMsg.ORDER_NOT_EXIST;
@@ -64,6 +89,9 @@ import static org.hongtu.enums.CodeMsg.ORDER_NOT_EXIST;
 @Slf4j
 public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMapper, RestaurantOrder> implements RestaurantOrderService {
 
+    /** 仅代客下单入口写入，普通下单必须忽略请求体里的 userId。 */
+    private static final ThreadLocal<Long> PROXY_MEMBER_ID = new ThreadLocal<>();
+
     @Resource
     private RestaurantOrderItemService restaurantOrderItemService;
     @Resource
@@ -73,6 +101,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      */
     @Resource
     private PayFeignClient payFeignClient;
+    @Resource
+    private org.hongtu.restaurant.payment.ScanPayCharger scanPayCharger;
     @Resource
     RestaurantOrderConverter restaurantOrderConverter;
     @Resource
@@ -95,6 +125,34 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     private CouponFeignClient couponFeignClient;
     @Resource
     private StoreDataScopeService storeDataScopeService;
+    @Resource
+    private PricingService pricingService;
+    @Resource
+    private OrderPriceAdjustmentMapper orderPriceAdjustmentMapper;
+    @Resource
+    private OrderDishChangeLogMapper orderDishChangeLogMapper;
+    @Resource
+    private RedisCache redisCache;
+    @Resource
+    private LocalOutboxService localOutboxService;
+    @Resource
+    private OrderRefundMapper orderRefundMapper;
+    @Resource
+    private OrderRefundItemMapper orderRefundItemMapper;
+    @Resource
+    private PlatformTransactionManager transactionManager;
+    private TransactionTemplate independentTx;
+    @Value("${liteshop.payment.wechat-notify-url:}")
+    private String weChatOrderNotifyUrl;
+    @Value("${liteshop.payment.alipay-notify-url:}")
+    private String alipayOrderNotifyUrl;
+
+    /** 支付和退款使用独立事务，避免渠道调用还在进行时占着订单行锁。 */
+    @PostConstruct
+    public void initPaymentTransaction() {
+        independentTx = new TransactionTemplate(transactionManager);
+        independentTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
 
     /**
      * 创建订单（用户端）
@@ -103,33 +161,76 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public RestaurantOrderVO createProxyOrder(CreateOrderRequest request, Long memberUserId, Long operatorId) {
+        if (memberUserId == null || operatorId == null) {
+            throw new BusinessException("代客下单必须指定会员和操作人");
+        }
+        PROXY_MEMBER_ID.set(memberUserId);
+        try {
+            RestaurantOrderVO created = createOrder(request);
+            log.info("代客下单审计: operatorId={}, memberUserId={}, storeId={}, requestKey={}, orderNo={}",
+                    operatorId, memberUserId, request.getStoreId(), request.getIdempotencyKey(), created.getOrderNo());
+            return created;
+        } finally {
+            PROXY_MEMBER_ID.remove();
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public RestaurantOrderVO createOrder(CreateOrderRequest request) {
+        Long proxyMemberId = PROXY_MEMBER_ID.get();
+        request.setUserId(proxyMemberId != null ? proxyMemberId : StpUtil.getLoginIdAsLong());
         storeDataScopeService.checkStoreAccess(request.getStoreId());
-        // 【重要】检查会话是否已有订单，避免重复创建
+        RestaurantOrder existingByKey = findByRequestKey(request.getIdempotencyKey());
+        if (existingByKey != null) {
+            validateIdempotentReplay(existingByKey, request);
+            return restaurantOrderConverter.toVO(existingByKey);
+        }
+        // 同一会话只允许一笔未取消订单。行锁之后再用条件更新绑定 current_order_id。
+        TableSession lockedSession = null;
         if (request.getSessionNo() != null && !request.getSessionNo().isEmpty()) {
-            RestaurantOrder existOrder = getOrderBySessionNo(request.getSessionNo());
+            lockedSession = tableSessionService.getOne(new LambdaQueryWrapper<TableSession>()
+                    .eq(TableSession::getSessionNo, request.getSessionNo())
+                    .last("FOR UPDATE"));
+            if (lockedSession == null || lockedSession.getStatus() != SessionStatusEnum.IN_PROGRESS) {
+                throw new BusinessException("桌台会话不存在或已结束");
+            }
+            if (!java.util.Objects.equals(request.getStoreId(), lockedSession.getStoreId())
+                    || !java.util.Objects.equals(request.getTableId(), lockedSession.getTableId())) {
+                throw new BusinessException("订单门店或桌台与会话不匹配");
+            }
+            // 获得会话行锁后再次检查幂等键，串行化同一桌台的并发下单。
+            existingByKey = findByRequestKey(request.getIdempotencyKey());
+            if (existingByKey != null) {
+                validateIdempotentReplay(existingByKey, request);
+                return restaurantOrderConverter.toVO(existingByKey);
+            }
+            RestaurantOrder existOrder = findOpenOrderBySession(lockedSession);
             if (existOrder != null) {
                 throw new BusinessException("该会话已存在订单（订单号：" + existOrder.getOrderNo() +
                         "），请使用追加菜品功能，避免创建重复订单");
             }
         }
 
-        // 1. 验证前端传来的菜品数据（包括原价、规格等，前端始终传原价）
-        validateCreateOrderCartItems(request.getCartItems());
+        // 1. 仅校验菜品及规格；所有价格均由服务端统一试价覆盖。
+        validateCreateOrderCartItems(request.getStoreId(), request.getCartItems());
+        PricingQuoteVO pricingQuote = quoteCreateItems(request.getStoreId(), request.getUserId(), request.getCartItems());
 
-        // 2. 后端重新计算原价总金额（防止前端篡改数据）
-        BigDecimal calculatedTotalAmount = BigDecimal.ZERO;
-        for (CreateOrderRequest.CartItem cartItem : request.getCartItems()) {
+        // 2. 后端计算正常售价、会员/活动优惠及赠送金额。
+        BigDecimal calculatedTotalAmount = pricingQuote.getListAmount();
+        BigDecimal pricingPayableAmount = BigDecimal.ZERO;
+        for (int i = 0; i < request.getCartItems().size(); i++) {
+            CreateOrderRequest.CartItem cartItem = request.getCartItems().get(i);
             if (cartItem.getIsGift() != null && cartItem.getIsGift() == 1) {
                 org.hongtu.security.OperationPermission.order("gift");
-                continue; // 赠送菜品不计入总价
+                continue;
             }
-            BigDecimal itemPrice = cartItem.getPrice() != null ?
-                    cartItem.getPrice() : cartItem.getBasePrice();
-            BigDecimal itemTotal = itemPrice.multiply(new BigDecimal(cartItem.getQuantity()));
-            calculatedTotalAmount = calculatedTotalAmount.add(itemTotal);
+            pricingPayableAmount = pricingPayableAmount.add(pricingQuote.getLines().get(i).getLinePayableAmount());
         }
-        log.info("后端计算原价总金额：{}", calculatedTotalAmount);
+        BigDecimal pricingDiscountAmount = calculatedTotalAmount.subtract(pricingPayableAmount).max(BigDecimal.ZERO);
+        log.info("统一定价完成：正常售价={}，活动/会员/赠送优惠={}，活动后应付={}",
+                calculatedTotalAmount, pricingDiscountAmount, pricingPayableAmount);
 
         // 3.【优惠券处理】前端已调用 calcCouponDiscount 接口计算优惠金额
         // 后端直接调用 calcCouponDiscount 方法重新计算，该方法内部已包含所有校验逻辑
@@ -140,7 +241,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         List<Long> userCouponIds = request.getUserCouponIds();
         if (userCouponIds != null && !userCouponIds.isEmpty()) {
             // 调用优惠券计算方法，内部已包含所有校验（有效性、叠加规则、互斥性等）
-            Result calcResult = calcCouponDiscount(request.getUserId(), userCouponIds, calculatedTotalAmount);
+            Result calcResult = calcCouponDiscount(
+                    request.getUserId(), userCouponIds, pricingPayableAmount, request.getStoreId());
             calcData = (CouponDiscountResultVO) calcResult.getData();
             if (!Boolean.TRUE.equals(calcData.getUsable())) {
                 throw new BusinessException("优惠券不可用：" + calcData.getReason());
@@ -162,20 +264,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
 
         // 4. 计算实付金额
-        BigDecimal actualAmount = calculatedTotalAmount.subtract(couponDiscountAmount);
+        BigDecimal actualAmount = pricingPayableAmount.subtract(couponDiscountAmount);
         if (actualAmount.compareTo(BigDecimal.ZERO) < 0) {
             actualAmount = BigDecimal.ZERO;
         }
 
-        // 5. 验证前端传入的 totalPrice 是否等于后端算出的实付金额（前端传的是优惠后的价格）
-        if (request.getTotalPrice() != null &&
-                request.getTotalPrice().subtract(actualAmount).abs().compareTo(new BigDecimal("0.01")) > 0) {
-            throw new BusinessException(String.format(
-                    "订单金额验证失败，前端传入(优惠后)：%s，后端计算实付：%s，原价总计：%s，优惠券抵扣：%s",
-                    request.getTotalPrice(), actualAmount,
-                    calculatedTotalAmount, couponDiscountAmount
-            ));
-        }
+        // 5. 客户端金额仅用于一致性检查，订单落库金额始终取服务端重新计价结果。
+        CashierAmountGuard.requireClientAmountMatches(request.getTotalPrice(), actualAmount);
         log.info("订单金额验证通过，原价：{}，优惠：{}，实付：{}", calculatedTotalAmount, couponDiscountAmount, actualAmount);
 
         // 6. 生成订单编号
@@ -185,13 +280,14 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         RestaurantOrder order = new RestaurantOrder();
         StoreInfo storeInfo = storeInfoMapper.selectById(request.getStoreId());
         order.setOrderNo(orderNo);
+        order.setRequestKey(request.getIdempotencyKey());
         order.setStoreId(request.getStoreId());
         order.setTableId(request.getTableId());
         order.setUserId(request.getUserId());
         order.setSessionNo(request.getSessionNo());
         order.setOrderType(request.getOrderType());
         order.setTotalAmount(calculatedTotalAmount); // 原价总计
-        order.setDiscountAmount(couponDiscountAmount); // 优惠券抵扣金额
+        order.setDiscountAmount(pricingDiscountAmount.add(couponDiscountAmount));
         order.setDiningCount(request.getPeopleCount());
         order.setActualAmount(actualAmount); // 实付金额 = 原价 - 优惠券抵扣
 
@@ -212,7 +308,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         order.setCreatedAt(LocalDateTime.now());
         order.setUpdatedAt(LocalDateTime.now());
 
-        // 根据支付模式和实付金额设置订单状态
+        // 订单履约状态与支付状态相互独立；新订单始终从“已下单”开始。
         if (actualAmount.compareTo(BigDecimal.ZERO) == 0) {
             // 实付金额为0（优惠券全额抵扣）：订单直接标记为已支付
             order.setPaymentStatus(PaymentStatusEnum.PAID);
@@ -222,7 +318,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             log.info("订单实付金额为0，优惠券全额抵扣，自动标记为已支付: orderNo={}", order.getOrderNo());
             // 叫号自取模式：直接生成取餐码
             if (storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING) {
-                order.setPickupCode(generatePickupCode());
+                assignPickupCode(order);
             }
         } else if (storeInfo.getPaymentMode() == PaymentModeEnum.OFFLINE && !StrUtil.isBlank(request.getSessionNo())) {
             // 线下支付+有会话：订单创建后直接标记为已下单状态（待线下结算）
@@ -233,50 +329,46 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
             // 线下支付+叫号自取：直接生成取餐码
             if (storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING) {
-                order.setPickupCode(generatePickupCode());
+                assignPickupCode(order);
             }
         } else {
-            // 线上支付 或 线下支付无会话：订单创建后为未支付状态
+            // 线上支付或线下支付无会话：支付状态为未支付，履约状态仍为已下单。
             order.setPaymentStatus(PaymentStatusEnum.UNPAID);
-            order.setStatus(OrderStatusEnum.NOPAID); // 未支付
+            order.setStatus(OrderStatusEnum.PLACED);
             // 线上支付的取餐码在支付成功后生成，此处不生成
         }
 
-        // 保存订单主表
-        this.save(order);
-
-        // 【优惠券核销】创建订单时立即核销所有优惠券（任一核销失败直接抛异常阻止下单，事务回滚）
-        if (userCouponIds != null && !userCouponIds.isEmpty()) {
-            for (Long userCouponId : userCouponIds) {
-                FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(userCouponId, order.getId()));
-                log.info("优惠券已核销: orderId={}, userCouponId={}", order.getId(), userCouponId);
-            }
-        }
+        // 保存订单主表。取餐码唯一约束冲突时换新码重试，不随机拼码。
+        insertOrder(order);
 
         // 8. 创建订单明细（首次下单，批次号为1）
         List<RestaurantOrderItem> orderItems = new ArrayList<>();
         if (request.getCartItems() != null && !request.getCartItems().isEmpty()) {
-            for (CreateOrderRequest.CartItem cartItem : request.getCartItems()) {
+            for (int i = 0; i < request.getCartItems().size(); i++) {
+                CreateOrderRequest.CartItem cartItem = request.getCartItems().get(i);
+                PricingQuoteVO.Line pricedLine = pricingQuote.getLines().get(i);
                 RestaurantOrderItem orderItem = new RestaurantOrderItem();
                 orderItem.setOrderId(order.getId());
                 orderItem.setDishId(cartItem.getDishId());
                 orderItem.setCategoryId(cartItem.getCategoryId());
-                orderItem.setPrice(cartItem.getPrice() != null ? cartItem.getPrice() : cartItem.getBasePrice());
+                orderItem.setUnitListPrice(pricedLine.getUnitListPrice());
+                orderItem.setUnitSellingPrice(pricedLine.getUnitSellingPrice());
                 orderItem.setQuantity(cartItem.getQuantity());
+                applyCostSnapshot(orderItem, pricedLine);
 
                 // 设置赠送标识
                 orderItem.setIsGift(cartItem.getIsGift() != null ? cartItem.getIsGift() : 0);
 
                 // 计算原价小计
-                BigDecimal itemOriginalTotal = orderItem.getPrice().multiply(new BigDecimal(cartItem.getQuantity()));
+                BigDecimal itemOriginalTotal = pricedLine.getLineListAmount();
 
                 // 如果是赠送菜品：单价不变，小计保留，优惠金额=小计
                 if (orderItem.getIsGift() == 1) {
-                    orderItem.setDiscountPrice(itemOriginalTotal); // 优惠金额=该行原价
-                    orderItem.setTotalPrice(BigDecimal.ZERO);
+                    orderItem.setDiscountAmount(itemOriginalTotal); // 优惠金额=该行正常售价
+                    orderItem.setLinePayableAmount(BigDecimal.ZERO);
                 } else {
-                    orderItem.setTotalPrice(itemOriginalTotal);
-                    orderItem.setDiscountPrice(BigDecimal.ZERO);
+                    orderItem.setLinePayableAmount(pricedLine.getLinePayableAmount());
+                    orderItem.setDiscountAmount(pricedLine.getLineDiscountAmount());
                 }
 
                 // 保存规格信息（作为文本存储）
@@ -295,8 +387,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 for (CouponDiscountResultVO.CouponDetailVO detail : calcData.getCouponDetails()) {
                     if (detail.getCouponType() == CouponTypeEnum.DISH_FREE && detail.getDishItems() != null) {
                         for (CouponDiscountResultVO.DishItemVO di : detail.getDishItems()) {
-                            if (di.getDishId() != null && di.getPrice() != null) {
-                                freeAmountByDishId.merge(di.getDishId(), di.getPrice(), BigDecimal::add);
+                            if (di.getDishId() != null && di.getCurrentPrice() != null) {
+                                freeAmountByDishId.merge(di.getDishId(), di.getCurrentPrice(), BigDecimal::add);
                             }
                         }
                     }
@@ -310,10 +402,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     if (remaining == null || remaining.compareTo(BigDecimal.ZERO) <= 0) {
                         continue;
                     }
-                    BigDecimal lineTotal = item.getTotalPrice() != null ? item.getTotalPrice() : BigDecimal.ZERO;
+                    BigDecimal lineTotal = item.getLinePayableAmount() != null ? item.getLinePayableAmount() : BigDecimal.ZERO;
                     BigDecimal deduct = lineTotal.min(remaining);
-                    item.setDiscountPrice(deduct);
-                    item.setTotalPrice(lineTotal.subtract(deduct));
+                    item.setDiscountAmount((item.getDiscountAmount() == null ? BigDecimal.ZERO
+                            : item.getDiscountAmount()).add(deduct));
+                    item.setLinePayableAmount(lineTotal.subtract(deduct));
                     freeAmountByDishId.put(dishId, remaining.subtract(deduct));
                 }
                 log.info("创建订单-优惠券已分摊到订单项: orderId={}, 优惠金额={}", order.getId(), couponDiscountAmount);
@@ -321,23 +414,14 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
             // 批量保存订单明细
             restaurantOrderItemService.saveBatch(orderItems);
+            persistPricingAdjustments(order.getId(), orderItems, pricingQuote);
         }
+        // 下单事务内原子扣减库存，支付回调只确认资金，不再承担首次库存校验。
+        reserveOrderStock(order);
         RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(order);
 
-        // 7. 【新增】更新会话的当前订单ID（仅线下支付+会话模式）
-        if (!StrUtil.isBlank(order.getSessionNo())) {
-            try {
-                TableSession tableSession = tableSessionService.getActiveSessionByTableId(order.getTableId());
-                if (tableSession != null) {
-                    tableSession.setCurrentOrderId(order.getId());
-                    tableSession.setUpdatedAt(LocalDateTime.now());
-                    tableSessionService.updateById(tableSession);
-                    log.info("会话订单ID已更新: sessionNo={}, orderId={}", tableSession.getSessionNo(), order.getId());
-                }
-            } catch (Exception e) {
-                log.warn("更新会话订单ID失败: sessionNo={}, orderId={}, error={}",
-                        order.getSessionNo(), order.getId(), e.getMessage());
-            }
+        if (lockedSession != null) {
+            bindSessionOrder(lockedSession, order.getId());
         }
 
         // 8. WebSocket 推送：通知同桌其他用户有新订单
@@ -356,22 +440,16 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 log.error("WebSocket 推送失败: orderId={}, error={}", order.getId(), e.getMessage(), e);
             }
         }
-        // 9. 【修正】小票打印逻辑
-        // 只有线下支付且有会话的情况下，才在创建订单时打印小票
-        // 线上支付需要等支付成功后才打印（在 handlePaymentSuccess 方法中处理）
-        if (storeInfo != null && storeInfo.getIsPrint() == BooleanEnum.YES) {
-            if (actualAmount.compareTo(BigDecimal.ZERO) == 0) {
-                // 实付金额为0（优惠券全额抵扣）：订单已自动标记为已支付，直接打印小票
-                printOrderWithStorePrinters(order.getId(), storeInfo.getId());
-                log.info("优惠券全额抵扣订单，已打印小票: orderNo={}", order.getOrderNo());
-            } else if (storeInfo.getPaymentMode() == PaymentModeEnum.OFFLINE && !StrUtil.isBlank(request.getSessionNo())) {
-                // 线下支付 + 有会话：订单创建后直接打印小票
-                printOrderWithStorePrinters(order.getId(), storeInfo.getId());
-                log.info("线下支付订单创建成功，已打印小票: orderNo={}", order.getOrderNo());
-            } else {
-                // 线上支付 或 线下支付无会话：不在此处打印，等支付成功后再打印
-                log.info("线上支付订单创建成功，等待支付完成后打印小票: orderNo={}", order.getOrderNo());
-            }
+        // 零元订单走与支付成功相同的副作用，避免只改状态却不结束会话、不推送已支付。
+        if (actualAmount.compareTo(BigDecimal.ZERO) == 0) {
+            applyPaidSideEffects(order);
+        } else if (storeInfo != null && storeInfo.getIsPrint() == BooleanEnum.YES
+                && storeInfo.getPaymentMode() == PaymentModeEnum.OFFLINE
+                && !StrUtil.isBlank(request.getSessionNo())) {
+            printOrderWithStorePrinters(order.getId(), storeInfo.getId());
+            log.info("线下支付订单创建成功，已打印小票: orderNo={}", order.getOrderNo());
+        } else {
+            log.info("订单创建成功，等待支付完成后打印小票: orderNo={}", order.getOrderNo());
         }
 
         // 10. 【新增】将需要支付的订单加入超时队列（30分钟未支付自动取消）
@@ -400,8 +478,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                         order.getId(), order.getOrderNo(), storeInfo.getPaymentMode(),
                         !StrUtil.isBlank(request.getSessionNo()));
             } catch (Exception e) {
-                // 加入队列失败不影响订单创建，仅记录日志
                 log.error("订单加入超时队列失败: orderId={}, error={}", order.getId(), e.getMessage());
+                throw new BusinessException("订单超时任务登记失败，请稍后重试");
             }
         } else {
             log.info("订单无需加入超时队列: orderId={}, orderNo={}, paymentMode={}, hasSession={}",
@@ -409,8 +487,34 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     !StrUtil.isBlank(request.getSessionNo()));
         }
 
+        // 所有本地关键写入和超时登记完成后再远程核销；多券中途失败会补偿已核销部分。
+        verifyCouponsWithCompensation(userCouponIds, order.getId());
+
         // 11. 使用转换器构建返回对象
         return orderVO;
+    }
+
+    @Override
+    public RestaurantOrderVO getByRequestKey(String requestKey) {
+        RestaurantOrder order = findByRequestKey(requestKey);
+        return order == null ? null : restaurantOrderConverter.toVO(order);
+    }
+
+    private RestaurantOrder findByRequestKey(String requestKey) {
+        if (StrUtil.isBlank(requestKey)) {
+            return null;
+        }
+        return this.getOne(new LambdaQueryWrapper<RestaurantOrder>()
+                .eq(RestaurantOrder::getRequestKey, requestKey)
+                .last("LIMIT 1"));
+    }
+
+    private void validateIdempotentReplay(RestaurantOrder existing, CreateOrderRequest request) {
+        if (!java.util.Objects.equals(existing.getStoreId(), request.getStoreId())
+                || !java.util.Objects.equals(existing.getUserId(), request.getUserId())
+                || !java.util.Objects.equals(existing.getSessionNo(), request.getSessionNo())) {
+            throw new BusinessException("下单幂等键已被其他业务请求使用");
+        }
     }
 
     /**
@@ -461,10 +565,32 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * @return 是否成功
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean updateOrderStatus(Long orderId, OrderStatusEnum status) {
-        RestaurantOrder order = this.getById(orderId);
+        RestaurantOrder order = lockOrderForMutation(orderId);
         if (order == null) {
             throw new BusinessException(ORDER_NOT_EXIST.getCode(),"订单不存在");
+        }
+        if (status == null) {
+            throw new BusinessException("订单状态不能为空");
+        }
+        OrderStatusEnum currentStatus = order.getStatus();
+        if (currentStatus == null) {
+            throw new BusinessException("订单当前状态异常");
+        }
+        if (currentStatus == status) {
+            return true;
+        }
+        if (status == OrderStatusEnum.CANCELLED) {
+            throw new BusinessException("取消订单请使用取消接口并填写取消原因");
+        }
+        if (!currentStatus.canTransitionTo(status)) {
+            throw new BusinessException("订单状态不能从“" + currentStatus.getDesc()
+                    + "”直接变更为“" + status.getDesc() + "”");
+        }
+        if (order.getPaymentMode() == PaymentModeEnum.ONLINE
+                && order.getPaymentStatus() != PaymentStatusEnum.PAID) {
+            throw new BusinessException("线上订单支付成功后才能进入接单流程");
         }
         order.setStatus(status);
         order.setUpdatedAt(LocalDateTime.now());
@@ -478,86 +604,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     }
 
     /**
-     * 取消订单
-     * @param orderId 订单ID
-     * @param cancelReason 取消原因
-     * @return 是否成功
+     * 取消未支付订单。关单不明确时进入对账，已支付则不能取消。
      */
     @Override
     public boolean cancelOrder(Long orderId, String cancelReason) {
-        RestaurantOrder order = this.getById(orderId);
-        if (order == null) {
-            throw new BusinessException(ORDER_NOT_EXIST.getCode(),"订单不存在");
-        }
-
-        // 已支付的订单不能取消，需要先退款
-        if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-            throw new BusinessException(ORDER_CANCEL_FAIL.getCode(),"已支付的订单不能取消，请先退款");
-        }
-
-        // 已完成或已取消的订单不能再次取消
-        if (order.getStatus() == OrderStatusEnum.COMPLETED || order.getStatus() == OrderStatusEnum.CANCELLED) {
-            throw new BusinessException(ORDER_CANCEL_FAIL.getCode(),"订单已完成或已取消，无法再次取消");
-        }
-        order.setCancelReason(cancelReason);
-        order.setCancelTime(LocalDateTime.now());
-        order.setUpdatedAt(LocalDateTime.now());
-        // 关闭支付平台的订单
-        if (order.getPaymentStatus() == PaymentStatusEnum.UNPAID && order.getPaymentNo() != null) {
-            closePaymentPlatformOrder(order.getOrderNo(), order.getPaymentType());
-            order.setCancelReason("用户主动取消订单");
-        }
-
-        order.setStatus(OrderStatusEnum.CANCELLED);
-
-        boolean result = this.updateById(order);
-
-        if (result) {
-            // 【优惠券返还】取消订单时返还已核销的所有优惠券
-            if (StrUtil.isNotBlank(order.getUserCouponIds())) {
-                String[] couponIdArr = order.getUserCouponIds().split(",");
-                for (String idStr : couponIdArr) {
-                    if (StrUtil.isNotBlank(idStr)) {
-                        try {
-                            Long ucId = Long.parseLong(idStr.trim());
-                            FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(ucId, orderId));
-                            log.info("优惠券已返还: orderId={}, userCouponId={}", orderId, ucId);
-                        } catch (NumberFormatException e) {
-                            log.warn("优惠券ID解析失败: orderId={}, idStr={}", orderId, idStr);
-                        }
-                    }
-                }
-            }
-
-            // 取消订单后从超时队列中移除
-            try {
-                orderTimeoutQueueService.removeFromTimeoutQueue(orderId);
-                log.info("订单取消成功，已从超时队列移除: orderId={}, orderNo={}", orderId, order.getOrderNo());
-            } catch (Exception e) {
-                log.error("从超时队列移除订单失败: orderId={}, error={}", orderId, e.getMessage());
-            }
-        }
-
-        // WebSocket 推送：通知同桌其他用户订单已取消
-        if (result && order.getTableId() != null) {
-            try {
-                var tableSession = tableSessionService.getActiveSessionByTableId(order.getTableId());
-                if (tableSession != null) {
-                    // 推送订单取消消息
-                    webSocketPushService.pushOrderCancelled(
-                            tableSession.getSessionNo(),
-                            order.getId(),
-                            order.getOrderNo(),
-                            cancelReason
-                    );
-                    // 更新会话统计信息
-                    tableSessionService.updateSessionStatistics(tableSession.getSessionNo());
-                }
-            } catch (Exception e) {
-                log.error("WebSocket 推送失败: orderId={}, error={}", orderId, e.getMessage(), e);
-            }
-        }
-        return result;
+        return closeUnpaidOrder(orderId, cancelReason, false);
     }
 
     /**
@@ -567,8 +618,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Transactional(rollbackFor = Exception.class)
     public PaymentResponse createPayment(Long orderId, Integer paymentType, String openid) {
 
-        // 1. 查询订单
-        RestaurantOrder order = this.getById(orderId);
+        // 1. 锁定订单，避免同一订单并发创建多个支付或与线下结算竞争。
+        RestaurantOrder order = lockOrderForMutation(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
         }
@@ -581,72 +632,76 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             throw new IllegalStateException("订单已取消，无法支付");
         }
 
-        // 3. 构建响应
+        BigDecimal serverPayable = CashierAmountGuard.requireServerPayable(
+                order.getActualAmount(), order.getTotalAmount());
+
+        // 3. 构建响应，支付金额只取服务端优惠后应付金额。
         PaymentResponse.PaymentResponseBuilder responseBuilder = PaymentResponse.builder()
                 .orderId(orderId)
                 .orderNo(order.getOrderNo())
-                .payAmount(order.getTotalAmount())
+                .payAmount(serverPayable)
                 .paymentType(paymentType)
                 .expireSeconds(1800);
 
         // 5. 根据支付方式调用对应的支付服务
         PaymentTypeEnum paymentTypeEnum = PaymentTypeEnum.getByCode(paymentType);
+        if (paymentTypeEnum == null) {
+            throw new IllegalStateException("不支持的支付方式");
+        }
+        if ((order.getPaymentType() == PaymentTypeEnum.WECHAT
+                || order.getPaymentType() == PaymentTypeEnum.ALIPAY)
+                && order.getPaymentType() != paymentTypeEnum) {
+            throw new IllegalStateException("该订单已创建其它支付渠道的交易，请先取消订单");
+        }
 
         if (paymentTypeEnum == PaymentTypeEnum.WECHAT) {
             // 调用微信支付
-            createWeChatPayment(order, openid, responseBuilder);
+            createWeChatPayment(order, serverPayable, openid, responseBuilder);
 
         } else if (paymentTypeEnum == PaymentTypeEnum.ALIPAY) {
             // 调用支付宝支付
-            createAlipayPayment(order, responseBuilder);
+            createAlipayPayment(order, serverPayable, responseBuilder);
 
         } else {
             throw new IllegalStateException("不支持的支付方式");
         }
 
+        // 记录已创建的支付渠道订单，取消/超时任务才能正确关单。
+        order.setPaymentType(paymentTypeEnum);
+        order.setUpdatedAt(LocalDateTime.now());
+        this.updateById(order);
+
         return responseBuilder.build();
     }
 
     /**
-     * 主动查询支付结果并更新订单状态
+     * 主动查询支付结果并更新订单状态。不在外层持有行锁，避免和入账事务互相等待。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public boolean queryAndUpdatePaymentStatus(Long orderId) {
-
         RestaurantOrder order = this.getById(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
         }
-
-        // 如果已支付，直接返回
         if (order.getPaymentStatus() != null && order.getPaymentStatus() == PaymentStatusEnum.PAID) {
             return true;
         }
-
-        // 调用支付平台查询
-        if (order.getPaymentType() != null && order.getOrderNo() != null) {
-            boolean isPaid = false;
-
-            if (order.getPaymentType() == PaymentTypeEnum.WECHAT) {
-                // 查询微信支付
-                isPaid = queryWeChatPaymentStatus(order.getOrderNo());
-            } else if (order.getPaymentType() == PaymentTypeEnum.ALIPAY) {
-                // 查询支付宝
-                isPaid = queryAlipayPaymentStatus(order.getOrderNo());
-            }
-
-            // 更新订单状态
-            if (isPaid) {
-                order.setPaymentStatus(PaymentStatusEnum.PAID);
-                order.setPaymentTime(LocalDateTime.now());
-                order.setStatus(OrderStatusEnum.PLACED);
-                this.updateById(order);
-                return true;
-            }
+        if (order.getPaymentType() == null || order.getOrderNo() == null) {
+            return false;
         }
-
-        return false;
+        ChannelPayment channel = order.getPaymentType() == PaymentTypeEnum.WECHAT
+                ? queryWeChatPaymentStatus(order.getTenantId(), order.getOrderNo())
+                : order.getPaymentType() == PaymentTypeEnum.ALIPAY
+                ? queryAlipayPaymentStatus(order.getTenantId(), order.getOrderNo())
+                : null;
+        if (channel == null || !channel.paid()) {
+            return false;
+        }
+        if (!channel.accepted(order.getOrderNo())) {
+            log.warn("主动查单未通过金额、币种或商户校验: orderNo={}", order.getOrderNo());
+            return false;
+        }
+        return handlePaymentSuccess(order.getOrderNo(), channel.transactionId(), order.getPaymentType(), channel.amount(), null);
     }
 
     /**
@@ -660,19 +715,12 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             throw new IllegalStateException("订单不存在");
         }
 
-        // 计算等待时长（秒）
+        // 只计算是否超时，取消由调度任务或明确的超时命令执行。
         Long waitingSeconds = null;
         Boolean isExpired = false;
         if (order.getCreatedAt() != null) {
             waitingSeconds = java.time.Duration.between(order.getCreatedAt(), LocalDateTime.now()).getSeconds();
-            // 判断是否超过30分钟（1800秒）
             isExpired = waitingSeconds > 1800;
-        }
-        if(isExpired){
-            handlePaymentTimeout(orderId, "订单已超时");
-        }
-        if(order.getStatus()==OrderStatusEnum.CANCELLED){
-            cancelOrder(orderId, "订单已取消");
         }
 
         // 使用 Builder 构建 VO
@@ -792,8 +840,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean payByBalance(Long orderId) {
-        // 1. 查询订单
-        RestaurantOrder order = this.getById(orderId);
+        // 1. 锁定订单，余额扣款与其它结算方式必须互斥。
+        RestaurantOrder order = lockOrderForMutation(orderId);
         if (order == null) {
             throw new IllegalStateException("订单不存在");
         }
@@ -814,19 +862,20 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
 
         // 4. 检查余额是否足够（user-service 扣款时会再次校验，这里提前给出友好提示）
-        BigDecimal payAmount = order.getTotalAmount();
+        BigDecimal payAmount = CashierAmountGuard.requireServerPayable(
+                order.getActualAmount(), order.getTotalAmount());
         if (user.getSurplusMoney().compareTo(payAmount) < 0) {
             throw new IllegalStateException("余额不足，请充值后再试");
         }
 
         // 5. 扣除余额 + 记录流水（user-service 本地事务内原子完成，替代原跨模块裸操作）
-        FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
+        changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
                 .userId(userId)
                 .amount(payAmount)
-                .type(4) // 4-消费
+                .type(4)
                 .orderNo(order.getOrderNo())
                 .operateUserId(userId)
-                .build()));
+                .build());
 
         // 6. 调用统一的支付成功处理逻辑
         // 生成一个余额支付的流水号（使用订单号作为交易号）
@@ -855,13 +904,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      */
     private void refundBalanceCompensate(Long userId, BigDecimal amount, String orderNo) {
         try {
-            FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
+            changeBalanceDurable(null, BalanceChangeDTO.builder()
                     .userId(userId)
                     .amount(amount)
-                    .type(3) // 3-退款
+                    .type(3)
                     .orderNo(orderNo + "_COMPENSATE")
                     .operateUserId(userId)
-                    .build()));
+                    .build());
             log.info("余额扣款补偿成功: userId={}, amount={}, orderNo={}", userId, amount, orderNo);
         } catch (Exception ex) {
             log.error("余额扣款补偿失败，需人工核对: userId={}, amount={}, orderNo={}", userId, amount, orderNo, ex);
@@ -886,279 +935,171 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     }
 
     /**
-     * 处理支付超时
+     * 处理支付超时。已支付、退款中和对账中的订单不会被覆盖。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public boolean handlePaymentTimeout(Long orderId, String reason) {
-        try {
-            RestaurantOrder order = this.getById(orderId);
-            if (order == null) {
-                throw new IllegalStateException("订单不存在");
-            }
-
-            // 如果已支付，不能设置为超时
-            if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-                return false;
-            }
-
-            // 关闭支付平台的订单
-            if (order.getOrderNo() != null && order.getPaymentType() != null) {
-                closePaymentPlatformOrder(order.getOrderNo(), order.getPaymentType());
-            }
-
-            // 更新订单状态
-            order.setStatus(OrderStatusEnum.CANCELLED);
-            order.setPaymentStatus(PaymentStatusEnum.UNPAID);
-            order.setCancelReason(reason != null ? reason : "支付超时");
-            order.setCancelTime(LocalDateTime.now());
-            order.setUpdatedAt(LocalDateTime.now());
-
-            return this.updateById(order);
-
-        } catch (Exception e) {
-            return false;
-        }
+        return closeUnpaidOrder(orderId, reason != null ? reason : "支付超时", true);
     }
 
     /**
-     * 处理支付失败
+     * 仅把仍未支付的订单标为失败，不能覆盖已收款状态。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public boolean handlePaymentError(Long orderId, String reason) {
-        try {
-            RestaurantOrder order = this.getById(orderId);
-            if (order == null) {
-                throw new IllegalStateException("订单不存在");
-            }
+        return Boolean.TRUE.equals(independentTx.execute(status -> this.update(new LambdaUpdateWrapper<RestaurantOrder>()
+                .eq(RestaurantOrder::getId, orderId)
+                .eq(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.UNPAID)
+                .ne(RestaurantOrder::getStatus, OrderStatusEnum.CANCELLED)
+                .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.FAILED)
+                .set(RestaurantOrder::getCancelReason, reason != null ? reason : "支付失败")
+                .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now()))));
+    }
 
-            // 如果已支付，不能设置为失败
-            if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-                return false;
-            }
+    @Override
+    public boolean handlePaymentSuccess(String outTradeNo, String transactionId, PaymentTypeEnum paymentType) {
+        return handlePaymentSuccess(outTradeNo, transactionId, paymentType, null, null);
+    }
 
-            // 更新订单状态
-            order.setPaymentStatus(PaymentStatusEnum.UNPAID);
-            order.setCancelReason(reason != null ? reason : "支付失败");
-            order.setUpdatedAt(LocalDateTime.now());
-
-            return this.updateById(order);
-
-        } catch (Exception e) {
+    /**
+     * 验签后的支付入账。先按订单号窄查询租户，再用 TenantScope 处理后续写入。
+     */
+    private boolean handlePaymentSuccess(String outTradeNo, String transactionId,
+                                         PaymentTypeEnum paymentType, BigDecimal notifiedAmount, Long expectedTenantId) {
+        OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(outTradeNo));
+        if (located == null || located.getTenantId() == null) {
             return false;
         }
-    }
-
-    /**
-     * 关闭支付平台的订单
-     */
-    private void closePaymentPlatformOrder(String outTradeNo, PaymentTypeEnum paymentType) {
-        try {
-            if (paymentType == PaymentTypeEnum.WECHAT) {
-                // 关闭微信支付订单（Feign 调用 pay-service）
-                payFeignClient.closeWeChatTrade(outTradeNo);
-            } else if (paymentType == PaymentTypeEnum.ALIPAY) {
-                // 关闭支付宝订单（Feign 调用 pay-service）
-                payFeignClient.closeAlipayTrade(outTradeNo);
-            }
-        } catch (Exception e) {
-            // 不抛出异常，允许订单关闭继续
+        if (expectedTenantId != null && !expectedTenantId.equals(located.getTenantId())) {
+            throw new BusinessException("支付回调订单归属校验失败");
         }
+        return TenantScope.call(located.getTenantId(),
+                () -> capturePayment(located.getId(), transactionId, paymentType, notifiedAmount));
     }
 
     /**
-     * 处理支付成功回调
-     * 1. 根据商户订单号更新订单支付状态
-     * 2. 自动打印订单（如果启用了飞鹅打印机）
-     *
-     * @param outTradeNo 商户订单号
-     * @param transactionId 支付平台交易号（微信支付单号或支付宝交易号）
-     * @param paymentType 支付方式
-     * @return 是否处理成功
+     * 支付完成后的库存、取餐码、打印、推送、会话结束和超时队列清理。已预占库存不会重复扣减。
      */
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public boolean handlePaymentSuccess(String outTradeNo, String transactionId, PaymentTypeEnum paymentType) {
-        try {
-            // 1. 根据订单号查询订单
-            LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(RestaurantOrder::getOrderNo, outTradeNo);
-            RestaurantOrder order = this.getOne(wrapper);
-
-            if (order == null) {
-                return false;
-            }
-
-            // 支付回调是匿名入口：先在受控旁路中按全局唯一订单号定位订单，
-            // 定位成功后立即切回该订单的租户上下文，后续库存、会话、打印、Feign
-            // 调用全部恢复正常租户过滤与租户头透传。
-            boolean callbackTenantScope = !TenantContext.hasTenant();
-            if (callbackTenantScope) {
-                TenantIgnore.close();
-                TenantContext.setTenantId(order.getTenantId());
-            }
-            try {
-
-            // 2. 检查订单是否已支付（幂等性处理）
-            if (order.getPaymentStatus() != null && order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-                return true; // 返回成功，避免支付平台重复回调
-            }
-
-            // 3. 更新订单支付状态
-            order.setPaymentStatus(PaymentStatusEnum.PAID);
-            order.setPaymentType(paymentType);
-            order.setPaymentNo(transactionId);
-            order.setPaymentTime(LocalDateTime.now());
-            order.setStatus(OrderStatusEnum.PLACED); // 订单状态更新为已下单
-            // 实际支付金额 = 总金额 - 优惠券抵扣
-            BigDecimal discount = order.getDiscountAmount() != null ? order.getDiscountAmount() : BigDecimal.ZERO;
-            order.setActualAmount(order.getTotalAmount().subtract(discount));
+    private void applyPaidSideEffects(RestaurantOrder order) {
+        StoreInfo storeInfo = storeInfoMapper.selectById(order.getStoreId());
+        if (storeInfo != null
+                && storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING
+                && StrUtil.isBlank(order.getPickupCode())) {
+            assignPickupCode(order);
             order.setUpdatedAt(LocalDateTime.now());
-
-            // 优惠券已在创建订单时核销，此处无需再核销
-
-            // 4. 线上支付成功后，如果是叫号自取模式且没有取餐码，生成取餐码
-            StoreInfo storeInfo = storeInfoMapper.selectById(order.getStoreId());
-            if (storeInfo != null &&
-                    storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING &&
-                    StrUtil.isBlank(order.getPickupCode())) {
-                order.setPickupCode(generatePickupCode());
-            }
-
-            boolean updateSuccess = this.updateById(order);
-            if (!updateSuccess) {
-                return false;
-            }
-
-            // 4.5 减少菜品库存并增加销量
+            updateOrder(order);
+        }
+        if (order.getTableId() != null && order.getSessionNo() != null) {
             try {
-                decreaseOrderDishStock(order.getId());
+                var tableSession = tableSessionService.getActiveSessionByTableId(order.getTableId());
+                if (tableSession != null) {
+                    webSocketPushService.pushOrderPaid(tableSession.getSessionNo(), restaurantOrderConverter.toVO(order));
+                    tableSessionService.updateSessionStatistics(tableSession.getSessionNo());
+                }
             } catch (Exception e) {
-                log.error("订单【{}】减少库存失败: {}", order.getOrderNo(), e.getMessage(), e);
-                // 库存减少失败时，回滚事务
-                throw new BusinessException("库存不足或减少失败：" + e.getMessage());
+                log.error("WebSocket 推送支付成功通知失败: orderId={}, error={}", order.getId(), e.getMessage(), e);
             }
-
-            // 5. WebSocket 推送：通知用户订单支付成功
-            if (order.getTableId() != null && order.getSessionNo() != null) {
-                try {
-                    // 获取当前桌位的会话
-                    var tableSession = tableSessionService.getActiveSessionByTableId(order.getTableId());
-                    if (tableSession != null) {
-                        // 转换为VO并推送订单支付成功通知（包含完整订单信息，含取餐码）
-                        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(order);
-                        webSocketPushService.pushOrderPaid(tableSession.getSessionNo(), orderVO);
-                        // 更新会话统计信息
-                        tableSessionService.updateSessionStatistics(tableSession.getSessionNo());
-                    }
-                } catch (Exception e) {
-                    // WebSocket 推送失败不影响支付处理
-                    log.error("WebSocket 推送支付成功通知失败: orderId={}, error={}", order.getId(), e.getMessage(), e);
-                }
-            }
-
-            // 6. 打印订单（如果门店开启了小票打印）
-            if (storeInfo != null && storeInfo.getIsPrint() == BooleanEnum.YES) {
-                printOrderWithStorePrinters(order.getId(), storeInfo.getId());
-            }
-
-            // 6.5 线上支付+会话模式：支付成功后结束会话，一单一结，不允许再加菜；继续点单需重新扫码
-            if (StrUtil.isNotBlank(order.getSessionNo()) && order.getPaymentMode() == PaymentModeEnum.ONLINE) {
-                try {
-                    tableSessionService.endSession(order.getSessionNo(), order.getActualAmount() != null ? order.getActualAmount() : BigDecimal.ZERO);
-                    log.info("线上支付成功，已结束会话: sessionNo={}, orderId={}", order.getSessionNo(), order.getId());
-                } catch (Exception e) {
-                    log.warn("结束会话失败，不影响支付结果: sessionNo={}, error={}", order.getSessionNo(), e.getMessage());
-                }
-            }
-
-            // 7. 【新增】支付成功后从超时队列中移除订单
-            try {
-                orderTimeoutQueueService.removeFromTimeoutQueue(order.getId());
-                log.info("订单支付成功，已从超时队列移除: orderId={}, orderNo={}", order.getId(), order.getOrderNo());
-            } catch (Exception e) {
-                // 移除失败不影响支付处理，仅记录日志
-                log.error("从超时队列移除订单失败: orderId={}, error={}", order.getId(), e.getMessage());
-            }
-
-                return true;
-            } finally {
-                if (callbackTenantScope) {
-                    TenantContext.clear();
-                    // 恢复由 HTTP 入口打开的受控旁路，交给 afterCompletion 成对关闭。
-                    TenantIgnore.open();
-                }
-            }
-
+        }
+        if (storeInfo != null && storeInfo.getIsPrint() == BooleanEnum.YES) {
+            printOrderWithStorePrinters(order.getId(), storeInfo.getId());
+        }
+        if (StrUtil.isNotBlank(order.getSessionNo()) && order.getPaymentMode() == PaymentModeEnum.ONLINE) {
+            BigDecimal paidAmount = order.getActualAmount() != null ? order.getActualAmount() : BigDecimal.ZERO;
+            tableSessionService.endSession(order.getSessionNo(), paidAmount);
+            pushSessionEndedAfterCommit(order.getSessionNo(), paidAmount);
+            log.info("线上支付成功，已结束会话: sessionNo={}, orderId={}", order.getSessionNo(), order.getId());
+        }
+        try {
+            orderTimeoutQueueService.removeFromTimeoutQueue(order.getId());
         } catch (Exception e) {
-            throw new BusinessException(e.getMessage());
+            log.error("从超时队列移除订单失败: orderId={}, error={}", order.getId(), e.getMessage());
         }
     }
 
     /**
-     * 查询微信支付状态
+     * 查询微信支付状态。金额、币种、商户单号和商户号必须齐全才允许改本地订单。
      */
-    private boolean queryWeChatPaymentStatus(String outTradeNo) {
+    private ChannelPayment queryWeChatPaymentStatus(Long orderTenantId, String outTradeNo) {
         try {
-            Map<String, Object> result = FeignResultUtil.unwrap(payFeignClient.queryWeChatTrade(outTradeNo));
-            if (result.get("success") != null && (Boolean) result.get("success")) {
-                String tradeState = String.valueOf(result.get("tradeState"));
-                return "SUCCESS".equals(tradeState);
+            Map<String, Object> result = FeignResultUtil.unwrap(
+                    payFeignClient.queryWeChatTrade(orderTenantId, outTradeNo));
+            if (result == null || !Boolean.TRUE.equals(result.get("success"))) {
+                return ChannelPayment.unpaid();
             }
+            boolean paid = "SUCCESS".equals(String.valueOf(result.get("tradeState")));
+            Object total = result.get("total");
+            BigDecimal amount = total == null ? null : BigDecimal.valueOf(((Number) total).longValue(), 2);
+            return new ChannelPayment(paid, stringValue(result.get("transactionId")), amount,
+                    stringValue(result.get("currency")), stringValue(result.get("outTradeNo")),
+                    Boolean.TRUE.equals(result.get("merchantMatched")));
         } catch (Exception e) {
             log.error("查询微信支付状态失败", e);
+            return ChannelPayment.unpaid();
         }
-        return false;
     }
 
     /**
      * 生成订单编号
-     * 格式：RO + 年月日时分秒 + 4位随机数
-     * 例如：RO202510271430001234
+     * 格式：RO + 年月日时分秒 + 12位UUID片段。
+     * UUID片段避免多实例同秒高并发下4位随机数碰撞。
      */
     private String generateOrderNo() {
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
         String timeStr = LocalDateTime.now().format(formatter);
-        int random = (int) ((Math.random() * 9000) + 1000); // 生成1000-9999的随机数
-        return "RO" + timeStr + random;
+        String randomPart = UUID.randomUUID().toString().replace("-", "")
+                .substring(0, 12)
+                .toUpperCase();
+        return "RO" + timeStr + randomPart;
     }
 
     /**
      * 查询支付宝支付状态
      */
-    private boolean queryAlipayPaymentStatus(String outTradeNo) {
+    private ChannelPayment queryAlipayPaymentStatus(Long orderTenantId, String outTradeNo) {
         try {
-            Map<String, Object> result = FeignResultUtil.unwrap(payFeignClient.queryAlipayTrade(outTradeNo));
-            if (result.get("success") != null && (Boolean) result.get("success")) {
-                String tradeStatus = (String) result.get("tradeStatus");
-                return "TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus);
+            Map<String, Object> result = FeignResultUtil.unwrap(
+                    payFeignClient.queryAlipayTrade(orderTenantId, outTradeNo));
+            if (result == null || !Boolean.TRUE.equals(result.get("success"))) {
+                return ChannelPayment.unpaid();
             }
+            String tradeStatus = stringValue(result.get("tradeStatus"));
+            boolean paid = "TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus);
+            BigDecimal amount = result.get("totalAmount") == null ? null : new BigDecimal(result.get("totalAmount").toString());
+            return new ChannelPayment(paid, stringValue(result.get("tradeNo")), amount,
+                    stringValue(result.get("currency")), stringValue(result.get("outTradeNo")),
+                    Boolean.TRUE.equals(result.get("merchantMatched")));
         } catch (Exception e) {
             log.error("查询支付宝支付状态失败", e);
+            return ChannelPayment.unpaid();
         }
-        return false;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : value.toString();
     }
 
     /**
      * 创建微信支付
      */
-    private void createWeChatPayment(RestaurantOrder order, String openid, PaymentResponse.PaymentResponseBuilder responseBuilder) {
+    private void createWeChatPayment(RestaurantOrder order, BigDecimal serverPayable, String openid,
+                                     PaymentResponse.PaymentResponseBuilder responseBuilder) {
         if (openid == null || openid.isEmpty()) {
             throw new IllegalArgumentException("微信支付需要提供openid");
         }
 
         // 构建微信支付参数
         // 注意：notifyUrl 应该配置为餐厅模块专用的回调地址
-        // 示例：https://your-domain.com/restaurant-order/pay/wechat/notify
+        // 示例：https://your-domain.com/restaurant-order/wechatPay/notify
         // 在生产环境需要在配置文件中配置实际的域名
         WeChatPayTradeParam param = WeChatPayTradeParam.builder()
+                .tenantId(order.getTenantId())
                 .outTradeNo(order.getOrderNo())
                 .description("餐饮订单")
-                .totalAmount(order.getTotalAmount())
+                .totalAmount(serverPayable)
                 .openid(openid)
+                .attach(paymentAttach(order))
                 .timeExpire(30)
-                .notifyUrl("https://your-domain.com/restaurant-order/pay/wechat/notify")
+                .notifyUrl(PaymentNotifyUrls.withTenant(weChatOrderNotifyUrl, order.getTenantId(), "微信"))
                 .build();
 
         // 调用微信支付服务（Feign 调用 pay-service）
@@ -1179,23 +1120,23 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     /**
      * 创建支付宝支付
      */
-    private void createAlipayPayment(RestaurantOrder order, PaymentResponse.PaymentResponseBuilder responseBuilder) {
+    private void createAlipayPayment(RestaurantOrder order, BigDecimal serverPayable,
+                                     PaymentResponse.PaymentResponseBuilder responseBuilder) {
         // 构建支付宝参数
         // 注意：notifyUrl 应该配置为餐厅模块专用的回调地址
-        // 示例：https://your-domain.com/restaurant-order/pay/alipay/notify
+        // 示例：https://your-domain.com/restaurant-order/alipayPay/notify
         // 计算超时时间：当前时间 + 30分钟
         LocalDateTime expireTime = LocalDateTime.now().plusMinutes(30);
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         String timeExpireStr = expireTime.format(formatter);
 
         AlipayTradeWapPayRequestParams param = AlipayTradeWapPayRequestParams.builder()
+                .tenantId(order.getTenantId())
                 .outTradeNo(order.getOrderNo())
                 .subject("餐厅订单-"+order.getOrderNo())
-                .totalAmount(order.getTotalAmount())
-                .goodsDetail(JSONUtil.toJsonPrettyStr(order))
+                .totalAmount(serverPayable)
                 .timeExpire(timeExpireStr)
-                // TODO: 这里可以从配置文件读取餐厅模块专用的回调URL
-                // .notifyUrl("https://your-domain.com/restaurant-order/pay/alipay/notify")
+                .notifyUrl(PaymentNotifyUrls.withTenant(alipayOrderNotifyUrl, order.getTenantId(), "支付宝"))
                 .build();
 
         // 调用支付宝服务（Feign 调用 pay-service）
@@ -1206,74 +1147,97 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
 
     /**
-     * 处理微信支付回调通知
-     * 餐厅模块专用的回调处理逻辑
+     * 微信支付回调。路径租户只用于选择密钥，订单租户必须与之相同。
      */
     @Override
-    public String handleWeChatPayNotify(String requestBody, String signature, String timestamp, String nonce, String serial) {
+    public String handleWeChatPayNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial) {
+        if (tenantId == null) {
+            return "{\"code\": \"FAIL\", \"message\": \"缺少租户\"}";
+        }
         try {
             PaymentNotifyResult notifyResult = FeignResultUtil.unwrap(payFeignClient.parseWeChatNotify(
                     WeChatNotifyParseDTO.builder()
+                            .tenantId(tenantId)
                             .requestBody(requestBody)
                             .signature(signature)
                             .timestamp(timestamp)
                             .nonce(nonce)
                             .serial(serial)
                             .build()));
-            if (notifyResult.getIsSuccess()) {
-                // 支付成功，更新订单状态
-                boolean success = handlePaymentSuccess(
-                        notifyResult.getOutTradeNo(),
-                        notifyResult.getTransactionId(),
-                        PaymentTypeEnum.WECHAT
-                );
-                if (success) {
-                    return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
-                } else {
-                    return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
-                }
-            } else {
-                return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
+            if (!Boolean.TRUE.equals(notifyResult.getIsSuccess())) {
+                return "{\"code\": \"FAIL\", \"message\": \"验签或解密失败\"}";
             }
-
+            if (!"CNY".equalsIgnoreCase(notifyResult.getCurrency()) || notifyResult.getTotalAmount() == null) {
+                throw new BusinessException("微信支付回调币种或金额缺失");
+            }
+            OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(notifyResult.getOutTradeNo()));
+            if (located == null || !tenantId.equals(located.getTenantId())) {
+                throw new BusinessException("微信支付回调订单归属校验失败");
+            }
+            TenantScope.run(tenantId, () -> {
+                RestaurantOrder callbackOrder = this.getById(located.getId());
+                if (callbackOrder == null || (StrUtil.isNotBlank(notifyResult.getAttach())
+                        && !paymentAttach(callbackOrder).equals(notifyResult.getAttach()))) {
+                    throw new BusinessException("微信支付回调订单归属校验失败");
+                }
+            });
+            boolean success = handlePaymentSuccess(notifyResult.getOutTradeNo(), notifyResult.getTransactionId(),
+                    PaymentTypeEnum.WECHAT, BigDecimal.valueOf(notifyResult.getTotalAmount(), 2), tenantId);
+            if (!success) {
+                throw new BusinessException("微信支付回调业务处理失败");
+            }
+            return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
         } catch (Exception e) {
             log.error("餐厅订单模块：处理微信支付回调失败", e);
-            return "{\"code\": \"FAIL\", \"message\": \"" + e.getMessage() + "\"}";
+            throw e instanceof BusinessException businessException
+                    ? businessException : new BusinessException(e.getMessage());
         }
     }
 
     /**
-     * 处理支付宝支付回调通知
-     * 餐厅模块专用的回调处理逻辑
+     * 支付宝支付回调。验签使用路径租户的应用公钥。
      */
     @Override
-    public String handleAlipayNotify(Map<String, String> params) {
+    public String handleAlipayNotify(Long tenantId, Map<String, String> params) {
+        if (tenantId == null) {
+            return "failure";
+        }
         try {
-            if (!Boolean.TRUE.equals(FeignResultUtil.unwrap(payFeignClient.verifyAlipayNotify(params)))) {
+            if (!Boolean.TRUE.equals(FeignResultUtil.unwrap(payFeignClient.verifyAlipayNotify(tenantId, params)))) {
                 log.warn("餐厅订单模块：支付宝回调验签失败");
                 return "failure";
             }
-            // 1. 获取回调参数
-            String outTradeNo = params.get("out_trade_no");  // 商户订单号
-            String tradeNo = params.get("trade_no");         // 支付宝交易号
-            String tradeStatus = params.get("trade_status"); // 交易状态
-
-            // 2. 验签通过后处理支付成功
-            if ("TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus)) {
-                boolean success = handlePaymentSuccess(outTradeNo, tradeNo, PaymentTypeEnum.ALIPAY);
-
-                if (success) {
-                    return "success";
-                } else {
-                    // 即使业务处理失败，也返回成功，避免支付宝重复回调
-                    return "success";
+            String outTradeNo = params.get("out_trade_no");
+            String tradeNo = params.get("trade_no");
+            String tradeStatus = params.get("trade_status");
+            if (!"TRADE_SUCCESS".equals(tradeStatus) && !"TRADE_FINISHED".equals(tradeStatus)) {
+                return "success";
+            }
+            if (StrUtil.isBlank(params.get("total_amount"))) {
+                throw new BusinessException("支付宝回调金额缺失");
+            }
+            BigDecimal notifiedAmount = new BigDecimal(params.get("total_amount"));
+            OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(outTradeNo));
+            if (located == null || !tenantId.equals(located.getTenantId())) {
+                throw new BusinessException("支付宝回调订单归属校验失败");
+            }
+            String passback = params.get("passback_params");
+            TenantScope.run(tenantId, () -> {
+                RestaurantOrder callbackOrder = this.getById(located.getId());
+                if (callbackOrder == null || (StrUtil.isNotBlank(passback)
+                        && !paymentAttach(callbackOrder).equals(passback))) {
+                    throw new BusinessException("支付宝回调订单归属校验失败");
                 }
+            });
+            boolean success = handlePaymentSuccess(outTradeNo, tradeNo, PaymentTypeEnum.ALIPAY, notifiedAmount, tenantId);
+            if (!success) {
+                throw new BusinessException("支付宝回调业务处理失败");
             }
             return "success";
-
         } catch (Exception e) {
             log.error("餐厅订单模块：处理支付宝回调失败", e);
-            return "failure";
+            throw e instanceof BusinessException businessException
+                    ? businessException : new BusinessException(e.getMessage());
         }
     }
 
@@ -1292,10 +1256,39 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(RestaurantOrder::getSessionNo, sessionNo)
+                .ne(RestaurantOrder::getStatus, OrderStatusEnum.CANCELLED)
                 .orderByDesc(RestaurantOrder::getCreatedAt)
                 .last("LIMIT 1");
 
         return this.getOne(wrapper);
+    }
+
+    private RestaurantOrder findOpenOrderBySession(TableSession session) {
+        if (session.getCurrentOrderId() != null) {
+            RestaurantOrder bound = this.getById(session.getCurrentOrderId());
+            if (bound != null && bound.getStatus() != OrderStatusEnum.CANCELLED) {
+                return bound;
+            }
+        }
+        return getOrderBySessionNo(session.getSessionNo());
+    }
+
+    /**
+     * 在已锁定的会话行上原子绑定当前订单。期望值不一致说明并发请求已经占用该会话。
+     */
+    private void bindSessionOrder(TableSession lockedSession, Long orderId) {
+        LambdaUpdateWrapper<TableSession> bind = new LambdaUpdateWrapper<TableSession>()
+                .eq(TableSession::getId, lockedSession.getId())
+                .set(TableSession::getCurrentOrderId, orderId)
+                .set(TableSession::getUpdatedAt, LocalDateTime.now());
+        if (lockedSession.getCurrentOrderId() == null) {
+            bind.isNull(TableSession::getCurrentOrderId);
+        } else {
+            bind.eq(TableSession::getCurrentOrderId, lockedSession.getCurrentOrderId());
+        }
+        if (!tableSessionService.update(bind)) {
+            throw new BusinessException("该会话已绑定其他订单，请使用追加菜品功能");
+        }
     }
 
     /**
@@ -1310,7 +1303,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Transactional(rollbackFor = Exception.class)
     public RestaurantOrderVO addItemsToOrder(AddItemsRequest request) {
         // 1. 查询订单是否存在
-        RestaurantOrder order = this.getById(request.getOrderId());
+        RestaurantOrder order = lockOrderForMutation(request.getOrderId());
         if (order == null) {
             throw new BusinessException(ORDER_NOT_EXIST.getCode(), "订单不存在");
         }
@@ -1337,7 +1330,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
 
         // 4. 【新增】验证购物车商品数据（包括价格、规格等）
-        validateCreateOrderCartItems(request.getCartItems());
+        validateCreateOrderCartItems(order.getStoreId(), request.getCartItems());
+        PricingQuoteVO pricingQuote = quoteCreateItems(order.getStoreId(), order.getUserId(), request.getCartItems());
 
         // 5. 计算新批次号
         Integer newBatchNo = restaurantOrderItemService.getMaxBatchNo(request.getOrderId()) + 1;
@@ -1350,31 +1344,33 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (request.getCartItems() != null && !request.getCartItems().isEmpty()) {
             LocalDateTime addTime = LocalDateTime.now();
 
-            for (CreateOrderRequest.CartItem cartItem : request.getCartItems()) {
+            for (int i = 0; i < request.getCartItems().size(); i++) {
+                CreateOrderRequest.CartItem cartItem = request.getCartItems().get(i);
+                PricingQuoteVO.Line pricedLine = pricingQuote.getLines().get(i);
                 RestaurantOrderItem orderItem = new RestaurantOrderItem();
                 orderItem.setOrderId(request.getOrderId());
                 orderItem.setDishId(cartItem.getDishId());
                 orderItem.setCategoryId(cartItem.getCategoryId());
 
-                BigDecimal itemPrice = cartItem.getPrice() != null ?
-                        cartItem.getPrice() : cartItem.getBasePrice();
-                orderItem.setPrice(itemPrice);
+                orderItem.setUnitListPrice(pricedLine.getUnitListPrice());
+                orderItem.setUnitSellingPrice(pricedLine.getUnitSellingPrice());
                 orderItem.setQuantity(cartItem.getQuantity());
+                applyCostSnapshot(orderItem, pricedLine);
 
                 // 设置赠送标识
                 orderItem.setIsGift(cartItem.getIsGift() != null ? cartItem.getIsGift() : 0);
 
                 // 计算原价小计
-                BigDecimal itemOriginalTotal = itemPrice.multiply(new BigDecimal(cartItem.getQuantity()));
+                BigDecimal itemOriginalTotal = pricedLine.getLineListAmount();
 
                 // 赠菜：优惠金额=该行原价，小计 totalPrice=原价-优惠=0（该行实付）；非赠菜：小计=原价
                 if (orderItem.getIsGift() == 1) {
-                    orderItem.setDiscountPrice(itemOriginalTotal);
-                    orderItem.setTotalPrice(BigDecimal.ZERO);
+                    orderItem.setDiscountAmount(itemOriginalTotal);
+                    orderItem.setLinePayableAmount(BigDecimal.ZERO);
                 } else {
-                    orderItem.setTotalPrice(itemOriginalTotal);
-                    orderItem.setDiscountPrice(BigDecimal.ZERO);
-                    addAmount = addAmount.add(itemOriginalTotal);
+                    orderItem.setLinePayableAmount(pricedLine.getLinePayableAmount());
+                    orderItem.setDiscountAmount(pricedLine.getLineDiscountAmount());
+                    addAmount = addAmount.add(pricedLine.getLinePayableAmount());
                 }
 
                 // 保存规格信息
@@ -1391,6 +1387,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
             // 批量保存新订单项
             restaurantOrderItemService.saveBatch(newItems);
+            persistPricingAdjustments(order.getId(), newItems, pricingQuote);
         }
 
         // 6.5 【加菜优惠券】仅支持菜品免单券，处理优惠并分摊到本批订单项的优惠金额
@@ -1414,7 +1411,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 addItemUsedCoupons.add(c);
             }
             // 按本批加菜金额计算优惠（仅菜品免单券会产生折扣）
-            Result calcResult = calcCouponDiscount(userId, addItemUserCouponIds, addAmount);
+            Result calcResult = calcCouponDiscount(userId, addItemUserCouponIds, addAmount, order.getStoreId());
             CouponDiscountResultVO calcData = (CouponDiscountResultVO) (calcResult != null ? calcResult.getData() : null);
             if (calcData == null || !Boolean.TRUE.equals(calcData.getUsable())) {
                 throw new BusinessException("优惠券不可用：" + (calcData != null ? calcData.getReason() : "未知"));
@@ -1425,8 +1422,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 for (CouponDiscountResultVO.CouponDetailVO detail : calcData.getCouponDetails()) {
                     if (detail.getCouponType() == CouponTypeEnum.DISH_FREE && detail.getDishItems() != null) {
                         for (CouponDiscountResultVO.DishItemVO di : detail.getDishItems()) {
-                            if (di.getDishId() != null && di.getPrice() != null) {
-                                freeAmountByDishId.merge(di.getDishId(), di.getPrice(), BigDecimal::add);
+                            if (di.getDishId() != null && di.getCurrentPrice() != null) {
+                                freeAmountByDishId.merge(di.getDishId(), di.getCurrentPrice(), BigDecimal::add);
                             }
                         }
                     }
@@ -1443,10 +1440,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 if (remaining == null || remaining.compareTo(BigDecimal.ZERO) <= 0) {
                     continue;
                 }
-                BigDecimal lineTotal = item.getTotalPrice() != null ? item.getTotalPrice() : BigDecimal.ZERO;
+                BigDecimal lineTotal = item.getLinePayableAmount() != null ? item.getLinePayableAmount() : BigDecimal.ZERO;
                 BigDecimal deduct = lineTotal.min(remaining);
-                item.setDiscountPrice(deduct);
-                item.setTotalPrice(lineTotal.subtract(deduct));
+                item.setDiscountAmount((item.getDiscountAmount() == null ? BigDecimal.ZERO
+                        : item.getDiscountAmount()).add(deduct));
+                item.setLinePayableAmount(lineTotal.subtract(deduct));
                 freeAmountByDishId.put(dishId, remaining.subtract(deduct));
                 if (deduct.compareTo(BigDecimal.ZERO) > 0) {
                     appliedAnyDiscount = true;
@@ -1460,6 +1458,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             log.info("加菜优惠券处理完成: orderId={}, 本批优惠券数={}, 本批加菜原价={}, 已分摊={}", request.getOrderId(), addItemUserCouponIds.size(), addAmount, appliedAnyDiscount);
         }
 
+        // 优惠分摊结束后再记录加菜事件，金额使用最终成交口径。
+        recordAddDishChanges(order, newItems);
+
         // 7. 更新订单总金额
         // 加菜只扣减本批新增订单项，不能复用整单扣库存逻辑，否则会重复扣除历史批次。
         if (!newItems.isEmpty()) {
@@ -1467,7 +1468,12 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             for (RestaurantOrderItem item : newItems) {
                 addedDishStock.merge(item.getDishId(), item.getQuantity(), Integer::sum);
             }
-            dishService.batchDecreaseStock(addedDishStock);
+            if (order.getPaymentStatus() == PaymentStatusEnum.PAID
+                    || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND) {
+                dishService.batchDecreaseStock(order.getStoreId(), addedDishStock);
+            } else {
+                dishService.batchReserveStock(order.getStoreId(), addedDishStock);
+            }
             log.info("加菜批次已扣减库存: orderId={}, batchNo={}, items={}",
                     request.getOrderId(), newBatchNo, addedDishStock);
         }
@@ -1492,10 +1498,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             order.setCouponTypes(mergedTypes);
             order.setUpdatedAt(LocalDateTime.now());
             this.updateById(order);
-            for (Long ucId : addItemUserCouponIds) {
-                FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(ucId, order.getId()));
-                log.info("加菜优惠券已核销: orderId={}, userCouponId={}", order.getId(), ucId);
-            }
+            verifyCouponsWithCompensation(addItemUserCouponIds, order.getId());
         }
 
         log.info("成功追加菜品: orderId={}, 批次号={}, 追加金额={}, 新总金额={}",
@@ -1541,7 +1544,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 收银台-扫码支付下单（预留方法）
      *
      * 业务流程：
-     * 1. 创建订单（状态为待支付）
+     * 1. 创建订单（履约状态为已下单、支付状态为未支付）
      * 2. 调用支付平台的扫码付接口
      * 3. 返回支付二维码或等待扫码结果
      * 4. 前端轮询或通过WebSocket等待支付回调
@@ -1552,70 +1555,128 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public RestaurantOrderVO cashierScanPay(CashierOrderRequest request) {
-        throw new BusinessException("扫码支付功能暂未开放");
+        if (StrUtil.isBlank(request.getAuthCode())) {
+            throw new BusinessException("请扫描顾客付款码");
+        }
+        PaymentTypeEnum paymentType = request.getPaymentType();
+        if (paymentType != PaymentTypeEnum.WECHAT && paymentType != PaymentTypeEnum.ALIPAY) {
+            throw new BusinessException("扫码支付仅支持微信或支付宝");
+        }
+        storeDataScopeService.checkStoreAccess(request.getStoreId());
 
-        /* 完整实现示例（需要对接扫码支付后才能使用）：
+        // 幂等：同一收款重试返回既有订单
+        RestaurantOrder existing = findByRequestKey(request.getIdempotencyKey());
+        if (existing != null) {
+            if (!java.util.Objects.equals(existing.getStoreId(), request.getStoreId())) {
+                throw new BusinessException("收银幂等键已被其他业务请求使用");
+            }
+            return restaurantOrderConverter.toVO(existing);
+        }
 
-        // 1. 创建订单
+        // 1. 建单（未支付）+ 明细 + 预占库存
+        Long orderId = assembleScanPayOrder(request, paymentType);
+        RestaurantOrder order = getById(orderId);
+
+        // 2. 付款码扣款：金额只用服务端重算结果；用户支付中则轮询，超时撤单。
+        BigDecimal payable = CashierAmountGuard.requireServerPayable(order.getActualAmount(), order.getTotalAmount());
+        ScanPayOutcome outcome = scanPayCharger.charge(paymentType, order.getTenantId(), order.getOrderNo(),
+                "餐饮订单-" + order.getOrderNo(), payable, request.getAuthCode());
+        // 未支付：抛异常触发本地事务回滚，撤销订单与库存预占，顾客未被扣款。
+        if (!outcome.paid()) {
+            throw new BusinessException(StrUtil.blankToDefault(outcome.message(), "顾客付款码支付失败"));
+        }
+
+        // 3. 标记已支付并计入销量（复用线上支付入账路径）
+        commitOrderSales(order);
+        int updated = baseMapper.markPaidIfCapturable(orderId, paymentType.getCode(),
+                outcome.transactionId(), LocalDateTime.now(), payable);
+        if (updated != 1) {
+            throw new BusinessException("订单支付状态更新失败");
+        }
+
+        // 4. 打印小票（失败不影响收款）
+        if (request.getStoreId() != null) {
+            StoreInfo storeInfoForPrint = storeInfoMapper.selectById(request.getStoreId());
+            if (storeInfoForPrint != null && storeInfoForPrint.getIsPrint() == BooleanEnum.YES
+                    && Boolean.TRUE.equals(request.getPrintReceipt())) {
+                try {
+                    printOrderWithStorePrinters(orderId, storeInfoForPrint.getId());
+                } catch (Exception e) {
+                    log.error("扫码支付小票打印失败: orderId={}, error={}", orderId, e.getMessage(), e);
+                }
+            }
+        }
+        return restaurantOrderConverter.toVO(getById(orderId));
+    }
+
+    /** 组装扫码支付订单：仅校验菜品、服务端计价、建单（未支付）与预占库存，返回订单ID。 */
+    private Long assembleScanPayOrder(CashierOrderRequest request, PaymentTypeEnum paymentType) {
+        validateCartItems(request.getStoreId(), request.getCartItems());
+        PricingQuoteVO pricingQuote = quoteCashierItems(request.getStoreId(), request.getUserId(), request.getCartItems());
+        BigDecimal totalAmount = pricingQuote.getListAmount();
+        BigDecimal payable = BigDecimal.ZERO;
+        for (PricingQuoteVO.Line line : pricingQuote.getLines()) {
+            payable = payable.add(line.getLinePayableAmount());
+        }
+        // 客户端金额仅做一致性检查，实际以服务端计价为准。
+        CashierAmountGuard.requireClientAmountMatches(request.getTotalPrice(), payable);
+
         String orderNo = generateOrderNo();
         RestaurantOrder order = new RestaurantOrder();
         order.setOrderNo(orderNo);
+        order.setRequestKey(request.getIdempotencyKey());
         order.setStoreId(request.getStoreId());
         order.setTableId(request.getTableId());
         order.setUserId(request.getUserId());
-        order.setOrderType(request.getOrderType() != null ? request.getOrderType() : SceneTypeEnum.ONLINE);
-        order.setTotalAmount(request.getTotalPrice());
-        order.setDiscountAmount(BigDecimal.ZERO);
-        order.setActualAmount(request.getTotalPrice());
+        order.setOrderType(request.getOrderType() != null ? request.getOrderType() : SceneTypeEnum.ADMIN_ORDER);
+        order.setTotalAmount(totalAmount);
+        order.setDiscountAmount(totalAmount.subtract(payable).max(BigDecimal.ZERO));
+        order.setDiscountRate(BigDecimal.ONE);
+        order.setActualAmount(payable);
         order.setDiningCount(request.getPeopleCount());
         order.setPaymentMode(PaymentModeEnum.ONLINE);
         order.setNote(request.getNote());
         order.setServiceFee(BigDecimal.ZERO);
         order.setPaymentStatus(PaymentStatusEnum.UNPAID);
-        order.setStatus(OrderStatusEnum.NOPAID);
+        order.setPaymentType(paymentType);
+        order.setStatus(OrderStatusEnum.PLACED);
         order.setCreatedAt(LocalDateTime.now());
         order.setUpdatedAt(LocalDateTime.now());
-
-        // 保存订单
-        this.save(order);
-
-        // 2. 创建订单明细
-        List<RestaurantOrderItem> orderItems = new ArrayList<>();
-        if (request.getCartItems() != null && !request.getCartItems().isEmpty()) {
-            for (CashierOrderRequest.CartItem cartItem : request.getCartItems()) {
-                RestaurantOrderItem orderItem = new RestaurantOrderItem();
-                orderItem.setOrderId(order.getId());
-                orderItem.setDishId(cartItem.getDishId());
-                orderItem.setCategoryId(cartItem.getCategoryId());
-                orderItem.setPrice(cartItem.getPrice());
-                orderItem.setQuantity(cartItem.getQuantity());
-                orderItem.setDiscountPrice(BigDecimal.ZERO);
-
-                BigDecimal itemTotal = cartItem.getPrice() != null
-                    ? cartItem.getPrice().multiply(new BigDecimal(cartItem.getQuantity()))
-                    : cartItem.getBasePrice().multiply(new BigDecimal(cartItem.getQuantity()));
-                orderItem.setTotalPrice(itemTotal);
-                orderItem.setSpecOptionsText(cartItem.getSpecText());
-                orderItem.setCreatedAt(LocalDateTime.now());
-                orderItem.setUpdatedAt(LocalDateTime.now());
-                orderItem.setBatchNo(1);
-                orderItem.setAddTime(LocalDateTime.now());
-
-                orderItems.add(orderItem);
+        if (request.getStoreId() != null) {
+            StoreInfo storeInfo = storeInfoMapper.selectById(request.getStoreId());
+            if (storeInfo != null && storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING) {
+                assignPickupCode(order);
             }
-            restaurantOrderItemService.saveBatch(orderItems);
         }
+        insertOrder(order);
 
-        // 3. 调用扫码支付接口（根据支付方式选择微信或支付宝）
-        // TODO: 调用扫码支付服务
-        // String qrCodeUrl = scanPayService.createQrCode(orderNo, request.getTotalPrice(), request.getPaymentType());
+        List<RestaurantOrderItem> orderItems = new ArrayList<>();
+        for (int i = 0; i < request.getCartItems().size(); i++) {
+            CashierOrderRequest.CartItem cartItem = request.getCartItems().get(i);
+            PricingQuoteVO.Line pricedLine = pricingQuote.getLines().get(i);
+            RestaurantOrderItem orderItem = new RestaurantOrderItem();
+            orderItem.setOrderId(order.getId());
+            orderItem.setDishId(cartItem.getDishId());
+            orderItem.setCategoryId(cartItem.getCategoryId());
+            orderItem.setUnitListPrice(pricedLine.getUnitListPrice());
+            orderItem.setUnitSellingPrice(pricedLine.getUnitSellingPrice());
+            orderItem.setQuantity(cartItem.getQuantity());
+            applyCostSnapshot(orderItem, pricedLine);
+            orderItem.setIsGift(0);
+            orderItem.setLinePayableAmount(pricedLine.getLinePayableAmount());
+            orderItem.setDiscountAmount(pricedLine.getLineListAmount().subtract(pricedLine.getLinePayableAmount()));
+            orderItem.setSpecOptionsText(cartItem.getSpecText());
+            orderItem.setCreatedAt(LocalDateTime.now());
+            orderItem.setUpdatedAt(LocalDateTime.now());
+            orderItem.setBatchNo(1);
+            orderItem.setAddTime(LocalDateTime.now());
+            orderItems.add(orderItem);
+        }
+        restaurantOrderItemService.saveBatch(orderItems);
+        persistPricingAdjustments(order.getId(), orderItems, pricingQuote);
 
-        // 4. 返回订单信息（包含二维码URL）
-        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(order);
-        // orderVO.setQrCodeUrl(qrCodeUrl);
-
-        return orderVO;
-        */
+        reserveOrderStock(order);
+        return order.getId();
     }
 
     /**
@@ -1635,11 +1696,20 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Transactional(rollbackFor = Exception.class)
     public RestaurantOrderVO cashierDirectOrder(CashierOrderRequest request) {
         storeDataScopeService.checkStoreAccess(request.getStoreId());
+        RestaurantOrder existing = findByRequestKey(request.getIdempotencyKey());
+        if (existing != null) {
+            if (!java.util.Objects.equals(existing.getStoreId(), request.getStoreId())
+                    || !java.util.Objects.equals(existing.getUserId(), request.getUserId())) {
+                throw new BusinessException("收银幂等键已被其他业务请求使用");
+            }
+            return restaurantOrderConverter.toVO(existing);
+        }
         if (request.getPaymentType() == PaymentTypeEnum.BANLANCE_PAY && request.getUserId() == null) {
             throw new BusinessException("余额支付请先选择会员");
         }
-        // 1. 验证前端传来的菜品数据（包括价格、规格等）
-        validateCartItems(request.getCartItems());
+        // 1. 仅校验菜品和规格，价格由服务端统一试价。
+        validateCartItems(request.getStoreId(), request.getCartItems());
+        PricingQuoteVO pricingQuote = quoteCashierItems(request.getStoreId(), request.getUserId(), request.getCartItems());
 
         // 1.5 若传了 userId 则为余额支付，先校验用户存在（Feign 调用 user-service）
         SysUser user = null;
@@ -1652,23 +1722,17 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 2. 后端重新计算订单金额（防止前端篡改数据）
         // 总金额 = 所有订单项金额（含赠送菜品原价）；优惠金额 = 订单项优惠（赠送等）+ 整单折扣
-        BigDecimal calculatedTotalAmount = BigDecimal.ZERO;   // 总金额：所有项原价之和
-        BigDecimal itemDiscountSum = BigDecimal.ZERO;        // 订单项优惠合计（如赠送行原价）
-
-        for (CashierOrderRequest.CartItem cartItem : request.getCartItems()) {
-            BigDecimal itemPrice = cartItem.getPrice() != null ?
-                    cartItem.getPrice() : cartItem.getBasePrice();
-            BigDecimal itemTotal = itemPrice.multiply(new BigDecimal(cartItem.getQuantity()));
-
-            calculatedTotalAmount = calculatedTotalAmount.add(itemTotal);
+        BigDecimal calculatedTotalAmount = pricingQuote.getListAmount();
+        BigDecimal payableBeforeRate = BigDecimal.ZERO;
+        for (int i = 0; i < request.getCartItems().size(); i++) {
+            CashierOrderRequest.CartItem cartItem = request.getCartItems().get(i);
             if (cartItem.getIsGift() != null && cartItem.getIsGift() == 1) {
                 org.hongtu.security.OperationPermission.order("gift");
-                itemDiscountSum = itemDiscountSum.add(itemTotal); // 赠送：该项优惠=原价
+            } else {
+                payableBeforeRate = payableBeforeRate.add(pricingQuote.getLines().get(i).getLinePayableAmount());
             }
         }
-
-        // 折前应付 = 总金额 - 订单项优惠
-        BigDecimal payableBeforeRate = calculatedTotalAmount.subtract(itemDiscountSum);
+        BigDecimal itemDiscountSum = calculatedTotalAmount.subtract(payableBeforeRate).max(BigDecimal.ZERO);
         if (request.getDiscountRate() != null && request.getDiscountRate().compareTo(BigDecimal.ONE) != 0)
             org.hongtu.security.OperationPermission.order("discount");
         BigDecimal discountRate = request.getDiscountRate() != null ?
@@ -1682,18 +1746,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         BigDecimal calculatedActualAmount = payableBeforeRate.multiply(discountRate).setScale(2, RoundingMode.HALF_UP);
         BigDecimal totalDiscountAmount = itemDiscountSum.add(rateDiscountAmount);
 
-        // 3. 验证前端传入的订单总金额是否正确（允许小数点后2位的误差）
-        // 前端传入的 totalPrice 为折后实付，需与 calculatedActualAmount 一致
-        if (request.getTotalPrice() != null &&
-                request.getTotalPrice().subtract(calculatedActualAmount).abs().compareTo(new BigDecimal("0.01")) > 0) {
-            throw new BusinessException(String.format(
-                    "订单金额验证失败，前端传入（实付）：%s，后端计算（实付）：%s，总金额：%s，优惠：%s",
-                    request.getTotalPrice(),
-                    calculatedActualAmount,
-                    calculatedTotalAmount,
-                    totalDiscountAmount
-            ));
-        }
+        // 3. 客户端金额仅用于一致性检查，订单和扣款金额统一使用服务端计价结果。
+        CashierAmountGuard.requireClientAmountMatches(request.getTotalPrice(), calculatedActualAmount);
 
         log.info("订单金额验证通过，总金额：{}，订单项优惠：{}，折扣优惠：{}，总优惠：{}，实付：{}",
                 calculatedTotalAmount, itemDiscountSum, rateDiscountAmount, totalDiscountAmount, calculatedActualAmount);
@@ -1711,6 +1765,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         String orderNo = generateOrderNo();
         RestaurantOrder order = new RestaurantOrder();
         order.setOrderNo(orderNo);
+        order.setRequestKey(request.getIdempotencyKey());
         order.setStoreId(request.getStoreId());
         order.setTableId(request.getTableId());
         order.setUserId(request.getUserId());
@@ -1737,41 +1792,50 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (request.getStoreId() != null) {
             StoreInfo storeInfo = storeInfoMapper.selectById(request.getStoreId());
             if (storeInfo != null && storeInfo.getPickupMode() == pickupModeEnum.NUMBERCALLING) {
-                order.setPickupCode(generatePickupCode());
+                assignPickupCode(order);
             }
         }
 
-        // 保存订单
-        this.save(order);
+        insertOrder(order);
         log.info("收银台直接下单成功: orderId={}, orderNo={}, totalAmount={}, discountRate={}, actualAmount={}, paymentType={}",
                 order.getId(), orderNo, calculatedTotalAmount, discountRate, calculatedActualAmount, order.getPaymentType().getDesc());
 
-        // 5. 创建订单明细
+        // 5. 创建订单明细；人工整单折扣按行分摊，保证订单项应付合计等于订单实付。
         List<RestaurantOrderItem> orderItems = new ArrayList<>();
         if (request.getCartItems() != null && !request.getCartItems().isEmpty()) {
-            for (CashierOrderRequest.CartItem cartItem : request.getCartItems()) {
+            int remainingNormalItems = (int) request.getCartItems().stream()
+                    .filter(item -> !Integer.valueOf(1).equals(item.getIsGift())).count();
+            BigDecimal remainingActualAmount = calculatedActualAmount;
+            for (int i = 0; i < request.getCartItems().size(); i++) {
+                CashierOrderRequest.CartItem cartItem = request.getCartItems().get(i);
+                PricingQuoteVO.Line pricedLine = pricingQuote.getLines().get(i);
                 RestaurantOrderItem orderItem = new RestaurantOrderItem();
                 orderItem.setOrderId(order.getId());
                 orderItem.setDishId(cartItem.getDishId());
                 orderItem.setCategoryId(cartItem.getCategoryId());
-                orderItem.setPrice(cartItem.getPrice());
+                orderItem.setUnitListPrice(pricedLine.getUnitListPrice());
+                orderItem.setUnitSellingPrice(pricedLine.getUnitSellingPrice());
                 orderItem.setQuantity(cartItem.getQuantity());
+                applyCostSnapshot(orderItem, pricedLine);
 
                 // 设置赠送标识
                 orderItem.setIsGift(cartItem.getIsGift() != null ? cartItem.getIsGift() : 0);
 
-                // 原价小计 = 单价*数量；优惠金额 = 赠菜时为该行原价，否则为 0
-                BigDecimal itemTotal = cartItem.getPrice() != null
-                        ? cartItem.getPrice().multiply(new BigDecimal(cartItem.getQuantity()))
-                        : cartItem.getBasePrice().multiply(new BigDecimal(cartItem.getQuantity()));
+                BigDecimal itemTotal = pricedLine.getLineListAmount();
 
                 if (orderItem.getIsGift() == 1) {
                     // 赠菜：单价保留，优惠金额=该行原价；小计 totalPrice = 原价小计 - 优惠 = 0（该行实付）
-                    orderItem.setDiscountPrice(itemTotal);
-                    orderItem.setTotalPrice(BigDecimal.ZERO);
+                    orderItem.setDiscountAmount(itemTotal);
+                    orderItem.setLinePayableAmount(BigDecimal.ZERO);
                 } else {
-                    orderItem.setTotalPrice(itemTotal);
-                    orderItem.setDiscountPrice(BigDecimal.ZERO);
+                    BigDecimal linePayable = remainingNormalItems == 1
+                            ? remainingActualAmount
+                            : pricedLine.getLinePayableAmount().multiply(discountRate)
+                                    .setScale(2, RoundingMode.HALF_UP);
+                    orderItem.setLinePayableAmount(linePayable);
+                    orderItem.setDiscountAmount(pricedLine.getLineListAmount().subtract(linePayable));
+                    remainingActualAmount = remainingActualAmount.subtract(linePayable);
+                    remainingNormalItems--;
                 }
 
                 orderItem.setSpecOptionsText(cartItem.getSpecText());
@@ -1785,11 +1849,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
             // 批量保存订单明细
             restaurantOrderItemService.saveBatch(orderItems);
+            persistPricingAdjustments(order.getId(), orderItems, pricingQuote);
+            persistManualRateAdjustments(order.getId(), orderItems, pricingQuote, discountRate);
         }
 
-        // 6. 减少菜品库存并增加销量
+        // 6. 减少菜品库存并增加销量，同时记录已预占，防止后续重复扣减。
         try {
-            decreaseOrderDishStock(order.getId());
+            reserveOrderStock(order);
         } catch (Exception e) {
             log.error("订单【{}】减少库存失败: {}", order.getOrderNo(), e.getMessage(), e);
             throw new BusinessException("库存不足或减少失败：" + e.getMessage());
@@ -1798,15 +1864,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         // 6.5 余额支付：扣减用户余额并记录流水（user-service 本地事务原子完成）
         // 【微服务改造】刻意放在库存扣减之后：远程扣款失败会抛异常，本地事务（订单/明细/库存）整体回滚，无需补偿
         if (user != null) {
-            BigDecimal newBalance = FeignResultUtil.unwrap(userFeignClient.changeBalance(BalanceChangeDTO.builder()
+            changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
                     .userId(request.getUserId())
                     .amount(calculatedActualAmount)
                     .type(BalanceResourceEnum.EXPENSE.getCode())
                     .orderNo(orderNo)
                     .operateUserId(StpUtil.getLoginIdAsLong())
-                    .build()));
-            log.info("收银台余额支付扣款: orderId={}, userId={}, actualAmount={}, newBalance={}",
-                    order.getId(), request.getUserId(), calculatedActualAmount, newBalance);
+                    .build());
+            log.info("收银台余额支付扣款: orderId={}, userId={}, actualAmount={}",
+                    order.getId(), request.getUserId(), calculatedActualAmount);
         }
 
         // 7. 打印小票：根据门店打印配置 + 请求的是否打印一起判断，使用门店配置的打印机批量打印（与普通下单逻辑一致）
@@ -1846,7 +1912,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 1. 查询会话
         LambdaQueryWrapper<TableSession> sessionWrapper = new LambdaQueryWrapper<>();
-        sessionWrapper.eq(TableSession::getSessionNo, sessionNo);
+        // 锁定会话，防止并发结算导致重复扣余额或重复释放桌位。
+        sessionWrapper.eq(TableSession::getSessionNo, sessionNo).last("FOR UPDATE");
         TableSession session = tableSessionService.getOne(sessionWrapper);
         if (session == null) {
             throw new BusinessException("会话不存在");
@@ -1861,50 +1928,56 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
 
         // 2. 查询订单并校验
-        RestaurantOrder order = this.getById(orderId);
+        RestaurantOrder order = getOrderForUpdate(orderId);
         if (order == null) {
             throw new BusinessException("订单不存在");
         }
         if (!sessionNo.equals(order.getSessionNo())) {
             throw new BusinessException("订单与会话不匹配");
         }
+        if (order.getStatus() == OrderStatusEnum.CANCELLED || order.getStatus() == OrderStatusEnum.COMPLETED) {
+            throw new BusinessException("当前订单状态不允许结算");
+        }
         if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
             throw new BusinessException("订单已支付，无需重复结算");
         }
+        if (order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND
+                || order.getPaymentStatus() == PaymentStatusEnum.FULL_REFUND) {
+            throw new BusinessException("退款订单不允许再次结算");
+        }
 
-        // 2.5 收银传入的备注、折扣：更新订单（与 CashierOrderRequest 一致）
+        // 2.5 从服务端保存的订单项快照重算应付，禁止信任客户端或订单主表中的异常金额。
+        long orderItemCount = restaurantOrderItemService.count(new LambdaQueryWrapper<RestaurantOrderItem>()
+                .eq(RestaurantOrderItem::getOrderId, orderId));
+        if (orderItemCount <= 0) {
+            throw new BusinessException("订单没有有效明细，禁止结算");
+        }
+        order = recalculateOrderAmountsFromItems(orderId);
+        if (order == null) {
+            throw new BusinessException("订单不存在");
+        }
+
+        // 2.6 收银传入的备注、折扣：折扣只能作用于服务端重算后的应付金额。
         if (request.getNote() != null) {
             order.setNote(request.getNote());
         }
-        if (request.getDiscountRate() != null && request.getDiscountRate().compareTo(BigDecimal.ONE) != 0)
+        BigDecimal discountRate = request.getDiscountRate() == null ? BigDecimal.ONE : request.getDiscountRate();
+        if (discountRate.compareTo(BigDecimal.ONE) != 0) {
             org.hongtu.security.OperationPermission.order("discount");
-        if (request.getDiscountRate() != null && request.getDiscountRate().compareTo(BigDecimal.ZERO) >= 0
-                && request.getDiscountRate().compareTo(BigDecimal.ONE) <= 0) {
-            BigDecimal currentPayable = order.getActualAmount() != null ? order.getActualAmount() : order.getTotalAmount();
-            if (currentPayable == null) {
-                currentPayable = BigDecimal.ZERO;
-            }
-            BigDecimal newActualAmount = currentPayable.multiply(request.getDiscountRate()).setScale(2, RoundingMode.HALF_UP);
-            order.setDiscountRate(request.getDiscountRate());
-            order.setActualAmount(newActualAmount);
         }
+        BigDecimal serverPayable = CashierAmountGuard.applyManualDiscount(order.getActualAmount(), discountRate);
+        if (serverPayable.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("服务端应付金额为0，禁止人工结算，请检查订单优惠和明细");
+        }
+        order.setDiscountRate(discountRate);
+        order.setActualAmount(serverPayable);
         // 优惠金额（菜品优惠+折扣优惠）始终 = 总价 - 实付，保证无折扣时也正确显示
         BigDecimal total = order.getTotalAmount() != null ? order.getTotalAmount() : BigDecimal.ZERO;
-        BigDecimal actual = order.getActualAmount() != null ? order.getActualAmount() : total;
-        order.setDiscountAmount(total.subtract(actual).max(BigDecimal.ZERO));
+        order.setDiscountAmount(total.subtract(serverPayable).max(BigDecimal.ZERO));
 
-        BigDecimal payAmount = request.getActualAmount() != null ? request.getActualAmount() : order.getActualAmount();
-        if (payAmount == null || payAmount.compareTo(BigDecimal.ZERO) < 0) {
-            payAmount = order.getActualAmount();
-        }
-        if (payAmount == null || payAmount.compareTo(BigDecimal.ZERO) < 0) {
-            throw new BusinessException("实收金额不正确");
-        }
-
-        PaymentTypeEnum paymentType = request.getPaymentType();
-        if (paymentType == null) {
-            paymentType = PaymentTypeEnum.CASH;
-        }
+        PaymentTypeEnum paymentType = CashierAmountGuard.requireSettlementPaymentType(request.getPaymentType());
+        BigDecimal tenderedAmount = CashierAmountGuard.requireTenderedAmount(
+                paymentType, request.getActualAmount(), serverPayable);
         BigDecimal deductedBalanceAmount = null;
         if (paymentType == PaymentTypeEnum.BANLANCE_PAY) {
             if (request.getUserId() == null) {
@@ -1914,20 +1987,19 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             if (user == null) {
                 throw new BusinessException("用户不存在");
             }
-            BigDecimal needPay = order.getActualAmount() != null ? order.getActualAmount() : order.getTotalAmount();
-            if (needPay == null) needPay = BigDecimal.ZERO;
+            BigDecimal needPay = serverPayable;
             if (user.getSurplusMoney() == null || user.getSurplusMoney().compareTo(needPay) < 0) {
                 throw new BusinessException("用户余额不足，当前余额：" +
                         (user.getSurplusMoney() != null ? user.getSurplusMoney() : "0") + " 元");
             }
             // 扣减余额并记录流水（user-service 本地事务原子完成；失败抛异常，本地事务回滚）
-            FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
+            changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
                     .userId(request.getUserId())
                     .amount(needPay)
                     .type(BalanceResourceEnum.EXPENSE.getCode())
                     .orderNo(order.getOrderNo())
                     .operateUserId(StpUtil.getLoginIdAsLong())
-                    .build()));
+                    .build());
             deductedBalanceAmount = needPay;
         }
 
@@ -1936,25 +2008,23 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             order.setPaymentStatus(PaymentStatusEnum.PAID);
             order.setPaymentType(paymentType);
             order.setPaymentTime(LocalDateTime.now());
-            order.setActualAmount(payAmount);
+            order.setActualAmount(serverPayable);
             order.setStatus(OrderStatusEnum.COMPLETED);
             order.setUpdatedAt(LocalDateTime.now());
+            commitOrderSales(order);
             this.updateById(order);
 
             // 4. 结束会话并更新桌位状态为空闲
-            tableSessionService.endSession(sessionNo, payAmount);
+            tableSessionService.endSession(sessionNo, serverPayable);
+            pushSessionEndedAfterCommit(sessionNo, serverPayable);
 
             // 5. 打印小票（可选）
             if (Boolean.TRUE.equals(request.getPrintReceipt())) {
-                try {
-                    orderPrintService.printOrder(order.getId());
-                } catch (Exception e) {
-                    log.error("桌位结算打印小票失败: orderId={}", order.getId(), e);
-                }
+                printOrderWithStorePrinters(order.getId(), order.getStoreId());
             }
 
-            log.info("桌位结算成功: sessionNo={}, orderId={}, orderNo={}, payAmount={}, paymentType={}",
-                    sessionNo, order.getId(), order.getOrderNo(), payAmount, paymentType);
+            log.info("桌位结算成功: sessionNo={}, orderId={}, orderNo={}, payableAmount={}, tenderedAmount={}, paymentType={}",
+                    sessionNo, order.getId(), order.getOrderNo(), serverPayable, tenderedAmount, paymentType);
 
             return restaurantOrderConverter.toVO(order);
         } catch (RuntimeException exception) {
@@ -1964,6 +2034,71 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
             throw exception;
         }
+    }
+
+    /**
+     * 未支付订单只预占库存。已经支付的订单同时计入销量。
+     */
+    private void reserveOrderStock(RestaurantOrder order) {
+        if (order == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(order.getStockReserved())) {
+            if (order.getPaymentStatus() == PaymentStatusEnum.PAID
+                    && !Boolean.TRUE.equals(order.getSalesCommitted())) {
+                commitOrderSales(order);
+                this.updateById(order);
+            }
+            return;
+        }
+        decreaseOrderDishStock(order.getId());
+        order.setStockReserved(true);
+        order.setUpdatedAt(LocalDateTime.now());
+        if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
+            commitOrderSales(order);
+        }
+        if (!this.updateById(order)) {
+            throw new BusinessException("记录订单库存预占状态失败");
+        }
+    }
+
+    /** 支付成功后把已预占数量计入销量，重复通知不会再次累加。 */
+    private void commitOrderSales(RestaurantOrder order) {
+        if (order == null || Boolean.TRUE.equals(order.getSalesCommitted())) {
+            return;
+        }
+        Map<Long, Integer> quantities = orderItemQuantities(order.getId());
+        if (!quantities.isEmpty()) {
+            dishService.batchCommitSales(order.getStoreId(), quantities);
+        }
+        order.setSalesCommitted(true);
+        order.setUpdatedAt(LocalDateTime.now());
+    }
+
+    /** 取消或超时时释放仍留在订单中的预占；已计销量的订单同时冲减销量。 */
+    private void restoreReservedOrderStock(RestaurantOrder order) {
+        if (order == null || !Boolean.TRUE.equals(order.getStockReserved())) {
+            return;
+        }
+        Map<Long, Integer> quantities = orderItemQuantities(order.getId());
+        if (!quantities.isEmpty()) {
+            if (Boolean.TRUE.equals(order.getSalesCommitted())) {
+                dishService.batchIncreaseStockAndDecreaseSales(order.getStoreId(), quantities);
+            } else {
+                dishService.batchReleaseReservedStock(order.getStoreId(), quantities);
+            }
+        }
+        order.setStockReserved(false);
+        order.setSalesCommitted(false);
+        order.setUpdatedAt(LocalDateTime.now());
+    }
+
+    private Map<Long, Integer> orderItemQuantities(Long orderId) {
+        LambdaQueryWrapper<RestaurantOrderItem> itemWrapper = new LambdaQueryWrapper<>();
+        itemWrapper.eq(RestaurantOrderItem::getOrderId, orderId);
+        return restaurantOrderItemService.list(itemWrapper).stream()
+                .collect(Collectors.toMap(RestaurantOrderItem::getDishId,
+                        RestaurantOrderItem::getQuantity, Integer::sum));
     }
 
     /**
@@ -1988,8 +2123,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 dishStockMap.put(dishId, dishStockMap.getOrDefault(dishId, 0) + quantity);
             }
 
-            // 批量减少库存
-            dishService.batchDecreaseStock(dishStockMap);
+            // 库存属于门店，必须按订单门店扣减，不能再修改总部菜品主数据。
+            RestaurantOrder order = this.getById(orderId);
+            if (order == null) throw new BusinessException("订单不存在");
+            dishService.batchReserveStock(order.getStoreId(), dishStockMap);
             log.info("订单【orderId={}】已减少菜品库存: {}", orderId, dishStockMap);
         }
     }
@@ -1999,44 +2136,165 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 策略：每天按顺序从001开始递增，第二天重新从001开始
      * 格式：少于3位数字时前面补0（001、002...999、1000、1001...）
      */
-    private synchronized String generatePickupCode() {
+    private void assignPickupCode(RestaurantOrder order) {
+        LocalDate pickupDate = LocalDate.now();
+        String redisKey = "order:pickup-code:" + TenantContext.getTenantId()
+                + ":" + order.getStoreId() + ":" + pickupDate;
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>(
+                "local value = redis.call('INCR', KEYS[1]); "
+                        + "if value == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]); end; return value;",
+                Long.class);
+        Long nextCode = (Long) redisCache.redisTemplate.execute(
+                script, Collections.singletonList(redisKey), String.valueOf(3 * 24 * 60 * 60));
+        if (nextCode == null || nextCode <= 0) {
+            throw new BusinessException("取餐码生成失败，请稍后重试");
+        }
+        order.setPickupDate(pickupDate);
+        order.setPickupCode(nextCode < 1000 ? String.format("%03d", nextCode) : String.valueOf(nextCode));
+    }
+
+    private void changeBalanceDurable(Long orderId, BalanceChangeDTO dto) {
+        localOutboxService.executeRemote("BALANCE_CHANGE",
+                "balance:" + dto.getOrderNo() + ":" + dto.getType(),
+                JSONUtil.createObj()
+                        .set("orderId", orderId)
+                        .set("userId", dto.getUserId())
+                        .set("amount", dto.getAmount())
+                        .set("type", dto.getType())
+                        .set("orderNo", dto.getOrderNo())
+                        .toString(),
+                () -> FeignResultUtil.check(userFeignClient.changeBalance(dto)));
+    }
+
+    private void insertOrder(RestaurantOrder order) {
+        persistOrderWithPickupRetry(order, true);
+    }
+
+    private void updateOrder(RestaurantOrder order) {
+        persistOrderWithPickupRetry(order, false);
+    }
+
+    /**
+     * 取餐码唯一约束冲突时重新取号。Redis 不可用时直接失败，不退回随机三位码。
+     */
+    private void persistOrderWithPickupRetry(RestaurantOrder order, boolean insert) {
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            try {
+                boolean saved = insert ? this.baseMapper.insert(order) > 0 : this.updateById(order);
+                if (!saved) {
+                    throw new BusinessException(insert ? "保存订单失败" : "更新订单失败");
+                }
+                return;
+            } catch (DuplicateKeyException duplicate) {
+                if (attempt == 5 || StrUtil.isBlank(order.getPickupCode()) || !isPickupDuplicate(duplicate)) {
+                    throw duplicate;
+                }
+                log.warn("取餐码冲突，重新生成: orderNo={}, attempt={}", order.getOrderNo(), attempt);
+                assignPickupCode(order);
+            }
+        }
+    }
+
+    private boolean isPickupDuplicate(DuplicateKeyException duplicate) {
+        Throwable cause = duplicate.getMostSpecificCause();
+        String message = cause == null ? duplicate.getMessage() : cause.getMessage();
+        return message != null && message.contains("uk_tenant_store_pickup");
+    }
+
+    /**
+     * 多张券跨服务核销时逐张记录成功项；任一失败立即按原订单号补偿，避免部分核销。
+     */
+    private void verifyCouponsWithCompensation(List<Long> userCouponIds, Long orderId) {
+        if (userCouponIds == null || userCouponIds.isEmpty()) {
+            return;
+        }
+        List<Long> verified = new ArrayList<>();
         try {
-            // 获取今天的日期（格式：yyyy-MM-dd）
-            String today = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-
-            // 查询今天最大的取餐码（按数值大小排序）
-            LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
-            wrapper.apply("DATE_FORMAT(created_at, '%Y-%m-%d') = {0}", today)
-                    .isNotNull(RestaurantOrder::getPickupCode)
-                    .orderByDesc(RestaurantOrder::getPickupCode)
-                    .last("LIMIT 1");
-
-            RestaurantOrder lastOrder = this.getOne(wrapper);
-
-            int nextCode = 1; // 默认从001开始
-
-            if (lastOrder != null && lastOrder.getPickupCode() != null) {
+            for (Long userCouponId : userCouponIds) {
+                localOutboxService.executeRemote("COUPON_VERIFY",
+                        "coupon-verify:" + orderId + ":" + userCouponId,
+                        JSONUtil.createObj().set("orderId", orderId).set("userCouponId", userCouponId).toString(),
+                        () -> FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(userCouponId, orderId)));
+                verified.add(userCouponId);
+                log.info("优惠券已核销: orderId={}, userCouponId={}", orderId, userCouponId);
+            }
+            if (TransactionSynchronizationManager.isActualTransactionActive()
+                    && TransactionSynchronizationManager.isSynchronizationActive()) {
+                Long tenantId = TenantContext.getTenantId();
+                List<Long> rollbackCoupons = List.copyOf(verified);
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status != TransactionSynchronization.STATUS_ROLLED_BACK) {
+                            return;
+                        }
+                        TenantScope.run(tenantId, () -> rollbackCoupons.forEach(couponId -> {
+                            try {
+                                FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(couponId, orderId));
+                            } catch (Exception compensationError) {
+                                log.error("订单事务回滚后的优惠券补偿失败: orderId={}, userCouponId={}",
+                                        orderId, couponId, compensationError);
+                            }
+                        }));
+                    }
+                });
+            }
+        } catch (RuntimeException verifyError) {
+            for (Long verifiedId : verified) {
                 try {
-                    // 获取最大取餐码并+1
-                    int lastCode = Integer.parseInt(lastOrder.getPickupCode());
-                    nextCode = lastCode + 1;
-                } catch (NumberFormatException e) {
-                    log.warn("解析取餐码失败，使用默认值001: {}", lastOrder.getPickupCode());
+                    FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(verifiedId, orderId));
+                } catch (Exception compensationError) {
+                    log.error("优惠券核销补偿失败，需告警处理: orderId={}, userCouponId={}",
+                            orderId, verifiedId, compensationError);
                 }
             }
+            throw verifyError;
+        }
+    }
 
-            // 少于3位数字时前面补0，超过3位数字直接返回
-            if (nextCode < 1000) {
-                return String.format("%03d", nextCode);
-            } else {
-                return String.valueOf(nextCode);
+    /** 取消订单返券出现部分失败时，将已返还部分重新绑定原订单，维持两侧一致。 */
+    private void restoreCouponsWithCompensation(List<Long> userCouponIds, Long orderId) {
+        List<Long> restored = new ArrayList<>();
+        try {
+            for (Long userCouponId : userCouponIds) {
+                localOutboxService.executeRemote("COUPON_RESTORE",
+                        "coupon-restore:" + orderId + ":" + userCouponId,
+                        JSONUtil.createObj().set("orderId", orderId).set("userCouponId", userCouponId).toString(),
+                        () -> FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(userCouponId, orderId)));
+                restored.add(userCouponId);
+                log.info("优惠券已返还: orderId={}, userCouponId={}", orderId, userCouponId);
             }
-
-        } catch (Exception e) {
-            log.error("生成取餐码失败，使用随机码", e);
-            // 降级方案：生成随机取餐码
-            int code = (int) ((Math.random() * 999) + 1);
-            return String.format("%03d", code);
+            if (TransactionSynchronizationManager.isActualTransactionActive()
+                    && TransactionSynchronizationManager.isSynchronizationActive()) {
+                Long tenantId = TenantContext.getTenantId();
+                List<Long> rollbackCoupons = List.copyOf(restored);
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status != TransactionSynchronization.STATUS_ROLLED_BACK) {
+                            return;
+                        }
+                        TenantScope.run(tenantId, () -> rollbackCoupons.forEach(couponId -> {
+                            try {
+                                FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(couponId, orderId));
+                            } catch (Exception compensationError) {
+                                log.error("取消事务回滚后的优惠券补偿失败: orderId={}, userCouponId={}",
+                                        orderId, couponId, compensationError);
+                            }
+                        }));
+                    }
+                });
+            }
+        } catch (RuntimeException restoreError) {
+            for (Long restoredId : restored) {
+                try {
+                    FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(restoredId, orderId));
+                } catch (Exception compensationError) {
+                    log.error("取消订单返券补偿失败，需告警处理: orderId={}, userCouponId={}",
+                            orderId, restoredId, compensationError);
+                }
+            }
+            throw restoreError;
         }
     }
 
@@ -2044,14 +2302,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 验证购物车商品数据（CreateOrderRequest）
      * 验证内容：
      * 1. 菜品是否存在
-     * 2. 菜品基础价格（basePrice）是否正确
-     * 3. 规格额外价格（extraPrice）是否正确
-     * 4. 菜品总价（price = basePrice + extraPrice）是否正确
+     * 2. 规格额外价格是否与服务端规格定义一致
+     * 客户端价格字段不参与校验和结算，最终金额统一由 PricingService 计算。
      *
      * @param cartItems 购物车商品列表
      * @throws BusinessException 验证失败时抛出异常
      */
-    private void validateCreateOrderCartItems(List<CreateOrderRequest.CartItem> cartItems) {
+    private void validateCreateOrderCartItems(Long storeId, List<CreateOrderRequest.CartItem> cartItems) {
         if (cartItems == null || cartItems.isEmpty()) {
             throw new BusinessException("购物车为空，无法创建订单");
         }
@@ -2067,27 +2324,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
 
             // 1. 查询菜品信息
-            Dish dish = dishService.getById(cartItem.getDishId());
-            if (dish == null) {
-                throw new BusinessException("菜品【" + cartItem.getDishName() + "】不存在");
-            }
+            DishVO dish = dishService.getEffectiveDish(cartItem.getDishId(), storeId, true);
 
-            // 2. 验证基础价格（basePrice）
-            // basePrice应该等于菜品的price（优惠价）或originalPrice（原价）
-            BigDecimal dbBasePrice = dish.getPrice() != null ? dish.getPrice() : dish.getOriginalPrice();
-            if (dbBasePrice == null) {
+            if (dish.getEffectiveSalePrice() == null) {
                 throw new BusinessException("菜品【" + dish.getDishName() + "】价格未设置");
-            }
-
-            // 允许小数点后2位的误差
-            if (cartItem.getBasePrice() == null ||
-                    cartItem.getBasePrice().subtract(dbBasePrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】基础价格不正确，数据库价格：%s，前端传入：%s",
-                        dish.getDishName(),
-                        dbBasePrice,
-                        cartItem.getBasePrice()
-                ));
             }
 
             // 3. 验证规格额外价格（extraPrice）
@@ -2144,23 +2384,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 ));
             }
 
-            // 4. 验证菜品总价（price = basePrice + extraPrice）
-            BigDecimal calculatedPrice = cartItem.getBasePrice().add(cartItem.getExtraPrice());
-
-            if (cartItem.getPrice() == null ||
-                    cartItem.getPrice().subtract(calculatedPrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】总价不正确，基础价格：%s，规格价格：%s，计算总价：%s，前端传入：%s",
-                        dish.getDishName(),
-                        cartItem.getBasePrice(),
-                        cartItem.getExtraPrice(),
-                        calculatedPrice,
-                        cartItem.getPrice()
-                ));
-            }
-
-            log.info("菜品【{}】验证通过，基础价格：{}，规格价格：{}，总价：{}",
-                    dish.getDishName(), cartItem.getBasePrice(), cartItem.getExtraPrice(), cartItem.getPrice());
+            log.info("菜品【{}】验证通过，服务端正常售价：{}，规格价格：{}",
+                    dish.getDishName(), dish.getEffectiveSalePrice(), cartItem.getExtraPrice());
         }
 
         log.info("购物车商品数据验证完成");
@@ -2170,14 +2395,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 验证购物车商品数据（CashierOrderRequest）
      * 验证内容：
      * 1. 菜品是否存在
-     * 2. 菜品基础价格（basePrice）是否正确
-     * 3. 规格额外价格（extraPrice）是否正确
-     * 4. 菜品总价（price = basePrice + extraPrice）是否正确
+     * 2. 规格额外价格是否与服务端规格定义一致
+     * 客户端价格字段不参与校验和结算，最终金额统一由 PricingService 计算。
      *
      * @param cartItems 购物车商品列表
      * @throws BusinessException 验证失败时抛出异常
      */
-    private void validateCartItems(List<CashierOrderRequest.CartItem> cartItems) {
+    private void validateCartItems(Long storeId, List<CashierOrderRequest.CartItem> cartItems) {
         if (cartItems == null || cartItems.isEmpty()) {
             throw new BusinessException("购物车为空，无法创建订单");
         }
@@ -2193,27 +2417,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
 
             // 1. 查询菜品信息
-            Dish dish = dishService.getById(cartItem.getDishId());
-            if (dish == null) {
-                throw new BusinessException("菜品【" + cartItem.getDishName() + "】不存在");
-            }
+            DishVO dish = dishService.getEffectiveDish(cartItem.getDishId(), storeId, true);
 
-            // 2. 验证基础价格（basePrice）
-            // basePrice应该等于菜品的price（优惠价）或originalPrice（原价）
-            BigDecimal dbBasePrice = dish.getPrice() != null ? dish.getPrice() : dish.getOriginalPrice();
-            if (dbBasePrice == null) {
+            if (dish.getEffectiveSalePrice() == null) {
                 throw new BusinessException("菜品【" + dish.getDishName() + "】价格未设置");
-            }
-
-            // 允许小数点后2位的误差
-            if (cartItem.getBasePrice() == null ||
-                    cartItem.getBasePrice().subtract(dbBasePrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】基础价格不正确，数据库价格：%s，前端传入：%s",
-                        dish.getDishName(),
-                        dbBasePrice,
-                        cartItem.getBasePrice()
-                ));
             }
 
             // 3. 验证规格额外价格（extraPrice）
@@ -2270,23 +2477,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 ));
             }
 
-            // 4. 验证菜品总价（price = basePrice + extraPrice）
-            BigDecimal calculatedPrice = cartItem.getBasePrice().add(cartItem.getExtraPrice());
-
-            if (cartItem.getPrice() == null ||
-                    cartItem.getPrice().subtract(calculatedPrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】总价不正确，基础价格：%s，规格价格：%s，计算总价：%s，前端传入：%s",
-                        dish.getDishName(),
-                        cartItem.getBasePrice(),
-                        cartItem.getExtraPrice(),
-                        calculatedPrice,
-                        cartItem.getPrice()
-                ));
-            }
-
-            log.info("菜品【{}】验证通过，基础价格：{}，规格价格：{}，总价：{}",
-                    dish.getDishName(), cartItem.getBasePrice(), cartItem.getExtraPrice(), cartItem.getPrice());
+            log.info("菜品【{}】验证通过，服务端正常售价：{}，规格价格：{}",
+                    dish.getDishName(), dish.getEffectiveSalePrice(), cartItem.getExtraPrice());
         }
 
         log.info("购物车商品数据验证完成");
@@ -2301,6 +2493,21 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * @param storeId 门店ID
      */
     private void printOrderWithStorePrinters(Long orderId, Long storeId) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            Long tenantId = TenantContext.getTenantId();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    TenantScope.run(tenantId, () -> doPrintOrderWithStorePrinters(orderId, storeId));
+                }
+            });
+            return;
+        }
+        doPrintOrderWithStorePrinters(orderId, storeId);
+    }
+
+    private void doPrintOrderWithStorePrinters(Long orderId, Long storeId) {
         try {
             // 1. 查询该门店所有启用的打印机
             List<PrinterInfo> enabledPrinters = printerInfoService.getEnabledPrintersByStore(storeId);
@@ -2348,6 +2555,22 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 仅打印本批加菜项（加菜单）到门店所有启用打印机，不打印整单
      */
     private void printAddItemsWithStorePrinters(Long orderId, List<Long> orderItemIds, Long storeId) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            Long tenantId = TenantContext.getTenantId();
+            List<Long> itemIds = List.copyOf(orderItemIds);
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    TenantScope.run(tenantId, () -> doPrintAddItemsWithStorePrinters(orderId, itemIds, storeId));
+                }
+            });
+            return;
+        }
+        doPrintAddItemsWithStorePrinters(orderId, orderItemIds, storeId);
+    }
+
+    private void doPrintAddItemsWithStorePrinters(Long orderId, List<Long> orderItemIds, Long storeId) {
         try {
             List<PrinterInfo> enabledPrinters = printerInfoService.getEnabledPrintersByStore(storeId);
             if (enabledPrinters == null || enabledPrinters.isEmpty()) {
@@ -2372,6 +2595,22 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         } catch (Exception e) {
             log.error("加菜单打印任务执行异常: orderId={}", orderId, e);
         }
+    }
+
+    private void pushSessionEndedAfterCommit(String sessionNo, BigDecimal paidAmount) {
+        Long tenantId = TenantContext.getTenantId();
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    TenantScope.run(tenantId,
+                            () -> webSocketPushService.pushSessionEnded(sessionNo, paidAmount));
+                }
+            });
+            return;
+        }
+        webSocketPushService.pushSessionEnded(sessionNo, paidAmount);
     }
 
     // ==================== 优惠券计算（下单专用） ====================
@@ -2401,7 +2640,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * @param orderTotalAmount 订单总金额（用于计算整单折扣和满减门槛）
      */
     @Override
-    public Result calcCouponDiscount(Long userId, List<Long> userCouponIds, BigDecimal orderTotalAmount) {
+    public Result calcCouponDiscount(Long userId, List<Long> userCouponIds,
+                                     BigDecimal orderTotalAmount, Long storeId) {
         if (userId == null) {
             return Result.error("用户ID不能为空");
         }
@@ -2499,7 +2739,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 }
 
                 // 计算优惠金额（根据券类型和剩余金额）
-                BigDecimal discountAmount = calculateCouponDiscountAmount(coupon, remainingAmount);
+                BigDecimal discountAmount = calculateCouponDiscountAmount(coupon, remainingAmount, storeId);
 
                 // 构建优惠券明细VO
                 CouponDiscountResultVO.CouponDetailVO.CouponDetailVOBuilder detailBuilder = CouponDiscountResultVO.CouponDetailVO.builder()
@@ -2519,16 +2759,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     List<CouponDishItem> dishItems = FeignResultUtil.unwrap(couponFeignClient.getItemsByCouponId(coupon.getId()));
                     List<CouponDiscountResultVO.DishItemVO> dishItemVOList = new ArrayList<>();
                     for (CouponDishItem item : dishItems) {
-                        Dish dish = dishService.getById(item.getDishId());
+                        DishVO dish = dishService.getEffectiveDish(item.getDishId(), storeId, true);
                         if (dish != null) {
-                            // 优先使用优惠价，没有则用原价
-                            BigDecimal price = dish.getPrice() != null ? dish.getPrice() : dish.getOriginalPrice();
+                            BigDecimal price = dish.getDisplayPrice();
                             CouponDiscountResultVO.DishItemVO dishItemVO = CouponDiscountResultVO.DishItemVO.builder()
                                     .dishId(dish.getId())
                                     .dishName(dish.getDishName())
                                     .dishPic(dish.getDishPics())
-                                    .price(price)
-                                    .originalPrice(dish.getOriginalPrice())
+                                    .salePrice(dish.getEffectiveSalePrice())
+                                    .currentPrice(price)
                                     .build();
                             dishItemVOList.add(dishItemVO);
                         }
@@ -2575,7 +2814,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * @param orderAmount 订单金额（用于计算整单折扣和满减门槛）
      * @return 优惠金额
      */
-    private BigDecimal calculateCouponDiscountAmount(Coupon coupon, BigDecimal orderAmount) {
+    private BigDecimal calculateCouponDiscountAmount(Coupon coupon, BigDecimal orderAmount, Long storeId) {
         CouponTypeEnum type = coupon.getType();
 
         return switch (type) {
@@ -2608,10 +2847,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 }
                 BigDecimal total = BigDecimal.ZERO;
                 for (CouponDishItem item : dishItems) {
-                    Dish dish = dishService.getById(item.getDishId());
+                    DishVO dish = dishService.getEffectiveDish(item.getDishId(), storeId, true);
                     if (dish != null) {
-                        // 优先使用优惠价，没有则用原价
-                        BigDecimal price = dish.getPrice() != null ? dish.getPrice() : dish.getOriginalPrice();
+                        BigDecimal price = dish.getDisplayPrice();
                         if (price != null) {
                             total = total.add(price);
                         }
@@ -2625,182 +2863,691 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     // ================== 退菜功能实现 ==================
 
     /**
-     * 退菜（管理员操作）
-     *
-     * @param request 退菜请求
-     * @return 退菜结果
+     * 退菜。先落退款单，渠道明确成功后才修改订单项、库存和支付状态。
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public RefundDishVO refundDish(RefundDishRequest request) {
-        log.info("开始处理退菜请求: orderId={}, refundItemsCount={}, reason={}",
-                request.getOrderId(), request.getRefundItems().size(), request.getRefundReason());
+        OrderRefund refund = independentTx.execute(status -> stageRefund(request));
+        if (refund.getStatus() == RefundStatusEnum.SUCCEEDED) {
+            return refundResult(refund, refund.getAmount());
+        }
+        ChannelRefundState state = callRefundChannel(refund);
+        RefundDishVO result = independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+        if (RefundStatusEnum.FAILED.getDesc().equals(result.getRefundStatus())) {
+            throw new BusinessException("渠道退款失败，请稍后使用同一退菜请求重试");
+        }
+        return result;
+    }
 
-        // 1. 查询订单信息
-        RestaurantOrder order = this.getById(request.getOrderId());
+    /** 补偿仍未完成的退款单。渠道成功后才提交业务。 */
+    @Override
+    public void reconcileOpenRefunds() {
+        List<OrderRefund> open = TenantIgnore.get(() -> orderRefundMapper.selectList(
+                new LambdaQueryWrapper<OrderRefund>()
+                        .in(OrderRefund::getStatus, RefundStatusEnum.REQUESTED, RefundStatusEnum.PROCESSING)
+                        .orderByAsc(OrderRefund::getUpdatedAt)
+                        .last("LIMIT 20")));
+        for (OrderRefund refund : open) {
+            try {
+                TenantScope.run(refund.getTenantId(), () -> {
+                    ChannelRefundState state = callRefundChannel(refund);
+                    independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+                });
+            } catch (RuntimeException exception) {
+                log.warn("退款补偿失败: refundNo={}", refund.getRefundNo(), exception);
+            }
+        }
+    }
+
+    /** 微信退款回调只在核对退款单、原订单、金额和商户后入账。 */
+    @Override
+    public String handleWeChatRefundNotify(Long tenantId, String requestBody, String signature,
+                                           String timestamp, String nonce, String serial) {
+        if (tenantId == null) {
+            return "{\"code\": \"FAIL\", \"message\": \"缺少租户\"}";
+        }
+        try {
+            PaymentRefundNotifyResult parsed = FeignResultUtil.unwrap(payFeignClient.parseWeChatRefundNotify(
+                    WeChatNotifyParseDTO.builder().tenantId(tenantId).requestBody(requestBody)
+                            .signature(signature).timestamp(timestamp).nonce(nonce).serial(serial).build()));
+            completeChannelRefundNotify(tenantId, parsed);
+            return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
+        } catch (RuntimeException exception) {
+            log.error("微信退款回调处理失败", exception);
+            return "{\"code\": \"FAIL\", \"message\": \"处理失败\"}";
+        }
+    }
+
+    /** 支付宝退款通知验签后按退款单入账。 */
+    @Override
+    public String handleAlipayRefundNotify(Long tenantId, Map<String, String> params) {
+        if (tenantId == null) {
+            return "failure";
+        }
+        try {
+            PaymentRefundNotifyResult parsed = FeignResultUtil.unwrap(
+                    payFeignClient.parseAlipayRefundNotify(tenantId, params));
+            completeChannelRefundNotify(tenantId, parsed);
+            return "success";
+        } catch (RuntimeException exception) {
+            log.error("支付宝退款回调处理失败", exception);
+            return "failure";
+        }
+    }
+
+    private void completeChannelRefundNotify(Long tenantId, PaymentRefundNotifyResult parsed) {
+        if (parsed == null || !Boolean.TRUE.equals(parsed.getMerchantMatched())
+                || StrUtil.isBlank(parsed.getOutRefundNo()) || StrUtil.isBlank(parsed.getOutTradeNo())) {
+            throw new BusinessException("退款回调缺少原订单或退款单");
+        }
+        TenantScope.run(tenantId, () -> {
+            OrderRefund refund = orderRefundMapper.selectOne(new LambdaQueryWrapper<OrderRefund>()
+                    .eq(OrderRefund::getRefundNo, parsed.getOutRefundNo()).last("LIMIT 1"));
+            if (refund == null || !tenantId.equals(refund.getTenantId())
+                    || !parsed.getOutTradeNo().equals(refund.getOrderNo())) {
+                throw new BusinessException("退款回调与退款单不匹配");
+            }
+            if (parsed.getRefundAmount() != null) {
+                CashierAmountGuard.requireClientAmountMatches(parsed.getRefundAmount(), refund.getAmount());
+            }
+            ChannelRefundState state = channelRefundState(parsed.getStatus());
+            if (StrUtil.isNotBlank(parsed.getChannelRefundId())) {
+                refund.setChannelRefundId(parsed.getChannelRefundId());
+                orderRefundMapper.updateById(refund);
+            }
+            independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+        });
+    }
+
+    private boolean closeUnpaidOrder(Long orderId, String reason, boolean timeout) {
+        RestaurantOrder snapshot = independentTx.execute(status -> {
+            RestaurantOrder order = lockOrderForMutation(orderId);
+            if (order == null) {
+                throw new BusinessException(ORDER_NOT_EXIST.getCode(), "订单不存在");
+            }
+            if (order.getPaymentStatus() == PaymentStatusEnum.PAID
+                    || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND
+                    || order.getPaymentStatus() == PaymentStatusEnum.PAID_PENDING) {
+                throw new BusinessException(ORDER_CANCEL_FAIL.getCode(), "已支付的订单不能取消，请先退款");
+            }
+            if (order.getPaymentStatus() == PaymentStatusEnum.RECONCILING) {
+                throw new BusinessException("订单对账中，请稍后再试");
+            }
+            boolean allowed = timeout
+                    ? PaymentTransitionPolicy.canTimeout(order.getStatus(), order.getPaymentStatus())
+                    : PaymentTransitionPolicy.canCancel(order.getStatus(), order.getPaymentStatus());
+            if (!allowed) {
+                throw new BusinessException(ORDER_CANCEL_FAIL.getCode(), "订单已完成或已取消，无法再次取消");
+            }
+            return order;
+        });
+        PaymentTransitionPolicy.Close close = resolveChannelClose(snapshot);
+        if (close == PaymentTransitionPolicy.Close.PAID) {
+            handlePaymentSuccess(snapshot.getOrderNo(), null, snapshot.getPaymentType(), null, snapshot.getTenantId());
+            throw new BusinessException(ORDER_CANCEL_FAIL.getCode(), "订单已支付，不能取消，请走退款");
+        }
+        if (close == PaymentTransitionPolicy.Close.UNKNOWN) {
+            return Boolean.TRUE.equals(independentTx.execute(status ->
+                    baseMapper.markReconcilingIfUnpaid(orderId) == 1));
+        }
+        RestaurantOrder closed = independentTx.execute(status -> finishUnpaidClose(orderId, reason, timeout));
+        if (closed == null) {
+            return false;
+        }
+        restoreCouponsAfterClose(closed);
+        try {
+            orderTimeoutQueueService.removeFromTimeoutQueue(orderId);
+        } catch (RuntimeException exception) {
+            log.error("从超时队列移除订单失败: orderId={}", orderId, exception);
+        }
+        return true;
+    }
+
+    private RestaurantOrder finishUnpaidClose(Long orderId, String reason, boolean timeout) {
+        RestaurantOrder order = lockOrderForMutation(orderId);
+        if (order == null) {
+            return null;
+        }
+        boolean allowed = timeout
+                ? PaymentTransitionPolicy.canTimeout(order.getStatus(), order.getPaymentStatus())
+                : PaymentTransitionPolicy.canCancel(order.getStatus(), order.getPaymentStatus());
+        if (!allowed) {
+            return null;
+        }
+        restoreReservedOrderStock(order);
+        int updated = timeout
+                ? baseMapper.markTimeoutIfUnpaid(orderId, reason, LocalDateTime.now())
+                : baseMapper.markClosedIfUnpaid(orderId, reason, LocalDateTime.now());
+        if (updated != 1) {
+            throw new BusinessException("订单状态已变化，请刷新后重试");
+        }
+        return order;
+    }
+
+    private void restoreCouponsAfterClose(RestaurantOrder order) {
+        if (StrUtil.isBlank(order.getUserCouponIds())) {
+            return;
+        }
+        List<Long> couponIds = java.util.Arrays.stream(order.getUserCouponIds().split(","))
+                .filter(StrUtil::isNotBlank).map(String::trim).map(Long::valueOf).toList();
+        restoreCouponsWithCompensation(couponIds, order.getId());
+    }
+
+    private PaymentTransitionPolicy.Close resolveChannelClose(RestaurantOrder order) {
+        if (order.getPaymentType() != PaymentTypeEnum.WECHAT && order.getPaymentType() != PaymentTypeEnum.ALIPAY) {
+            return PaymentTransitionPolicy.Close.CLOSED;
+        }
+        try {
+            Map<String, Object> result = order.getPaymentType() == PaymentTypeEnum.WECHAT
+                    ? FeignResultUtil.unwrap(payFeignClient.closeWeChatTrade(order.getTenantId(), order.getOrderNo()))
+                    : FeignResultUtil.unwrap(payFeignClient.closeAlipayTrade(order.getTenantId(), order.getOrderNo()));
+            PaymentTransitionPolicy.Close outcome = PaymentTransitionPolicy.parseOutcome(stringValue(result.get("outcome")));
+            if (outcome != PaymentTransitionPolicy.Close.UNKNOWN) {
+                return outcome;
+            }
+        } catch (BusinessException exception) {
+            if (exception.getMessage() != null && exception.getMessage().contains("未配置")) {
+                throw exception;
+            }
+            return queryChannelClose(order);
+        } catch (RuntimeException exception) {
+            return queryChannelClose(order);
+        }
+        return queryChannelClose(order);
+    }
+
+    private PaymentTransitionPolicy.Close queryChannelClose(RestaurantOrder order) {
+        try {
+            if (order.getPaymentType() == PaymentTypeEnum.WECHAT) {
+                Map<String, Object> result = FeignResultUtil.unwrap(
+                        payFeignClient.queryWeChatTrade(order.getTenantId(), order.getOrderNo()));
+                if (!Boolean.TRUE.equals(result.get("success"))) {
+                    return PaymentTransitionPolicy.Close.UNKNOWN;
+                }
+                return PaymentTransitionPolicy.interpretWeChatTradeState(stringValue(result.get("tradeState")));
+            }
+            Map<String, Object> result = FeignResultUtil.unwrap(
+                    payFeignClient.queryAlipayTrade(order.getTenantId(), order.getOrderNo()));
+            return PaymentTransitionPolicy.interpretAlipayTrade(Boolean.TRUE.equals(result.get("success")),
+                    stringValue(result.get("tradeStatus")), stringValue(result.get("subCode")));
+        } catch (RuntimeException exception) {
+            log.warn("关单后查单失败: orderNo={}", order.getOrderNo(), exception);
+            return PaymentTransitionPolicy.Close.UNKNOWN;
+        }
+    }
+
+    private boolean capturePayment(Long orderId, String transactionId, PaymentTypeEnum paymentType, BigDecimal notifiedAmount) {
+        try {
+            CaptureOutcome outcome = independentTx.execute(status -> captureInTransaction(
+                    status, orderId, transactionId, paymentType, notifiedAmount));
+            if (outcome != null && outcome.paidOrder != null) {
+                try {
+                    applyPaidSideEffects(outcome.paidOrder);
+                } catch (RuntimeException exception) {
+                    log.error("支付副作用失败，订单已入账: orderId={}", outcome.paidOrder.getId(), exception);
+                }
+            }
+            if (outcome != null && outcome.lateRefund != null
+                    && outcome.lateRefund.getStatus() != RefundStatusEnum.SUCCEEDED) {
+                ChannelRefundState state = callRefundChannel(outcome.lateRefund);
+                independentTx.execute(status -> applyRefundResult(outcome.lateRefund.getId(), state));
+            }
+            return true;
+        } catch (StockCaptureException exception) {
+            independentTx.execute(status -> {
+                RestaurantOrder order = lockOrderForMutation(orderId);
+                if (order == null) {
+                    return false;
+                }
+                BigDecimal payable = CashierAmountGuard.requireServerPayable(order.getActualAmount(), order.getTotalAmount());
+                baseMapper.markPaidPendingIfCapturable(orderId,
+                        paymentType == null ? null : paymentType.getCode(), transactionId, LocalDateTime.now(), payable);
+                return true;
+            });
+            return true;
+        }
+    }
+
+    private CaptureOutcome captureInTransaction(org.springframework.transaction.TransactionStatus status, Long orderId,
+                                                String transactionId, PaymentTypeEnum paymentType, BigDecimal notifiedAmount) {
+        RestaurantOrder order = lockOrderForMutation(orderId);
+        if (order == null) {
+            return new CaptureOutcome(null, null);
+        }
+        if (order.getPaymentType() != null && paymentType != null && order.getPaymentType() != paymentType) {
+            throw new BusinessException("支付回调渠道与订单支付渠道不一致");
+        }
+        BigDecimal payable = CashierAmountGuard.requireServerPayable(order.getActualAmount(), order.getTotalAmount());
+        if (notifiedAmount != null) {
+            CashierAmountGuard.requireClientAmountMatches(notifiedAmount, payable);
+        }
+        PaymentTransitionPolicy.Capture decision = PaymentTransitionPolicy.decide(order.getStatus(), order.getPaymentStatus());
+        if (decision == PaymentTransitionPolicy.Capture.ALREADY) {
+            return new CaptureOutcome(null, null);
+        }
+        if (decision == PaymentTransitionPolicy.Capture.REFUND) {
+            if (paymentType != null) {
+                order.setPaymentType(paymentType);
+            }
+            return new CaptureOutcome(null, stageLateRefund(order, payable));
+        }
+        try {
+            if (!Boolean.TRUE.equals(order.getStockReserved())) {
+                reserveOrderStock(order);
+            }
+            commitOrderSales(order);
+            int updated = baseMapper.markPaidIfCapturable(orderId,
+                    paymentType == null ? null : paymentType.getCode(), transactionId, LocalDateTime.now(), payable);
+            if (updated != 1) {
+                throw new BusinessException("订单状态已变化");
+            }
+            order.setPaymentStatus(PaymentStatusEnum.PAID);
+            order.setPaymentType(paymentType);
+            order.setPaymentNo(transactionId);
+            order.setActualAmount(payable);
+            order.setSalesCommitted(true);
+            order.setStockReserved(true);
+            return new CaptureOutcome(order, null);
+        } catch (BusinessException exception) {
+            if (exception.getMessage() != null && exception.getMessage().contains("库存")) {
+                status.setRollbackOnly();
+                throw new StockCaptureException();
+            }
+            throw exception;
+        }
+    }
+
+    private OrderRefund stageLateRefund(RestaurantOrder order, BigDecimal amount) {
+        String refundNo = "LATE" + order.getId();
+        OrderRefund existing = orderRefundMapper.selectOne(new LambdaQueryWrapper<OrderRefund>()
+                .eq(OrderRefund::getRefundNo, refundNo).last("LIMIT 1"));
+        if (existing != null) {
+            return existing;
+        }
+        OrderRefund refund = new OrderRefund();
+        refund.setTenantId(order.getTenantId());
+        refund.setStoreId(order.getStoreId());
+        refund.setOrderId(order.getId());
+        refund.setOrderNo(order.getOrderNo());
+        refund.setRefundNo(refundNo);
+        refund.setIdempotencyKey("LATE");
+        refund.setChannel(order.getPaymentType());
+        refund.setAmount(amount);
+        refund.setStatus(RefundStatusEnum.REQUESTED);
+        refund.setReason("订单取消后支付成功自动退款");
+        refund.setCreatedAt(LocalDateTime.now());
+        refund.setUpdatedAt(LocalDateTime.now());
+        orderRefundMapper.insert(refund);
+        return refund;
+    }
+
+    private static final class CaptureOutcome {
+        private final RestaurantOrder paidOrder;
+        private final OrderRefund lateRefund;
+
+        private CaptureOutcome(RestaurantOrder paidOrder, OrderRefund lateRefund) {
+            this.paidOrder = paidOrder;
+            this.lateRefund = lateRefund;
+        }
+    }
+
+    private OrderRefund stageRefund(RefundDishRequest request) {
+        if (request.getIdempotencyKey() == null || request.getIdempotencyKey().isBlank()) {
+            throw new BusinessException("退菜请求缺少幂等键");
+        }
+        RestaurantOrder order = lockOrderForMutation(request.getOrderId());
         if (order == null) {
             throw new IllegalArgumentException("订单不存在");
         }
-
-        // 2. 校验订单状态
         validateOrderStatusForRefund(order);
-
-        // 3. 查询订单项信息
-        LambdaQueryWrapper<RestaurantOrderItem> itemQueryWrapper = new LambdaQueryWrapper<>();
-        itemQueryWrapper.eq(RestaurantOrderItem::getOrderId, request.getOrderId());
-        List<RestaurantOrderItem> orderItems = restaurantOrderItemService.list(itemQueryWrapper);
-
-        if (orderItems == null || orderItems.isEmpty()) {
-            throw new IllegalArgumentException("订单明细不存在");
+        String refundNo = buildRefundRequestNo(order, request);
+        OrderRefund existing = orderRefundMapper.selectOne(new LambdaQueryWrapper<OrderRefund>()
+                .eq(OrderRefund::getOrderId, order.getId())
+                .eq(OrderRefund::getIdempotencyKey, request.getIdempotencyKey())
+                .last("LIMIT 1"));
+        if (existing != null) {
+            if (existing.getStatus() == RefundStatusEnum.FAILED) {
+                existing.setStatus(RefundStatusEnum.REQUESTED);
+                existing.setUpdatedAt(LocalDateTime.now());
+                orderRefundMapper.updateById(existing);
+            }
+            return existing;
         }
-
-        // 4. 构建订单项ID到订单项的映射
+        List<RestaurantOrderItem> orderItems = restaurantOrderItemService.list(
+                new LambdaQueryWrapper<RestaurantOrderItem>().eq(RestaurantOrderItem::getOrderId, order.getId()));
         Map<Long, RestaurantOrderItem> orderItemMap = orderItems.stream()
                 .collect(Collectors.toMap(RestaurantOrderItem::getId, item -> item));
-
-        // 5. 处理每个退菜项（并汇总退菜数量用于已支付订单的库存/销量回滚）
-        BigDecimal totalRefundAmount = BigDecimal.ZERO;
-        List<RefundDishVO.RefundItemDetail> refundDetails = new ArrayList<>();
-        List<RestaurantOrderItem> itemsToUpdate = new ArrayList<>();
-        List<Long> itemsToDelete = new ArrayList<>();
-        Map<Long, Integer> refundDishQuantityMap = new HashMap<>(); // dishId -> 退菜数量合计
-
+        Map<Long, Integer> pending = pendingRefundQuantities(order.getId());
+        BigDecimal total = BigDecimal.ZERO;
+        List<OrderRefundItem> details = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
         for (RefundDishRequest.RefundItem refundItem : request.getRefundItems()) {
+            if (refundItem.getOrderItemId() == null || refundItem.getRefundQuantity() == null
+                    || refundItem.getRefundQuantity() <= 0 || !seen.add(refundItem.getOrderItemId())) {
+                throw new IllegalArgumentException("退菜项和退菜数量必须有效");
+            }
             RestaurantOrderItem orderItem = orderItemMap.get(refundItem.getOrderItemId());
-
             if (orderItem == null) {
                 throw new IllegalArgumentException("订单项不存在: " + refundItem.getOrderItemId());
             }
-
-            // 校验退菜数量
-            if (refundItem.getRefundQuantity() > orderItem.getQuantity()) {
-                throw new IllegalArgumentException(
-                        String.format("退菜数量不能超过订单数量，订单项ID: %d, 订单数量: %d, 退菜数量: %d",
-                                orderItem.getId(), orderItem.getQuantity(), refundItem.getRefundQuantity())
-                );
+            int available = orderItem.getQuantity() - pending.getOrDefault(orderItem.getId(), 0);
+            if (refundItem.getRefundQuantity() > available) {
+                throw new IllegalArgumentException("退菜数量不能超过可退数量");
             }
-
-            // 计算退款金额
-            BigDecimal refundAmount;
+            if (orderItem.getLinePayableAmount() == null || orderItem.getQuantity() == null || orderItem.getQuantity() <= 0) {
+                throw new BusinessException("订单项金额异常，禁止退菜");
+            }
+            BigDecimal refundAmount = refundItem.getRefundQuantity().equals(orderItem.getQuantity())
+                    ? orderItem.getLinePayableAmount()
+                    : orderItem.getLinePayableAmount()
+                    .multiply(BigDecimal.valueOf(refundItem.getRefundQuantity()))
+                    .divide(BigDecimal.valueOf(orderItem.getQuantity()), 2, RoundingMode.HALF_UP);
             if (refundItem.getRefundAmount() != null) {
-                // 使用指定的退款金额
-                refundAmount = refundItem.getRefundAmount();
-            } else {
-                // 自动计算：单价 * 退菜数量
-                BigDecimal unitPrice = orderItem.getTotalPrice().divide(
-                        BigDecimal.valueOf(orderItem.getQuantity()), 2, RoundingMode.HALF_UP);
-                refundAmount = unitPrice.multiply(BigDecimal.valueOf(refundItem.getRefundQuantity()));
+                CashierAmountGuard.requireClientAmountMatches(refundItem.getRefundAmount(), refundAmount);
             }
-
-            totalRefundAmount = totalRefundAmount.add(refundAmount);
-
-            // 更新订单项
-            int remainingQuantity = orderItem.getQuantity() - refundItem.getRefundQuantity();
-            if (remainingQuantity == 0) {
-                // 全部退菜，删除订单项
-                itemsToDelete.add(orderItem.getId());
-            } else {
-                // 部分退菜，更新数量和金额
-                orderItem.setQuantity(remainingQuantity);
-                BigDecimal newTotalPrice = orderItem.getTotalPrice().subtract(refundAmount);
-                orderItem.setTotalPrice(newTotalPrice);
-                orderItem.setUpdatedAt(LocalDateTime.now());
-                itemsToUpdate.add(orderItem);
-            }
-
-            // 构建退菜明细
-            RefundDishVO.RefundItemDetail detail = new RefundDishVO.RefundItemDetail();
+            total = total.add(refundAmount);
+            OrderRefundItem detail = new OrderRefundItem();
+            detail.setTenantId(order.getTenantId());
             detail.setOrderItemId(orderItem.getId());
             detail.setDishId(orderItem.getDishId());
-            detail.setDishName(getDishName(orderItem.getDishId()));
-            detail.setOriginalQuantity(orderItem.getQuantity() + refundItem.getRefundQuantity());
-            detail.setRefundQuantity(refundItem.getRefundQuantity());
-            detail.setRemainingQuantity(remainingQuantity);
-            detail.setPrice(orderItem.getPrice());
-            detail.setRefundAmount(refundAmount);
-            detail.setSpecOptionsText(orderItem.getSpecOptionsText());
-            refundDetails.add(detail);
-
-            refundDishQuantityMap.merge(orderItem.getDishId(), refundItem.getRefundQuantity(), Integer::sum);
-
-            log.info("处理退菜项: orderItemId={}, dishId={}, originalQty={}, refundQty={}, refundAmount={}",
-                    orderItem.getId(), orderItem.getDishId(),
-                    orderItem.getQuantity() + refundItem.getRefundQuantity(),
-                    refundItem.getRefundQuantity(), refundAmount);
+            detail.setQuantity(refundItem.getRefundQuantity());
+            detail.setAmount(refundAmount);
+            detail.setCreatedAt(LocalDateTime.now());
+            details.add(detail);
         }
-
-        // 6. 批量更新/删除订单项
-        if (!itemsToUpdate.isEmpty()) {
-            restaurantOrderItemService.updateBatchById(itemsToUpdate);
-            log.info("更新订单项数量: count={}", itemsToUpdate.size());
+        OrderRefund refund = new OrderRefund();
+        refund.setTenantId(order.getTenantId());
+        refund.setStoreId(order.getStoreId());
+        refund.setOrderId(order.getId());
+        refund.setOrderNo(order.getOrderNo());
+        refund.setRefundNo(refundNo);
+        refund.setIdempotencyKey(request.getIdempotencyKey());
+        refund.setChannel(order.getPaymentType() == null ? PaymentTypeEnum.CASH : order.getPaymentType());
+        refund.setAmount(total);
+        refund.setStatus(RefundStatusEnum.REQUESTED);
+        refund.setReason(request.getRefundReason());
+        refund.setCreatedAt(LocalDateTime.now());
+        refund.setUpdatedAt(LocalDateTime.now());
+        try {
+            orderRefundMapper.insert(refund);
+        } catch (DuplicateKeyException exception) {
+            OrderRefund raced = orderRefundMapper.selectOne(new LambdaQueryWrapper<OrderRefund>()
+                    .eq(OrderRefund::getOrderId, order.getId())
+                    .eq(OrderRefund::getIdempotencyKey, request.getIdempotencyKey())
+                    .last("LIMIT 1"));
+            return raced != null ? raced : orderRefundMapper.selectOne(new LambdaQueryWrapper<OrderRefund>()
+                    .eq(OrderRefund::getRefundNo, refundNo).last("LIMIT 1"));
         }
-        if (!itemsToDelete.isEmpty()) {
-            restaurantOrderItemService.removeByIds(itemsToDelete);
-            log.info("删除订单项: count={}", itemsToDelete.size());
+        for (OrderRefundItem detail : details) {
+            detail.setRefundId(refund.getId());
+            orderRefundItemMapper.insert(detail);
         }
+        return refund;
+    }
 
-        // 6.5 若订单已支付，退菜需加回库存并减少销量（与结算时减库存/加销量对应）
-        if (order.getPaymentStatus() == PaymentStatusEnum.PAID && !refundDishQuantityMap.isEmpty()) {
-            try {
-                dishService.batchIncreaseStockAndDecreaseSales(refundDishQuantityMap);
-                log.info("退菜已加回库存并减少销量: orderId={}, refundDishMap={}", order.getId(), refundDishQuantityMap);
-            } catch (Exception e) {
-                log.error("退菜加回库存/减销量失败: orderId={}", order.getId(), e);
-                throw new BusinessException("退菜回滚库存/销量失败：" + e.getMessage());
+    private Map<Long, Integer> pendingRefundQuantities(Long orderId) {
+        List<OrderRefund> open = orderRefundMapper.selectList(new LambdaQueryWrapper<OrderRefund>()
+                .eq(OrderRefund::getOrderId, orderId)
+                .in(OrderRefund::getStatus, RefundStatusEnum.REQUESTED, RefundStatusEnum.PROCESSING));
+        if (open.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = open.stream().map(OrderRefund::getId).toList();
+        return orderRefundItemMapper.selectList(new LambdaQueryWrapper<OrderRefundItem>()
+                        .in(OrderRefundItem::getRefundId, ids)).stream()
+                .collect(Collectors.toMap(OrderRefundItem::getOrderItemId, OrderRefundItem::getQuantity, Integer::sum));
+    }
+
+    private ChannelRefundState callRefundChannel(OrderRefund refund) {
+        RestaurantOrder order = this.getById(refund.getOrderId());
+        if (order == null) {
+            return ChannelRefundState.FAILED;
+        }
+        boolean captured = order.getPaymentStatus() == PaymentStatusEnum.PAID
+                || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND
+                || order.getPaymentStatus() == PaymentStatusEnum.TIMEOUT
+                || order.getPaymentStatus() == PaymentStatusEnum.CLOSED
+                || order.getPaymentStatus() == PaymentStatusEnum.PAID_PENDING;
+        PaymentTypeEnum paymentType = refund.getChannel();
+        if (!captured || paymentType == PaymentTypeEnum.CASH || paymentType == PaymentTypeEnum.BANK_CARD
+                || paymentType == PaymentTypeEnum.OFFLINE_PAY || paymentType == PaymentTypeEnum.COUPON_PAY) {
+            return ChannelRefundState.SUCCESS;
+        }
+        if (paymentType == PaymentTypeEnum.BANLANCE_PAY) {
+            return ChannelRefundState.BALANCE;
+        }
+        if (paymentType == PaymentTypeEnum.WECHAT) {
+            return callWeChatRefund(order, refund);
+        }
+        if (paymentType == PaymentTypeEnum.ALIPAY) {
+            return callAlipayRefund(order, refund);
+        }
+        throw new BusinessException("当前支付方式尚未接入退款，禁止修改本地支付状态");
+    }
+
+    private ChannelRefundState callWeChatRefund(RestaurantOrder order, OrderRefund refund) {
+        Map<String, Object> trade = FeignResultUtil.unwrap(
+                payFeignClient.queryWeChatTrade(order.getTenantId(), order.getOrderNo()));
+        if (!Boolean.TRUE.equals(trade.get("success")) || !"SUCCESS".equals(String.valueOf(trade.get("tradeState")))) {
+            throw new BusinessException("微信支付原交易状态异常，无法退款");
+        }
+        Object total = trade.get("total");
+        if (!(total instanceof Number totalNumber)) {
+            throw new BusinessException("微信支付原交易金额缺失，无法退款");
+        }
+        Map<String, Object> current = FeignResultUtil.unwrap(
+                payFeignClient.queryWeChatRefund(order.getTenantId(), refund.getRefundNo()));
+        if (!Boolean.TRUE.equals(current.get("success"))) {
+            current = FeignResultUtil.unwrap(payFeignClient.refundWeChatTrade(
+                    order.getTenantId(), order.getOrderNo(), refund.getRefundNo(), toCentString(refund.getAmount()),
+                    String.valueOf(totalNumber.longValue()), StrUtil.blankToDefault(refund.getReason(), "订单退菜退款"),
+                    PaymentNotifyUrls.wechatRefund(weChatOrderNotifyUrl, order.getTenantId())));
+        }
+        if (!Boolean.TRUE.equals(current.get("success"))) {
+            return ChannelRefundState.FAILED;
+        }
+        if (current.get("refundId") != null) {
+            refund.setChannelRefundId(String.valueOf(current.get("refundId")));
+        }
+        return channelRefundState(String.valueOf(current.get("status")));
+    }
+
+    private ChannelRefundState callAlipayRefund(RestaurantOrder order, OrderRefund refund) {
+        Map<String, Object> current = FeignResultUtil.unwrap(payFeignClient.refundAlipayTrade(
+                order.getTenantId(), order.getOrderNo(), refund.getRefundNo(),
+                refund.getAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString(),
+                StrUtil.blankToDefault(refund.getReason(), "订单退菜退款")));
+        if (!Boolean.TRUE.equals(current.get("success"))) {
+            return ChannelRefundState.FAILED;
+        }
+        if (current.get("tradeNo") != null) {
+            refund.setChannelRefundId(String.valueOf(current.get("tradeNo")));
+        }
+        return ChannelRefundState.SUCCESS;
+    }
+
+    private RefundDishVO applyRefundResult(Long refundId, ChannelRefundState state) {
+        OrderRefund refund = orderRefundMapper.selectById(refundId);
+        if (refund == null) {
+            throw new BusinessException("退款单不存在");
+        }
+        if (refund.getStatus() == RefundStatusEnum.SUCCEEDED) {
+            return refundResult(refund, refund.getAmount());
+        }
+        if (state == ChannelRefundState.PROCESSING) {
+            orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.PROCESSING.getCode(), refund.getChannelRefundId());
+            RefundDishVO processing = refundResult(refund, null);
+            processing.setRefundStatus(RefundStatusEnum.PROCESSING.getDesc());
+            return processing;
+        }
+        if (state == ChannelRefundState.FAILED) {
+            orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.FAILED.getCode(), refund.getChannelRefundId());
+            RefundDishVO failed = refundResult(refund, null);
+            failed.setRefundStatus(RefundStatusEnum.FAILED.getDesc());
+            return failed;
+        }
+        if (state == ChannelRefundState.BALANCE) {
+            RestaurantOrder order = lockOrderForMutation(refund.getOrderId());
+            if (order.getUserId() == null) {
+                throw new BusinessException("余额支付订单缺少用户信息，无法退款");
             }
+            Long operatorId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : order.getUserId();
+            changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
+                    .userId(order.getUserId()).amount(refund.getAmount()).type(3)
+                    .orderNo(refund.getRefundNo()).operateUserId(operatorId).build());
         }
-
-        // 7. 更新订单总金额
-        // 7. 按订单项重算订单总金额，保证与菜品项一致
-        order = recalculateOrderAmountsFromItems(order.getId());
-        BigDecimal newTotalPrice = order != null ? order.getActualAmount() : BigDecimal.ZERO;
-
-        // 8. 如果订单金额为0或负数，取消订单
-        if (newTotalPrice.compareTo(BigDecimal.ZERO) <= 0) {
-            order.setStatus(OrderStatusEnum.CANCELLED);
-            order.setCancelReason("退菜后订单金额为0，自动取消");
-            order.setCancelTime(LocalDateTime.now());
-            log.info("订单金额为0，自动取消订单: orderId={}", order.getId());
+        if (orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.SUCCEEDED.getCode(), refund.getChannelRefundId()) != 1) {
+            OrderRefund current = orderRefundMapper.selectById(refundId);
+            return refundResult(current, current.getAmount());
         }
+        return commitRefundBusiness(refund);
+    }
 
-        // 9. 如果订单已支付，更新支付状态为部分退款或全额退款
-        if (order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-            if (newTotalPrice.compareTo(BigDecimal.ZERO) <= 0) {
-                order.setPaymentStatus(PaymentStatusEnum.FULL_REFUND);
-                log.info("订单全额退款: orderId={}, refundAmount={}", order.getId(), totalRefundAmount);
+    private RefundDishVO commitRefundBusiness(OrderRefund refund) {
+        RestaurantOrder order = lockOrderForMutation(refund.getOrderId());
+        List<OrderRefundItem> details = orderRefundItemMapper.selectList(new LambdaQueryWrapper<OrderRefundItem>()
+                .eq(OrderRefundItem::getRefundId, refund.getId()));
+        Map<Long, Integer> stock = new HashMap<>();
+        List<RefundDishVO.RefundItemDetail> viewItems = new ArrayList<>();
+        for (OrderRefundItem detail : details) {
+            RestaurantOrderItem orderItem = restaurantOrderItemService.getById(detail.getOrderItemId());
+            if (orderItem == null) {
+                continue;
+            }
+            recordRefundDishChange(order, orderItem, detail.getQuantity(), detail.getAmount(), refund.getReason(), refund.getRefundNo());
+            int remaining = orderItem.getQuantity() - detail.getQuantity();
+            if (remaining <= 0) {
+                restaurantOrderItemService.removeById(orderItem.getId());
             } else {
-                order.setPaymentStatus(PaymentStatusEnum.PARTIAL_REFUND);
-                log.info("订单部分退款: orderId={}, refundAmount={}, remainingAmount={}",
-                        order.getId(), totalRefundAmount, newTotalPrice);
+                orderItem.setQuantity(remaining);
+                orderItem.setLinePayableAmount(orderItem.getLinePayableAmount().subtract(detail.getAmount()));
+                orderItem.setUpdatedAt(LocalDateTime.now());
+                restaurantOrderItemService.updateById(orderItem);
+            }
+            stock.merge(detail.getDishId(), detail.getQuantity(), Integer::sum);
+            RefundDishVO.RefundItemDetail view = new RefundDishVO.RefundItemDetail();
+            view.setOrderItemId(detail.getOrderItemId());
+            view.setDishId(detail.getDishId());
+            view.setDishName(getDishName(detail.getDishId()));
+            view.setRefundQuantity(detail.getQuantity());
+            view.setRemainingQuantity(Math.max(remaining, 0));
+            view.setRefundAmount(detail.getAmount());
+            viewItems.add(view);
+        }
+        if ("LATE".equals(refund.getIdempotencyKey())) {
+            baseMapper.markRefunded(order.getId(), PaymentStatusEnum.FULL_REFUND.getCode(),
+                    0, 0, order.getStatus().getCode(), order.getCancelReason(), order.getCancelTime());
+            RefundDishVO late = refundResult(refund, BigDecimal.ZERO);
+            late.setRefundStatus(RefundStatusEnum.SUCCEEDED.getDesc());
+            return late;
+        }
+        boolean captured = order.getPaymentStatus() == PaymentStatusEnum.PAID
+                || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND
+                || order.getPaymentStatus() == PaymentStatusEnum.TIMEOUT
+                || order.getPaymentStatus() == PaymentStatusEnum.CLOSED
+                || order.getPaymentStatus() == PaymentStatusEnum.PAID_PENDING;
+        if (!stock.isEmpty()) {
+            if (captured && Boolean.TRUE.equals(order.getSalesCommitted())) {
+                dishService.batchIncreaseStockAndDecreaseSales(order.getStoreId(), stock);
+            } else if (Boolean.TRUE.equals(order.getStockReserved())) {
+                dishService.batchReleaseReservedStock(order.getStoreId(), stock);
             }
         }
-
-        // 10. 保存订单
-        this.updateById(order);
-
-        // 11. 记录退菜日志（可选：如果有退菜日志表）
-        // saveRefundLog(order, request, totalRefundAmount);
-
-        // 13. 构建返回结果
-        RefundDishVO result = new RefundDishVO();
-        result.setOrderId(order.getId());
-        result.setOrderNo(order.getOrderNo());
-        result.setTotalRefundAmount(totalRefundAmount);
-        result.setRefundItems(refundDetails);
-        result.setNewOrderTotalPrice(newTotalPrice);
-        result.setRefundReason(request.getRefundReason());
-        result.setRefundTime(LocalDateTime.now());
-
-        log.info("退菜处理完成: orderId={}, totalRefundAmount={}, newTotalPrice={}",
-                order.getId(), totalRefundAmount, newTotalPrice);
-
+        RestaurantOrder recalculated = details.isEmpty() ? order : recalculateOrderAmountsFromItems(order.getId());
+        BigDecimal remainingAmount = recalculated == null || recalculated.getActualAmount() == null
+                ? BigDecimal.ZERO : recalculated.getActualAmount();
+        boolean full = remainingAmount.compareTo(BigDecimal.ZERO) <= 0;
+        if (captured) {
+            int stockFlag = full ? 0 : (Boolean.TRUE.equals(order.getStockReserved()) ? 1 : 0);
+            int salesFlag = full ? 0 : (Boolean.TRUE.equals(order.getSalesCommitted()) ? 1 : 0);
+            baseMapper.markRefunded(order.getId(),
+                    (full ? PaymentStatusEnum.FULL_REFUND : PaymentStatusEnum.PARTIAL_REFUND).getCode(),
+                    stockFlag, salesFlag,
+                    full ? OrderStatusEnum.CANCELLED.getCode() : order.getStatus().getCode(),
+                    full ? "退菜后订单金额为0，自动取消" : order.getCancelReason(),
+                    full ? LocalDateTime.now() : order.getCancelTime());
+        } else if (full) {
+            baseMapper.markClosedIfUnpaid(order.getId(), "退菜后订单金额为0，自动取消", LocalDateTime.now());
+        }
+        RefundDishVO result = refundResult(refund, remainingAmount);
+        result.setRefundItems(viewItems);
+        result.setRefundStatus(RefundStatusEnum.SUCCEEDED.getDesc());
         return result;
+    }
+
+    private RefundDishVO refundResult(OrderRefund refund, BigDecimal remaining) {
+        RefundDishVO result = new RefundDishVO();
+        result.setOrderId(refund.getOrderId());
+        result.setOrderNo(refund.getOrderNo());
+        result.setTotalRefundAmount(refund.getAmount());
+        result.setNewOrderTotalPrice(remaining);
+        result.setRefundReason(refund.getReason());
+        result.setRefundTime(LocalDateTime.now());
+        result.setRefundNo(refund.getRefundNo());
+        result.setRefundStatus(refund.getStatus() == null ? null : refund.getStatus().getDesc());
+        return result;
+    }
+
+    private ChannelRefundState channelRefundState(String status) {
+        if ("SUCCESS".equals(status)) {
+            return ChannelRefundState.SUCCESS;
+        }
+        if ("PROCESSING".equals(status)) {
+            return ChannelRefundState.PROCESSING;
+        }
+        return ChannelRefundState.FAILED;
+    }
+
+    private enum ChannelRefundState {
+        SUCCESS, PROCESSING, FAILED, BALANCE
+    }
+
+    private static final class StockCaptureException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
+
+    /** 根据退菜明细生成稳定的渠道退款单号。 */
+    private String buildRefundRequestNo(RestaurantOrder order, RefundDishRequest request) {
+        String source = order.getTenantId() + ":" + order.getId() + ":" + request.getIdempotencyKey();
+        return "RF" + UUID.nameUUIDFromBytes(source.getBytes(StandardCharsets.UTF_8))
+                .toString().replace("-", "");
+    }
+
+    /** 微信支付金额使用分，转换时不允许静默舍入。 */
+    private String toCentString(BigDecimal amount) {
+        return amount.movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).toPlainString();
+    }
+
+    /** 匿名支付回调仅按全局唯一订单号定位一次，定位后立即恢复订单租户上下文。 */
+    private RestaurantOrder findOrderByOrderNoAcrossTenants(String orderNo) {
+        if (StrUtil.isBlank(orderNo)) {
+            return null;
+        }
+        LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(RestaurantOrder::getOrderNo, orderNo);
+        return TenantContext.hasTenant()
+                ? this.getOne(wrapper)
+                : TenantIgnore.get(() -> this.getOne(wrapper));
+    }
+
+    /** 支付渠道附加字段只携带服务端生成的租户和订单标识。 */
+    private String paymentAttach(RestaurantOrder order) {
+        return "LITESHOP:" + order.getTenantId() + ":" + order.getId();
+    }
+
+    /** 生产支付不允许使用占位地址或明文 HTTP 回调。 */
+    private String requireSecureNotifyUrl(String configuredUrl, String provider) {
+        if (StrUtil.isBlank(configuredUrl) || configuredUrl.contains("your-domain")
+                || !configuredUrl.startsWith("https://")) {
+            throw new BusinessException(provider + "支付回调地址未配置为 HTTPS 公网地址");
+        }
+        return configuredUrl;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public RestaurantOrderVO markOrderItemsGift(MarkOrderItemsGiftRequest request) {
-        RestaurantOrder order = this.getById(request.getOrderId());
+        RestaurantOrder order = lockOrderForMutation(request.getOrderId());
         if (order == null) {
             throw new BusinessException("订单不存在");
         }
@@ -2820,18 +3567,18 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
         BigDecimal deltaAmount = BigDecimal.ZERO; // 订单实付金额变化（赠菜时减少为正，取消赠菜时增加为负）
         for (RestaurantOrderItem item : items) {
-            BigDecimal lineOriginalTotal = item.getPrice() != null
-                    ? item.getPrice().multiply(new BigDecimal(item.getQuantity()))
-                    : (item.getTotalPrice() != null ? item.getTotalPrice() : BigDecimal.ZERO);
+            BigDecimal lineOriginalTotal = item.getUnitListPrice() != null
+                    ? item.getUnitListPrice().multiply(new BigDecimal(item.getQuantity()))
+                    : (item.getLinePayableAmount() != null ? item.getLinePayableAmount() : BigDecimal.ZERO);
             if (request.getIsGift() == 1) {
                 item.setIsGift(1);
-                item.setDiscountPrice(lineOriginalTotal);
-                item.setTotalPrice(BigDecimal.ZERO); // 该行实付=0
+                item.setDiscountAmount(lineOriginalTotal);
+                item.setLinePayableAmount(BigDecimal.ZERO); // 该行实付=0
                 deltaAmount = deltaAmount.add(lineOriginalTotal);
             } else {
                 item.setIsGift(0);
-                item.setDiscountPrice(BigDecimal.ZERO);
-                item.setTotalPrice(lineOriginalTotal); // 恢复该行原价小计
+                item.setDiscountAmount(BigDecimal.ZERO);
+                item.setLinePayableAmount(lineOriginalTotal); // 恢复该行正常售价小计
                 deltaAmount = deltaAmount.subtract(lineOriginalTotal);
             }
             item.setUpdatedAt(LocalDateTime.now());
@@ -2841,6 +3588,52 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         log.info("标记赠菜: orderId={}, isGift={}, orderItemIds={}, deltaAmount={}",
                 request.getOrderId(), request.getIsGift(), request.getOrderItemIds(), deltaAmount);
         return restaurantOrderConverter.toVO(order);
+    }
+
+    /**
+     * 记录本批加菜。每个新订单项只有一个 ADD 事件，事件键用于避免重复写入。
+     */
+    private void recordAddDishChanges(RestaurantOrder order, List<RestaurantOrderItem> items) {
+        for (RestaurantOrderItem item : items) {
+            OrderDishChangeLog change = new OrderDishChangeLog()
+                    .setEventKey("ADD:" + item.getId())
+                    .setOrderId(order.getId())
+                    .setOrderItemId(item.getId())
+                    .setStoreId(order.getStoreId())
+                    .setDishId(item.getDishId())
+                    .setCategoryId(item.getCategoryId())
+                    .setChangeType(1)
+                    .setQuantity(item.getQuantity())
+                    .setAmount(item.getLinePayableAmount() == null ? BigDecimal.ZERO : item.getLinePayableAmount())
+                    .setReason("追加菜品")
+                    .setOccurredAt(item.getAddTime() == null ? LocalDateTime.now() : item.getAddTime());
+            orderDishChangeLogMapper.insert(change);
+        }
+    }
+
+    /**
+     * 记录一次退菜事件。退菜可能对同一订单项发生多次，因此使用随机事件键。
+     */
+    private void recordRefundDishChange(RestaurantOrder order, RestaurantOrderItem item,
+                                        Integer quantity, BigDecimal amount, String reason,
+                                        String refundRequestNo) {
+        OrderDishChangeLog change = new OrderDishChangeLog()
+                .setEventKey(refundEventKey(refundRequestNo, item.getId()))
+                .setOrderId(order.getId())
+                .setOrderItemId(item.getId())
+                .setStoreId(order.getStoreId())
+                .setDishId(item.getDishId())
+                .setCategoryId(item.getCategoryId())
+                .setChangeType(2)
+                .setQuantity(quantity)
+                .setAmount(amount == null ? BigDecimal.ZERO : amount)
+                .setReason(StrUtil.blankToDefault(reason, "未填写原因"))
+                .setOccurredAt(LocalDateTime.now());
+        orderDishChangeLogMapper.insert(change);
+    }
+
+    private String refundEventKey(String refundRequestNo, Long orderItemId) {
+        return "REFUND:" + refundRequestNo + ":" + orderItemId;
     }
     /**
      * 校验订单状态是否允许退菜
@@ -2863,10 +3656,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             throw new IllegalStateException("订单已取消，不允许退菜");
         }
 
-        // 可以退菜的状态：待支付、已支付、制作中、已出餐
+        // 支付结果由 paymentStatus 判断；履约完成或取消后不能退菜。
         if (order.getStatus() == OrderStatusEnum.COMPLETED ||
-                order.getStatus() == OrderStatusEnum.CANCELLED ||
-                order.getStatus() == OrderStatusEnum.NOPAID
+                order.getStatus() == OrderStatusEnum.CANCELLED
         ) {
             throw new IllegalStateException("当前订单状态不允许退菜: " + order.getStatus().getDesc());
         }
@@ -2908,9 +3700,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         BigDecimal totalAmount = BigDecimal.ZERO;
         BigDecimal actualAmount = BigDecimal.ZERO;
         for (RestaurantOrderItem item : allItems) {
-            BigDecimal tp = item.getTotalPrice() != null ? item.getTotalPrice()
-                    : (item.getPrice() != null ? item.getPrice().multiply(new BigDecimal(item.getQuantity() != null ? item.getQuantity() : 0)) : BigDecimal.ZERO);
-            BigDecimal dp = item.getDiscountPrice() != null ? item.getDiscountPrice() : BigDecimal.ZERO;
+            BigDecimal tp = item.getLinePayableAmount() != null ? item.getLinePayableAmount()
+                    : (item.getUnitSellingPrice() != null ? item.getUnitSellingPrice().multiply(new BigDecimal(item.getQuantity() != null ? item.getQuantity() : 0)) : BigDecimal.ZERO);
+            BigDecimal dp = item.getDiscountAmount() != null ? item.getDiscountAmount() : BigDecimal.ZERO;
             totalAmount = totalAmount.add(tp.add(dp)); // 原价总计：非赠品 tp+0，赠品 0+dp
             actualAmount = actualAmount.add(tp);       // 应付：每行实付
         }
@@ -2924,6 +3716,130 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         this.updateById(order);
         log.debug("按订单项重算订单金额: orderId={}, totalAmount={}, actualAmount={}, discountAmount={}", orderId, totalAmount, actualAmount, order.getDiscountAmount());
         return order;
+    }
+
+    /** 将试价时解析出的门店实际成本固化到订单项，避免历史毛利随成本配置变化。 */
+    private void applyCostSnapshot(RestaurantOrderItem orderItem, PricingQuoteVO.Line pricedLine) {
+        BigDecimal unitCost = pricedLine.getUnitCost();
+        orderItem.setUnitCostSnapshot(unitCost);
+        orderItem.setLineCostAmount(unitCost == null ? null : unitCost
+                .multiply(BigDecimal.valueOf(orderItem.getQuantity())).setScale(2, RoundingMode.HALF_UP));
+    }
+
+    /**
+     * 按“会话行、订单行”的固定顺序加锁，串行化加菜、赠菜、退菜与支付。
+     */
+    private RestaurantOrder lockOrderForMutation(Long orderId) {
+        RestaurantOrder snapshot = this.getById(orderId);
+        if (snapshot == null) {
+            return null;
+        }
+        if (StrUtil.isNotBlank(snapshot.getSessionNo())) {
+            LambdaQueryWrapper<TableSession> sessionWrapper = new LambdaQueryWrapper<>();
+            sessionWrapper.eq(TableSession::getSessionNo, snapshot.getSessionNo()).last("FOR UPDATE");
+            tableSessionService.getOne(sessionWrapper);
+        }
+        return getOrderForUpdate(orderId);
+    }
+
+    /**
+     * 锁定订单行，支付状态检查与资金操作必须在同一事务中完成。
+     */
+    private RestaurantOrder getOrderForUpdate(Long orderId) {
+        if (orderId == null) {
+            return null;
+        }
+        LambdaQueryWrapper<RestaurantOrder> orderWrapper = new LambdaQueryWrapper<>();
+        orderWrapper.eq(RestaurantOrder::getId, orderId).last("FOR UPDATE");
+        return this.getOne(orderWrapper);
+    }
+
+    private PricingQuoteVO quoteCreateItems(Long storeId, Long userId,
+                                             List<CreateOrderRequest.CartItem> cartItems) {
+        PricingQuoteRequest request = new PricingQuoteRequest();
+        request.setStoreId(storeId);
+        request.setUserId(userId);
+        request.setChannel("CUSTOMER");
+        List<PricingQuoteRequest.Item> items = new ArrayList<>();
+        for (int i = 0; i < cartItems.size(); i++) {
+            CreateOrderRequest.CartItem cart = cartItems.get(i);
+            PricingQuoteRequest.Item item = new PricingQuoteRequest.Item();
+            item.setLineKey(String.valueOf(i));
+            item.setDishId(cart.getDishId());
+            item.setQuantity(cart.getQuantity());
+            item.setSpecExtraPrice(cart.getExtraPrice());
+            items.add(item);
+        }
+        request.setItems(items);
+        return pricingService.quote(request);
+    }
+
+    private PricingQuoteVO quoteCashierItems(Long storeId, Long userId,
+                                              List<CashierOrderRequest.CartItem> cartItems) {
+        PricingQuoteRequest request = new PricingQuoteRequest();
+        request.setStoreId(storeId);
+        request.setUserId(userId);
+        request.setChannel("CASHIER");
+        List<PricingQuoteRequest.Item> items = new ArrayList<>();
+        for (int i = 0; i < cartItems.size(); i++) {
+            CashierOrderRequest.CartItem cart = cartItems.get(i);
+            PricingQuoteRequest.Item item = new PricingQuoteRequest.Item();
+            item.setLineKey(String.valueOf(i));
+            item.setDishId(cart.getDishId());
+            item.setQuantity(cart.getQuantity());
+            item.setSpecExtraPrice(cart.getExtraPrice());
+            items.add(item);
+        }
+        request.setItems(items);
+        return pricingService.quote(request);
+    }
+
+    private void persistPricingAdjustments(Long orderId, List<RestaurantOrderItem> orderItems,
+                                           PricingQuoteVO quote) {
+        for (int i = 0; i < orderItems.size() && i < quote.getLines().size(); i++) {
+            RestaurantOrderItem orderItem = orderItems.get(i);
+            PricingQuoteVO.Line line = quote.getLines().get(i);
+            for (PricingQuoteVO.Adjustment adjustment : line.getAdjustments()) {
+                orderPriceAdjustmentMapper.insert(new OrderPriceAdjustment()
+                        .setOrderId(orderId).setOrderItemId(orderItem.getId())
+                        .setCampaignId(adjustment.getCampaignId())
+                        .setAdjustmentType(adjustment.getAdjustmentType())
+                        .setBeforeAmount(adjustment.getBeforeAmount())
+                        .setAdjustmentAmount(adjustment.getAdjustmentAmount())
+                        .setAfterAmount(adjustment.getAfterAmount())
+                        .setRuleSnapshot(adjustment.getRuleSnapshot())
+                        .setCreatedAt(LocalDateTime.now()));
+            }
+            if (Integer.valueOf(1).equals(orderItem.getIsGift())) {
+                orderPriceAdjustmentMapper.insert(new OrderPriceAdjustment()
+                        .setOrderId(orderId).setOrderItemId(orderItem.getId())
+                        .setAdjustmentType(AdjustmentType.GIFT)
+                        .setBeforeAmount(line.getLinePayableAmount())
+                        .setAdjustmentAmount(line.getLinePayableAmount())
+                        .setAfterAmount(BigDecimal.ZERO)
+                        .setRuleSnapshot("{\"source\":\"MANUAL_GIFT\"}")
+                        .setCreatedAt(LocalDateTime.now()));
+            }
+        }
+    }
+
+    private void persistManualRateAdjustments(Long orderId, List<RestaurantOrderItem> orderItems,
+                                              PricingQuoteVO quote, BigDecimal discountRate) {
+        if (discountRate == null || discountRate.compareTo(BigDecimal.ONE) >= 0) return;
+        for (int i = 0; i < orderItems.size() && i < quote.getLines().size(); i++) {
+            RestaurantOrderItem orderItem = orderItems.get(i);
+            if (Integer.valueOf(1).equals(orderItem.getIsGift())) continue;
+            BigDecimal before = quote.getLines().get(i).getLinePayableAmount();
+            BigDecimal after = orderItem.getLinePayableAmount();
+            BigDecimal discount = before.subtract(after).max(BigDecimal.ZERO);
+            if (discount.signum() == 0) continue;
+            orderPriceAdjustmentMapper.insert(new OrderPriceAdjustment()
+                    .setOrderId(orderId).setOrderItemId(orderItem.getId())
+                    .setAdjustmentType(AdjustmentType.MANUAL_DISCOUNT)
+                    .setBeforeAmount(before).setAdjustmentAmount(discount).setAfterAmount(after)
+                    .setRuleSnapshot("{\"discountRate\":" + discountRate.stripTrailingZeros().toPlainString() + "}")
+                    .setCreatedAt(LocalDateTime.now()));
+        }
     }
 
 }
