@@ -73,4 +73,9 @@ public interface TableInfoService extends IService<TableInfo> {
      */
     boolean updateTableStatus(Long id, Integer status);
 
+    /**
+     * 轮换扫码票据，使已发出的桌台二维码失效。
+     */
+    String rotateScanToken(Long id);
+
 }

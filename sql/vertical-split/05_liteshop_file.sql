@@ -18,7 +18,7 @@ CREATE TABLE `file_upload` (
   `size` bigint NULL DEFAULT NULL COMMENT '文件大小(字节)',
   `content_type` varchar(128) NULL DEFAULT NULL COMMENT '文件类型',
   `url` varchar(500) NULL DEFAULT NULL COMMENT '文件访问URL',
-  `storage_type` varchar(20) NULL DEFAULT NULL COMMENT '存储类型（local/oss）',
+  `storage_type` tinyint NULL DEFAULT NULL COMMENT '存储类型：0本地，1对象存储',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),

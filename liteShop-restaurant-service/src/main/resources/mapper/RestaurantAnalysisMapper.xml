@@ -12,52 +12,81 @@
             COALESCE(AVG(actual_amount), 0) as avgOrderAmount
         FROM restaurant_order
         WHERE store_id = #{storeId}
-          AND payment_status = 1
+          AND payment_status IN (1, 2)
           AND status != 6
-          AND created_at >= #{startTime}
-          AND created_at &lt;= #{endTime}
+          AND payment_time >= #{startTime}
+          AND payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
     </select>
 
-    <!-- 查询每日销售趋势 -->
-    <!-- 修复：使用子查询分开统计销售额和成本，避免 LEFT JOIN 导致订单金额重复累加 -->
+    <!-- 单菜销售趋势：退款后订单项数量和金额即为净销量、净销售额。 -->
+    <select id="getDishSalesTrendByDishId" resultType="org.hongtu.restaurant.VO.analysis.DishSalesTrendVO">
+        SELECT DATE(ro.payment_time) as date,
+               COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN roi.quantity ELSE 0 END), 0) as salesQuantity,
+               COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.itemPayableAmount > 0
+                    THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END), 0) as salesAmount
+        FROM restaurant_order_item roi
+        INNER JOIN restaurant_order ro ON roi.order_id = ro.id
+        LEFT JOIN (
+            SELECT tenant_id, order_id,
+                   SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
+            FROM restaurant_order_item
+            GROUP BY tenant_id, order_id
+        ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
+        WHERE ro.store_id = #{storeId}
+          AND roi.dish_id = #{dishId}
+          AND ro.payment_status IN (1, 2)
+          AND ro.status != 6
+          AND ro.payment_time >= CONCAT(#{startDate}, ' 00:00:00')
+          AND ro.payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+        GROUP BY DATE(ro.payment_time)
+        ORDER BY date ASC
+    </select>
+
+    <!-- 加退菜统计直接读取不可变事件日志，避免从已被修改或删除的订单项反推。 -->
+    <select id="getDishChangeStatistics" resultType="org.hongtu.restaurant.VO.analysis.DishChangeStatisticsVO">
+        SELECT odl.dish_id as dishId,
+               COALESCE(d.dish_name, CONCAT('菜品#', odl.dish_id)) as dishName,
+               odl.category_id as categoryId,
+               COALESCE(dc.category_name, '未分类') as categoryName,
+               #{changeType} as changeType,
+               <!-- 加菜按菜品汇总，直接输出NULL，避免引用未分组的原因字段；退菜按原因细分。 -->
+               <choose>
+                   <when test="changeType == 2">COALESCE(odl.reason, '未填写原因')</when>
+                   <otherwise>NULL</otherwise>
+               </choose> as reason,
+               COUNT(DISTINCT odl.order_id) as orderCount,
+               COUNT(*) as changeCount,
+               COALESCE(SUM(odl.quantity), 0) as quantity,
+               COALESCE(SUM(odl.amount), 0) as amount
+        FROM order_dish_change_log odl
+        LEFT JOIN dish d ON odl.dish_id = d.id
+        LEFT JOIN dish_category dc ON odl.category_id = dc.id
+        WHERE odl.store_id = #{storeId}
+          AND odl.change_type = #{changeType}
+          AND odl.occurred_at >= #{startTime}
+          AND odl.occurred_at &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+        GROUP BY odl.dish_id, d.dish_name, odl.category_id, dc.category_name
+        <if test="changeType == 2">
+            , COALESCE(odl.reason, '未填写原因')
+        </if>
+        ORDER BY quantity DESC, amount DESC
+    </select>
+
+    <!-- 查询每日净实收趋势；利润需成交成本快照，当前不再估算 -->
     <select id="getDailySalesTrend" resultType="org.hongtu.restaurant.VO.analysis.DailySalesTrendVO">
         SELECT
-            t1.date,
-            t1.sales,
-            t1.orderCount,
-            t1.avgOrderAmount,
-            COALESCE(t1.sales - COALESCE(t2.totalCost, 0), 0) as profit
-        FROM (
-            /* 子查询1：从订单表统计销售数据 */
-            SELECT
-                DATE_FORMAT(created_at, '%Y-%m-%d') as date,
-                COALESCE(SUM(actual_amount), 0) as sales,
-                COUNT(*) as orderCount,
-                COALESCE(AVG(actual_amount), 0) as avgOrderAmount
-            FROM restaurant_order
-            WHERE store_id = #{storeId}
-              AND payment_status = 1
-              AND status != 6
-              AND DATE(created_at) >= #{startDate}
-              AND DATE(created_at) &lt;= #{endDate}
-            GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
-        ) t1
-        LEFT JOIN (
-            /* 子查询2：从订单项表统计成本 */
-            SELECT
-                DATE_FORMAT(ro.created_at, '%Y-%m-%d') as date,
-                COALESCE(SUM(roi.quantity * d.cost_price), 0) as totalCost
-            FROM restaurant_order ro
-                INNER JOIN restaurant_order_item roi ON ro.id = roi.order_id
-                INNER JOIN dish d ON roi.dish_id = d.id
-            WHERE ro.store_id = #{storeId}
-              AND ro.payment_status = 1
-              AND ro.status != 6
-              AND DATE(ro.created_at) >= #{startDate}
-              AND DATE(ro.created_at) &lt;= #{endDate}
-            GROUP BY DATE_FORMAT(ro.created_at, '%Y-%m-%d')
-        ) t2 ON t1.date = t2.date
-        ORDER BY t1.date ASC
+            DATE_FORMAT(payment_time, '%Y-%m-%d') as date,
+            COALESCE(SUM(actual_amount), 0) as sales,
+            COUNT(*) as orderCount,
+            COALESCE(AVG(actual_amount), 0) as avgOrderAmount
+        FROM restaurant_order
+        WHERE store_id = #{storeId}
+          AND payment_status IN (1, 2)
+          AND status != 6
+          AND payment_time >= CONCAT(#{startDate}, ' 00:00:00')
+          AND payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+        GROUP BY DATE_FORMAT(payment_time, '%Y-%m-%d')
+        ORDER BY date ASC
     </select>
 
     <!-- 查询时段销售分布 -->
@@ -83,53 +112,30 @@
         FROM (
                  SELECT
                      CASE
-                         WHEN HOUR(created_at) >= 6 AND HOUR(created_at) &lt; 10 THEN 1
-                    WHEN HOUR(created_at) >= 10 AND HOUR(created_at) &lt; 14 THEN 2
-                    WHEN HOUR(created_at) >= 14 AND HOUR(created_at) &lt; 17 THEN 3
-                    WHEN HOUR(created_at) >= 17 AND HOUR(created_at) &lt; 21 THEN 4
+                         WHEN HOUR(payment_time) >= 6 AND HOUR(payment_time) &lt; 10 THEN 1
+                    WHEN HOUR(payment_time) >= 10 AND HOUR(payment_time) &lt; 14 THEN 2
+                    WHEN HOUR(payment_time) >= 14 AND HOUR(payment_time) &lt; 17 THEN 3
+                    WHEN HOUR(payment_time) >= 17 AND HOUR(payment_time) &lt; 21 THEN 4
                     ELSE 5
         END as period_type,
                 COALESCE(SUM(actual_amount), 0) as sales,
                 COUNT(*) as orderCount
             FROM restaurant_order
             WHERE store_id = #{storeId}
-        AND payment_status = 1
+        AND payment_status IN (1, 2)
         AND status != 6
-        AND created_at >= #{startTime}
-        AND created_at &lt;= #{endTime}
+        AND payment_time >= #{startTime}
+        AND payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
         GROUP BY
         CASE
-        WHEN HOUR(created_at) >= 6 AND HOUR(created_at) &lt; 10 THEN 1
-        WHEN HOUR(created_at) >= 10 AND HOUR(created_at) &lt; 14 THEN 2
-        WHEN HOUR(created_at) >= 14 AND HOUR(created_at) &lt; 17 THEN 3
-        WHEN HOUR(created_at) >= 17 AND HOUR(created_at) &lt; 21 THEN 4
+        WHEN HOUR(payment_time) >= 6 AND HOUR(payment_time) &lt; 10 THEN 1
+        WHEN HOUR(payment_time) >= 10 AND HOUR(payment_time) &lt; 14 THEN 2
+        WHEN HOUR(payment_time) >= 14 AND HOUR(payment_time) &lt; 17 THEN 3
+        WHEN HOUR(payment_time) >= 17 AND HOUR(payment_time) &lt; 21 THEN 4
         ELSE 5
         END
         ) t
         ORDER BY period_type
-    </select>
-
-    <!-- 查询订单状态分布 -->
-    <select id="getOrderStatusDistribution" resultType="org.hongtu.restaurant.VO.analysis.OrderStatusDistributionVO">
-        SELECT
-            CASE status
-                WHEN 1 THEN '已下单'
-                WHEN 2 THEN '已接单'
-                WHEN 3 THEN '制作中'
-                WHEN 4 THEN '制作完成'
-                WHEN 5 THEN '已完成'
-                WHEN 6 THEN '已取消'
-                ELSE '未知'
-                END as statusName,
-            status as statusCode,
-            COUNT(*) as orderCount,
-            COALESCE(SUM(actual_amount), 0) as sales
-        FROM restaurant_order
-        WHERE store_id = #{storeId}
-          AND created_at >= #{startTime}
-          AND created_at &lt;= #{endTime}
-        GROUP BY status
-        ORDER BY status
     </select>
 
     <!-- 查询订单取消原因分析 -->
@@ -140,8 +146,8 @@
         FROM restaurant_order
         WHERE store_id = #{storeId}
           AND status = 6
-          AND created_at >= #{startTime}
-          AND created_at &lt;= #{endTime}
+          AND cancel_time >= #{startTime}
+          AND cancel_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
         GROUP BY cancel_reason
         ORDER BY cancelCount DESC
     </select>
@@ -149,17 +155,36 @@
     <!-- 查询订单分析数据 -->
     <select id="getOrderAnalysisData" resultType="java.util.HashMap">
         SELECT
-            COUNT(*) as totalOrderCount,
-            SUM(CASE WHEN status = 5 THEN 1 ELSE 0 END) as completedOrderCount,
-            SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) as cancelledOrderCount,
-            SUM(CASE WHEN status IN (1, 2, 3, 4) THEN 1 ELSE 0 END) as processingOrderCount,
-            COALESCE(SUM(CASE WHEN payment_status = 1 AND status != 6 THEN actual_amount ELSE 0 END), 0) as totalSales,
-            COALESCE(SUM(CASE WHEN payment_status = 1 AND status != 6 THEN discount_amount ELSE 0 END), 0) as totalDiscount,
-            COALESCE(AVG(CASE WHEN payment_status = 1 AND status != 6 THEN actual_amount ELSE NULL END), 0) as avgOrderAmount
-        FROM restaurant_order
-        WHERE store_id = #{storeId}
-          AND created_at >= #{startTime}
-          AND created_at &lt;= #{endTime}
+            cohort.totalOrderCount,
+            cohort.completedOrderCount,
+            cohort.cancelledOrderCount,
+            cohort.processingOrderCount,
+            finance.totalSales,
+            finance.totalDiscount,
+            finance.avgOrderAmount
+        FROM (
+            SELECT
+                COUNT(*) as totalOrderCount,
+                SUM(CASE WHEN status = 5 THEN 1 ELSE 0 END) as completedOrderCount,
+                SUM(CASE WHEN status = 6 THEN 1 ELSE 0 END) as cancelledOrderCount,
+                SUM(CASE WHEN status IN (1, 2, 3, 4) THEN 1 ELSE 0 END) as processingOrderCount
+            FROM restaurant_order
+            WHERE store_id = #{storeId}
+              AND created_at >= #{startTime}
+              AND created_at &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+        ) cohort
+        CROSS JOIN (
+            SELECT
+                COALESCE(SUM(actual_amount), 0) as totalSales,
+                COALESCE(SUM(discount_amount), 0) as totalDiscount,
+                COALESCE(AVG(actual_amount), 0) as avgOrderAmount
+            FROM restaurant_order
+            WHERE store_id = #{storeId}
+              AND payment_status IN (1, 2)
+              AND status != 6
+              AND payment_time >= #{startTime}
+              AND payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+        ) finance
     </select>
 
     <!-- ==================== 菜品与分类分析 ==================== -->
@@ -167,49 +192,44 @@
     <!-- 查询菜品销售排行数据 -->
     <select id="getDishSalesRanking" resultType="java.util.HashMap">
         SELECT
-            d.id as dishId,
+            roi.dish_id as dishId,
             d.dish_name as dishName,
-            d.category_id as categoryId,
+            roi.category_id as categoryId,
             dc.category_name as categoryName,
             d.dish_pics as dishPic,
-            d.cost_price as costPrice,
-            d.stock as stock,
-            COALESCE(SUM(roi.quantity), 0) as salesQuantity,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.total_price ELSE 0 END), 0) as salesAmount,
-            COALESCE(SUM(roi.quantity * d.cost_price), 0) as totalCost,
+            COALESCE(sd.stock, d.stock) as stock,
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN roi.quantity ELSE 0 END), 0) as salesQuantity,
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.itemPayableAmount > 0
+                THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END), 0) as salesAmount,
             COALESCE(SUM(CASE WHEN roi.is_gift = 1 THEN roi.quantity ELSE 0 END), 0) as giftQuantity,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.discount_price ELSE 0 END), 0) as totalDiscount
-        FROM dish d
-                 LEFT JOIN dish_category dc ON d.category_id = dc.id
-                 LEFT JOIN restaurant_order_item roi ON d.id = roi.dish_id
-                 LEFT JOIN restaurant_order ro ON roi.order_id = ro.id
-        WHERE d.store_id = #{storeId}
-          AND ro.payment_status = 1
-          AND ro.status != 6
-          AND ro.created_at >= #{startTime}
-          AND ro.created_at &lt;= #{endTime}
-        GROUP BY d.id, d.dish_name, d.category_id, dc.category_name, d.dish_pics, d.cost_price, d.stock
-        HAVING salesQuantity > 0
-        ORDER BY salesAmount DESC, salesQuantity DESC
-            LIMIT #{limit}
-    </select>
-
-    <!-- 查询某个菜品的销售趋势 -->
-    <select id="getDishSalesTrendByDishId" resultType="java.util.HashMap">
-        SELECT
-            DATE_FORMAT(ro.created_at, '%Y-%m-%d') as date,
-            COALESCE(SUM(roi.quantity), 0) as salesQuantity,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.total_price ELSE 0 END), 0) as salesAmount
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN
+                roi.unit_list_price * roi.quantity -
+                CASE WHEN oit.itemPayableAmount > 0
+                    THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END
+                ELSE 0 END), 0) as totalDiscount,
+            COUNT(DISTINCT CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN ro.id END) as orderCount
         FROM restaurant_order_item roi
-            INNER JOIN restaurant_order ro ON roi.order_id = ro.id
+                 INNER JOIN restaurant_order ro ON roi.order_id = ro.id
+                 LEFT JOIN (
+                    SELECT tenant_id, order_id,
+                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order_item
+                    GROUP BY tenant_id, order_id
+                 ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
+                 LEFT JOIN dish d ON roi.dish_id = d.id
+                 LEFT JOIN dish_category dc ON roi.category_id = dc.id
+                 LEFT JOIN store_dish sd ON sd.store_id = ro.store_id
+                    AND sd.dish_id = roi.dish_id
+                    AND sd.deleted = 0
         WHERE ro.store_id = #{storeId}
-          AND roi.dish_id = #{dishId}
-          AND ro.payment_status = 1
+          AND ro.payment_status IN (1, 2)
           AND ro.status != 6
-          AND DATE(ro.created_at) >= #{startDate}
-          AND DATE(ro.created_at) &lt;= #{endDate}
-        GROUP BY DATE_FORMAT(ro.created_at, '%Y-%m-%d')
-        ORDER BY DATE_FORMAT(ro.created_at, '%Y-%m-%d') ASC
+          AND ro.payment_time >= #{startTime}
+          AND ro.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+        GROUP BY roi.dish_id, d.dish_name, roi.category_id, dc.category_name, d.dish_pics, sd.stock, d.stock
+        HAVING salesQuantity > 0
+        ORDER BY salesQuantity DESC, salesAmount DESC
+            LIMIT #{limit}
     </select>
 
     <!-- 查询滞销菜品数据 -->
@@ -219,123 +239,216 @@
             d.dish_name as dishName,
             dc.category_name as categoryName,
             d.dish_pics as dishPic,
-            d.stock as stock,
+            COALESCE(sd.stock, d.stock) as stock,
             d.created_at as createdAt,
-            COALESCE(SUM(roi.quantity), 0) as salesLast30Days,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.total_price ELSE 0 END), 0) as salesAmountLast30Days,
-            MAX(ro.created_at) as lastSaleTime
+            COALESCE(period_sales.salesQuantity, 0) as salesLast30Days,
+            COALESCE(period_sales.salesAmount, 0) as salesAmountLast30Days,
+            last_sale.lastSaleTime as lastSaleTime
         FROM dish d
-                 LEFT JOIN dish_category dc ON d.category_id = dc.id
-                 LEFT JOIN restaurant_order_item roi ON d.id = roi.dish_id
-                 LEFT JOIN restaurant_order ro ON roi.order_id = ro.id
-            AND ro.payment_status = 1
-            AND ro.status != 6
-            AND ro.created_at >= #{startTime}
-            AND ro.created_at &lt;= #{endTime}
-        WHERE d.store_id = #{storeId}
-          AND d.sale_status = 1
-        GROUP BY d.id, d.dish_name, dc.category_name, d.dish_pics, d.stock, d.created_at
-        HAVING salesLast30Days &lt;= 10
+                 LEFT JOIN store_dish sd ON sd.store_id = #{storeId}
+                    AND sd.dish_id = d.id
+                    AND sd.deleted = 0
+                 LEFT JOIN dish_category dc ON COALESCE(sd.category_override_id, d.category_id) = dc.id
+                 LEFT JOIN (
+                    SELECT roi1.dish_id,
+                           SUM(CASE WHEN COALESCE(roi1.is_gift, 0) = 0 THEN roi1.quantity ELSE 0 END) as salesQuantity,
+                           SUM(CASE WHEN COALESCE(roi1.is_gift, 0) = 0 AND oit1.itemPayableAmount > 0
+                               THEN roi1.line_payable_amount * ro1.actual_amount / oit1.itemPayableAmount ELSE 0 END) as salesAmount
+                    FROM restaurant_order_item roi1
+                    INNER JOIN restaurant_order ro1 ON roi1.order_id = ro1.id
+                    LEFT JOIN (
+                        SELECT tenant_id, order_id,
+                               SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
+                        FROM restaurant_order_item
+                        GROUP BY tenant_id, order_id
+                    ) oit1 ON oit1.tenant_id = ro1.tenant_id AND oit1.order_id = ro1.id
+                    WHERE ro1.store_id = #{storeId}
+                      AND ro1.payment_status IN (1, 2)
+                      AND ro1.status != 6
+                      AND ro1.payment_time >= #{startTime}
+                      AND ro1.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                    GROUP BY roi1.dish_id
+                 ) period_sales ON period_sales.dish_id = d.id
+                 LEFT JOIN (
+                    SELECT roi2.dish_id,
+                           MAX(ro2.payment_time) as lastSaleTime
+                    FROM restaurant_order_item roi2
+                    INNER JOIN restaurant_order ro2 ON roi2.order_id = ro2.id
+                    WHERE ro2.store_id = #{storeId}
+                      AND ro2.payment_status IN (1, 2)
+                      AND ro2.status != 6
+                      AND COALESCE(roi2.is_gift, 0) = 0
+                      AND ro2.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                    GROUP BY roi2.dish_id
+                 ) last_sale ON last_sale.dish_id = d.id
+        WHERE d.deleted = 0
+          AND d.master_status != 2
+          AND ((sd.id IS NOT NULL AND sd.listing_status = 1)
+            OR (sd.id IS NULL AND d.store_id = #{storeId} AND d.sale_status = 1))
         ORDER BY salesLast30Days ASC, salesAmountLast30Days ASC
     </select>
 
     <!-- 查询菜品分类贡献分析数据 -->
     <select id="getCategoryContribution" resultType="java.util.HashMap">
         SELECT
-            dc.id as categoryId,
-            dc.category_name as categoryName,
-            COALESCE(SUM(roi.quantity), 0) as salesQuantity,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.total_price ELSE 0 END), 0) as salesAmount,
-            COALESCE(SUM(roi.quantity * d.cost_price), 0) as totalCost,
+            roi.category_id as categoryId,
+            COALESCE(dc.category_name, '未分类') as categoryName,
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN roi.quantity ELSE 0 END), 0) as salesQuantity,
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.itemPayableAmount > 0
+                THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END), 0) as salesAmount,
             COALESCE(SUM(CASE WHEN roi.is_gift = 1 THEN roi.quantity ELSE 0 END), 0) as giftQuantity,
-            COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.discount_price ELSE 0 END), 0) as totalDiscount,
-            COUNT(DISTINCT ro.id) as orderCount
+            COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN
+                roi.unit_list_price * roi.quantity -
+                CASE WHEN oit.itemPayableAmount > 0
+                    THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END
+                ELSE 0 END), 0) as totalDiscount,
+            COUNT(DISTINCT CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN ro.id END) as orderCount
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
-                 INNER JOIN dish d ON roi.dish_id = d.id
-                 INNER JOIN dish_category dc ON d.category_id = dc.id
+                 LEFT JOIN (
+                    SELECT tenant_id, order_id,
+                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order_item
+                    GROUP BY tenant_id, order_id
+                 ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
+                 LEFT JOIN dish_category dc ON roi.category_id = dc.id
         WHERE ro.store_id = #{storeId}
-          AND ro.payment_status = 1
+          AND ro.payment_status IN (1, 2)
           AND ro.status != 6
-          AND ro.created_at >= #{startTime}
-          AND ro.created_at &lt;= #{endTime}
-        GROUP BY dc.id, dc.category_name
+          AND ro.payment_time >= #{startTime}
+          AND ro.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+        GROUP BY roi.category_id, dc.category_name
         HAVING salesQuantity > 0
         ORDER BY salesAmount DESC
     </select>
 
     <!-- 查询总销售额（基于订单项，与分类贡献统计口径一致，排除赠送菜品） -->
     <select id="getTotalSalesAmount" resultType="java.math.BigDecimal">
-        SELECT COALESCE(SUM(CASE WHEN roi.is_gift = 0 THEN roi.total_price ELSE 0 END), 0)
+        SELECT COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.itemPayableAmount > 0
+                   THEN roi.line_payable_amount * ro.actual_amount / oit.itemPayableAmount ELSE 0 END), 0)
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
-                 INNER JOIN dish d ON roi.dish_id = d.id
-                 INNER JOIN dish_category dc ON d.category_id = dc.id
+                 LEFT JOIN (
+                    SELECT tenant_id, order_id,
+                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order_item
+                    GROUP BY tenant_id, order_id
+                 ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
         WHERE ro.store_id = #{storeId}
-          AND ro.payment_status = 1
+          AND ro.payment_status IN (1, 2)
           AND ro.status != 6
-          AND ro.created_at >= #{startTime}
-          AND ro.created_at &lt;= #{endTime}
+          AND ro.payment_time >= #{startTime}
+          AND ro.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
     </select>
 
     <!-- 查询总销量 -->
     <select id="getTotalSalesQuantity" resultType="java.lang.Integer">
-        SELECT COALESCE(SUM(roi.quantity), 0)
+        SELECT COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN roi.quantity ELSE 0 END), 0)
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
-                 INNER JOIN dish d ON roi.dish_id = d.id
-                 INNER JOIN dish_category dc ON d.category_id = dc.id
         WHERE ro.store_id = #{storeId}
-          AND ro.payment_status = 1
+          AND ro.payment_status IN (1, 2)
           AND ro.status != 6
-          AND ro.created_at >= #{startTime}
-          AND ro.created_at &lt;= #{endTime}
+          AND ro.payment_time >= #{startTime}
+          AND ro.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
     </select>
 
-    <!-- 查询年度月度销售额和利润数据 -->
-    <!-- 修复：使用子查询分开统计销售额和成本，避免 LEFT JOIN 导致订单金额重复累加 -->
-    <select id="getMonthlySalesProfit" resultType="org.hongtu.restaurant.VO.analysis.MonthlySalesProfitVO">
-        SELECT
-            #{year} as year,
-            t1.month,
-            t1.monthName,
-            t1.sales,
-            COALESCE(t1.sales - COALESCE(t2.totalCost, 0), 0) as profit,
-            t1.orderCount,
-            CASE
-                WHEN t1.sales > 0 THEN
-                    ROUND((t1.sales - COALESCE(t2.totalCost, 0)) / t1.sales * 100, 2)
-                ELSE 0
-            END as profitRate
+    <!-- P2 会员分析仅输出匿名聚合人数，不返回 user_id、姓名、手机号等个人信息。 -->
+    <select id="getAiMemberAggregate" resultType="java.util.HashMap">
+        SELECT COUNT(*) AS knownMembers,
+               COALESCE(SUM(member_orders &gt;= 2), 0) AS repeatMembers,
+               COALESCE(SUM(last_order_at &gt;= DATE_SUB(CONCAT(#{endDate}, ' 23:59:59'), INTERVAL 30 DAY)), 0) AS activeMembers,
+               COALESCE(SUM(last_order_at &lt; DATE_SUB(CONCAT(#{endDate}, ' 23:59:59'), INTERVAL 30 DAY)
+                    AND last_order_at &gt;= DATE_SUB(CONCAT(#{endDate}, ' 23:59:59'), INTERVAL 90 DAY)), 0) AS dormantMembers,
+               COALESCE(AVG(member_orders), 0) AS averageOrdersPerMember,
+               COALESCE(SUM(member_sales), 0) AS memberSales
         FROM (
-            /* 子查询1：从订单表统计销售数据 */
-            SELECT
-                MONTH(created_at) as month,
-                DATE_FORMAT(created_at, '%Y-%m') as monthName,
-                COALESCE(SUM(actual_amount), 0) as sales,
-                COUNT(*) as orderCount
-            FROM restaurant_order
-            WHERE store_id = #{storeId}
-              AND payment_status = 1
-              AND status != 6
-              AND YEAR(created_at) = #{year}
-            GROUP BY MONTH(created_at), DATE_FORMAT(created_at, '%Y-%m')
-        ) t1
-        LEFT JOIN (
-            /* 子查询2：从订单项表统计成本 */
-            SELECT
-                MONTH(ro.created_at) as month,
-                COALESCE(SUM(roi.quantity * d.cost_price), 0) as totalCost
+            SELECT ro.user_id, COUNT(*) AS member_orders, MAX(ro.payment_time) AS last_order_at,
+                   SUM(ro.actual_amount) AS member_sales
             FROM restaurant_order ro
-                INNER JOIN restaurant_order_item roi ON ro.id = roi.order_id
-                INNER JOIN dish d ON roi.dish_id = d.id
-            WHERE ro.store_id = #{storeId}
-              AND ro.payment_status = 1
-              AND ro.status != 6
-              AND YEAR(ro.created_at) = #{year}
-            GROUP BY MONTH(ro.created_at)
-        ) t2 ON t1.month = t2.month
-        ORDER BY t1.month ASC
+            WHERE ro.user_id IS NOT NULL AND ro.payment_status IN (1, 2) AND ro.status != 6
+              AND ro.payment_time &gt;= CONCAT(#{startDate}, ' 00:00:00')
+              AND ro.payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+              <if test="storeId != null">AND ro.store_id = #{storeId}</if>
+            GROUP BY ro.user_id
+        ) members
+    </select>
+
+    <select id="getAiChannelPerformance" resultType="java.util.HashMap">
+        SELECT ro.order_type AS channelCode,
+               CASE ro.order_type WHEN 0 THEN '在线点餐' WHEN 1 THEN '堂食/预点' WHEN 2 THEN '门店自提' ELSE '其他' END AS channelName,
+               COUNT(*) AS orderCount, COALESCE(SUM(ro.actual_amount), 0) AS sales,
+               COALESCE(AVG(ro.actual_amount), 0) AS averageOrderAmount
+        FROM restaurant_order ro
+        WHERE ro.payment_status IN (1, 2) AND ro.status != 6
+          AND ro.payment_time &gt;= CONCAT(#{startDate}, ' 00:00:00')
+          AND ro.payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+          <if test="storeId != null">AND ro.store_id = #{storeId}</if>
+        GROUP BY ro.order_type ORDER BY sales DESC
+    </select>
+
+    <select id="getAiInventoryRisks" resultType="java.util.HashMap">
+        SELECT sd.store_id AS storeId, s.store_name AS storeName, sd.dish_id AS dishId,
+               d.dish_name AS dishName, sd.stock, sd.sold_out AS soldOut,
+               sd.sales_count AS cumulativeSales
+        FROM store_dish sd
+        INNER JOIN store_info s ON s.id = sd.store_id
+        INNER JOIN dish d ON d.id = sd.dish_id
+        WHERE sd.deleted = 0 AND sd.inventory_mode = 1 AND sd.listing_status = 1
+          AND (sd.stock &lt;= #{lowStock} OR sd.sold_out = 1)
+          <if test="storeId != null">AND sd.store_id = #{storeId}</if>
+        ORDER BY sd.sold_out DESC, sd.stock ASC, sd.sales_count DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="getAiTableEfficiency" resultType="java.util.HashMap">
+        SELECT COUNT(*) AS completedSessions,
+               COALESCE(AVG(TIMESTAMPDIFF(MINUTE, ts.start_time, ts.end_time)), 0) AS averageDiningMinutes,
+               COUNT(DISTINCT ts.table_id) AS activeTables,
+               CASE WHEN COUNT(DISTINCT ts.table_id) = 0 THEN 0
+                    ELSE COUNT(*) / COUNT(DISTINCT ts.table_id) END AS turnoverPerActiveTable
+        FROM table_session ts
+        WHERE ts.status = 2 AND ts.end_time IS NOT NULL
+          AND ts.start_time &gt;= CONCAT(#{startDate}, ' 00:00:00')
+          AND ts.start_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+          <if test="storeId != null">AND ts.store_id = #{storeId}</if>
+    </select>
+
+    <select id="getAiMarketingPerformance" resultType="java.util.HashMap">
+        SELECT COUNT(*) AS paidOrders,
+               COALESCE(SUM(ro.actual_amount), 0) AS sales,
+               COALESCE(SUM(ro.discount_amount), 0) AS discountCost,
+               COALESCE(SUM(CASE WHEN ro.discount_amount &gt; 0 THEN 1 ELSE 0 END), 0) AS discountedOrders,
+               COALESCE(SUM(CASE WHEN ro.user_coupon_ids IS NOT NULL AND ro.user_coupon_ids != '' THEN 1 ELSE 0 END), 0) AS couponOrders,
+               CASE WHEN SUM(ro.actual_amount) = 0 THEN 0
+                    ELSE SUM(ro.discount_amount) / SUM(ro.actual_amount) * 100 END AS discountCostRate
+        FROM restaurant_order ro
+        WHERE ro.payment_status IN (1, 2) AND ro.status != 6
+          AND ro.payment_time &gt;= CONCAT(#{startDate}, ' 00:00:00')
+          AND ro.payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+          <if test="storeId != null">AND ro.store_id = #{storeId}</if>
+    </select>
+
+    <select id="getAiWasteProxy" resultType="java.util.HashMap">
+        SELECT COALESCE(SUM(odl.quantity), 0) AS returnedDishQuantity,
+               COALESCE(SUM(odl.amount), 0) AS returnedDishAmount,
+               COUNT(DISTINCT odl.order_id) AS affectedOrders
+        FROM order_dish_change_log odl
+        WHERE odl.change_type = 2
+          AND odl.occurred_at &gt;= CONCAT(#{startDate}, ' 00:00:00')
+          AND odl.occurred_at &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+          <if test="storeId != null">AND odl.store_id = #{storeId}</if>
+    </select>
+
+    <select id="getAiOrderHealth" resultType="java.util.HashMap">
+        SELECT COUNT(*) AS createdOrders,
+               COALESCE(SUM(ro.status = 6), 0) AS cancelledOrders,
+               CASE WHEN COUNT(*) = 0 THEN 0
+                    ELSE SUM(ro.status = 6) / COUNT(*) * 100 END AS cancelRate
+        FROM restaurant_order ro
+        WHERE ro.created_at &gt;= CONCAT(#{startDate}, ' 00:00:00')
+          AND ro.created_at &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+          <if test="storeId != null">AND ro.store_id = #{storeId}</if>
     </select>
 
 </mapper>

@@ -7,6 +7,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.UserCouponMapper;
+import org.hongtu.DAO.CouponMessageReceiptMapper;
 import org.hongtu.DTO.CouponMessageDTO;
 import org.hongtu.Result.Result;
 import org.hongtu.constant.RabbitMQConstants;
@@ -16,6 +17,8 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.hongtu.tenant.TenantContext;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,6 +41,10 @@ public class CouponMessageConsumer {
     private UserCouponService userCouponService;
     @Resource
     private UserCouponMapper userCouponMapper;
+    @Resource
+    private CouponMessageReceiptMapper couponMessageReceiptMapper;
+    @Resource
+    private org.hongtu.api.client.LotteryFeignClient lotteryFeignClient;
 
     @Resource
     private RabbitTemplate rabbitTemplate;
@@ -51,14 +58,19 @@ public class CouponMessageConsumer {
      * @param message 消息内容
      */
     @RabbitListener(queues = RabbitMQConstants.Coupon.ISSUE_QUEUE)
-    public void handleCouponIssue(CouponMessageDTO message) {
+    @Transactional(rollbackFor = Exception.class)
+    public void handleCouponIssue(CouponMessageDTO message, Message rawMessage) {
         log.info("收到优惠券发放消息: {}", JSON.toJSONString(message));
+        // 参数无效和业务失败必须抛出，让容器按配置进入死信队列，不能吞掉后确认。
+        if (message == null || message.getUserId() == null || message.getCouponId() == null
+                || message.getEventId() == null || message.getEventId().isBlank()) {
+            throw new IllegalArgumentException("优惠券发放消息参数无效");
+        }
+        if (couponMessageReceiptMapper.claim(message.getEventId(), TenantContext.getTenantId()) == 0) {
+            log.info("优惠券发放消息已处理，跳过重复投递: eventId={}", message.getEventId());
+            return;
+        }
         try {
-            // 参数校验
-            if (message == null || message.getUserId() == null || message.getCouponId() == null) {
-                log.warn("优惠券发放消息参数无效: {}", message);
-                return;
-            }
             // 处理优惠券发放逻辑
             Result result;
             // 如果时间参数为空，使用默认时间（立即生效，3天后过期）
@@ -74,16 +86,20 @@ public class CouponMessageConsumer {
             }
             // 检查发放结果
             if (result != null && Result.CODE_SUCCESS.equals(result.getCode())) {
-                log.info("优惠券发放成功，优惠券ID: {}, 用户ID: {}", message.getCouponId(), message.getUserId());
+                log.info("优惠券发放成功，eventId={}, 优惠券ID: {}, 用户ID: {}",
+                        message.getEventId(), message.getCouponId(), message.getUserId());
+                if (message.getEventId().startsWith("lottery-")) {
+                    org.hongtu.api.util.FeignResultUtil.check(
+                            lotteryFeignClient.markPrizeReceived(message.getEventId()));
+                }
             } else {
-                log.warn("优惠券发放失败，优惠券ID: {}, 用户ID: {}, 原因: {}",
-                        message.getCouponId(), message.getUserId(),
-                        result != null ? result.getMsg() : "未知错误");
+                throw new IllegalStateException(result != null ? result.getMsg() : "优惠券发放返回空结果");
             }
         } catch (Exception e) {
             log.error("处理优惠券发放消息异常, couponId={}, userId={}",
                     message != null ? message.getCouponId() : null,
                     message != null ? message.getUserId() : null, e);
+            throw new IllegalStateException("优惠券发放消息处理失败", e);
         }
     }
 
@@ -93,7 +109,7 @@ public class CouponMessageConsumer {
      * @param message 消息内容
      */
     @RabbitListener(queues = RabbitMQConstants.Coupon.EXPIRE_QUEUE)
-    public void handleCouponExpire(CouponMessageDTO message) {
+    public void handleCouponExpire(CouponMessageDTO message, Message rawMessage) {
         log.info("收到优惠券过期消息: {}", JSON.toJSONString(message));
         try {
             // 参数校验
@@ -108,6 +124,7 @@ public class CouponMessageConsumer {
             log.error("处理优惠券过期消息异常, couponId={}, userId={}",
                     message != null ? message.getCouponId() : null,
                     message != null ? message.getUserId() : null, e);
+            throw new IllegalStateException("优惠券过期处理失败", e);
         }
     }
 

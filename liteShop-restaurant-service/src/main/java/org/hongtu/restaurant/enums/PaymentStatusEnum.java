@@ -20,7 +20,9 @@ public enum PaymentStatusEnum {
     FULL_REFUND(3, "全额退款"),
     TIMEOUT(4, "支付超时"),
     CLOSED(5, "取消支付"),
-    FAILED(6, "支付失败");
+    FAILED(6, "支付失败"),
+    RECONCILING(7, "对账中"),
+    PAID_PENDING(8, "已收款待处理");
 
     @EnumValue
     private final Integer code;

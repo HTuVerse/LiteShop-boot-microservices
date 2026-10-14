@@ -122,17 +122,8 @@ public class SaTokenConfigure implements WebMvcConfigurer {
 
                 // 前置函数：在每次认证函数之前执行
                 .setBeforeAuth(obj -> {
+                    // 跨域只在网关按生产域名白名单返回，下游服务不再放开任意来源。
                     SaHolder.getResponse()
-                            // ---------- 设置跨域响应头 ----------
-                            // 允许指定域访问跨域资源
-                            .setHeader("Access-Control-Allow-Origin", "*")
-                            // 允许所有请求方式
-                            .setHeader("Access-Control-Allow-Methods", "*")
-                            // 允许的header参数
-                            .setHeader("Access-Control-Allow-Headers", "*")
-                            // 有效时间
-                            .setHeader("Access-Control-Max-Age", "3600")
-                            // ---------- 禁止 CDN/浏览器 缓存接口响应，避免套 CDN 后提交成功但数据不更新 ----------
                             .setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                             .setHeader("Pragma", "no-cache")
                     ;

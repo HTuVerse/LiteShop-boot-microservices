@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
@@ -49,6 +51,8 @@ public class SysUser implements Serializable {
      * 密码
      */
     @TableField("password")
+    @JsonIgnore
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password;
 
     /**
@@ -62,7 +66,21 @@ public class SysUser implements Serializable {
      * 微信小程序用户唯一标识符
      */
     @TableField("open_id")
+    @JsonIgnore
     private String openId;
+
+    /**
+     * 管理员动态口令密钥。只用于登录校验，不进入任何响应。
+     */
+    @TableField("totp_secret")
+    @JsonIgnore
+    private String totpSecret;
+
+    /**
+     * 1 表示必须先修改一次性初始密码。
+     */
+    @TableField("must_change_password")
+    private Integer mustChangePassword;
 
     /**
      * 租户ID（多租户）

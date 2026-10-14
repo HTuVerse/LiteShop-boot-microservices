@@ -3,6 +3,14 @@ spring:
     gateway:
       server:
         webflux:
+          # 只允许配置的前端来源。生产环境设置 LITESHOP_CORS_ORIGINS，多个来源用逗号分隔。
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowed-origin-patterns: ${LITESHOP_CORS_ORIGINS:http://localhost:*}
+                allowed-methods: "*"
+                allowed-headers: "*"
+                max-age: 3600
           routes:
             - id: user-service
               uri: lb://liteShop-user-service
@@ -19,11 +27,7 @@ spring:
             - id: restaurant-service
               uri: lb://liteShop-restaurant-service
               predicates:
-                - Path=/dish/**,/store-info/**,/table-info/**,/table-session/**,/shared-cart/**,/restaurant-order/**,/restaurant-order-item/**,/restaurant-analysis/**,/printTemplateApi/**,/orderPrintApi/**,/feieyunApi/**,/table-reservation/**
-            - id: pay-service
-              uri: lb://liteShop-pay-service
-              predicates:
-                - Path=/pay/**
+                - Path=/dish/**,/store-info/**,/table-info/**,/table-session/**,/shared-cart/**,/restaurant-order/**,/restaurant-order-item/**,/restaurant-analysis/**,/tenant-analysis/**,/printTemplateApi/**,/orderPrintApi/**,/feieyunApi/**,/table-reservation/**
             - id: message-service
               uri: lb://liteShop-message-service
               predicates:

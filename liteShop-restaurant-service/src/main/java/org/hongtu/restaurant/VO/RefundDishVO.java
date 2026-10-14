@@ -56,6 +56,12 @@ public class RefundDishVO {
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime refundTime;
+
+    /** 服务端退款单号。 */
+    private String refundNo;
+
+    /** 退款状态：已申请、处理中、成功、失败。处理中不代表已退款。 */
+    private String refundStatus;
     
     /**
      * 退菜项明细

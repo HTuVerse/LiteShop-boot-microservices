@@ -21,6 +21,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -53,6 +54,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Result<Void> handleIllegalArgumentException(IllegalArgumentException e) {
+        return Result.error(CodeMsg.PARAM_ERROR.getCode(), e.getMessage());
+    }
+
+    /**
+     * 订单等业务规则使用 IllegalStateException 表达可展示原因。
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Result<Void> handleIllegalStateException(IllegalStateException e) {
+        logger.warn("业务状态异常: {}", e.getMessage());
         return Result.error(CodeMsg.PARAM_ERROR.getCode(), e.getMessage());
     }
 
@@ -205,7 +216,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public Result<Void> handleException(Exception e) {
-        logger.error("系统异常: ", e);
-        return Result.error(CodeMsg.SERVER_ERROR.getCode(), "系统异常，请联系管理员");
+        String ref = UUID.randomUUID().toString().substring(0, 8);
+        logger.error("系统异常 ref={}", ref, e);
+        return Result.error(CodeMsg.SERVER_ERROR.getCode(), "系统异常，请联系管理员（" + ref + "）");
     }
 } 

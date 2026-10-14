@@ -3,6 +3,7 @@ package org.hongtu.restaurant.controller;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaMode;
+import cn.dev33.satoken.annotation.SaIgnore;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
@@ -71,7 +72,7 @@ public class FeieyunCallbackController {
     public Result<Map<String, Object>> addPrinter(@RequestBody PrinterInfo printerInfo) {
         log.info("添加打印机请求：sn={}, remark={}", printerInfo.getSn(), printerInfo.getRemark());
 
-        try {
+        
             Map<String, Object> result = printerInfoService.addPrinter(printerInfo);
             boolean success = (boolean) result.getOrDefault("success", false);
 
@@ -80,10 +81,7 @@ public class FeieyunCallbackController {
             } else {
                 return Result.error((String) result.getOrDefault("msg", "添加失败"));
             }
-        } catch (Exception e) {
-            log.error("添加打印机异常", e);
-            return Result.error("添加打印机失败：" + e.getMessage());
-        }
+        
     }
 
 
@@ -102,7 +100,7 @@ public class FeieyunCallbackController {
     public Result<Map<String, Object>> queryPrinterStatus(@PathVariable("sn") String sn) {
         log.info("查询打印机状态：sn={}", sn);
 
-        try {
+        
             Map<String, Object> result = printerInfoService.queryPrinterStatus(sn);
             boolean success = (boolean) result.getOrDefault("success", false);
 
@@ -111,10 +109,7 @@ public class FeieyunCallbackController {
             } else {
                 return Result.error((String) result.getOrDefault("msg", "查询失败"));
             }
-        } catch (Exception e) {
-            log.error("查询打印机状态异常", e);
-            return Result.error("查询打印机状态失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -137,13 +132,10 @@ public class FeieyunCallbackController {
         log.info("分页查询打印机列表：page={}, size={}, storeId={}, status={}",
                 currentPage, pageSize, storeId, status);
 
-        try {
+        
             Page<PrinterInfo> page = printerInfoService.getPrinterPage(currentPage, pageSize, storeId, status);
             return Result.success(page);
-        } catch (Exception e) {
-            log.error("查询打印机列表异常", e);
-            return Result.error("查询打印机列表失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -157,13 +149,10 @@ public class FeieyunCallbackController {
     public Result<List<PrinterInfo>> getPrinterListByStore(@PathVariable("storeId") Long storeId) {
         log.info("根据门店ID查询打印机列表：storeId={}", storeId);
 
-        try {
+        
             List<PrinterInfo> list = printerInfoService.getPrinterListByStore(storeId);
             return Result.success(list);
-        } catch (Exception e) {
-            log.error("查询打印机列表异常", e);
-            return Result.error("查询打印机列表失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -177,17 +166,14 @@ public class FeieyunCallbackController {
     public Result<PrinterInfo> getPrinterBySn(@PathVariable("sn") String sn) {
         log.info("根据编号查询打印机：sn={}", sn);
 
-        try {
+        
             PrinterInfo printer = printerInfoService.getPrinterBySn(sn);
             if (printer != null) {
                 return Result.success(printer);
             } else {
                 return Result.error("打印机不存在");
             }
-        } catch (Exception e) {
-            log.error("查询打印机异常", e);
-            return Result.error("查询打印机失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -201,13 +187,10 @@ public class FeieyunCallbackController {
     public Result<Boolean> updatePrinter(@RequestBody PrinterInfo printerInfo) {
         log.info("更新打印机信息：id={}", printerInfo.getId());
 
-        try {
+        
             boolean success = printerInfoService.updatePrinter(printerInfo);
             return success ? Result.success(true) : Result.error("更新失败");
-        } catch (Exception e) {
-            log.error("更新打印机异常", e);
-            return Result.error("更新打印机失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -221,13 +204,10 @@ public class FeieyunCallbackController {
     public Result<Boolean> deletePrinter(@PathVariable("id") Long id) {
         log.info("删除打印机：id={}", id);
 
-        try {
+        
             boolean success = printerInfoService.deletePrinter(id);
             return success ? Result.success(true) : Result.error("删除失败");
-        } catch (Exception e) {
-            log.error("删除打印机异常", e);
-            return Result.error("删除打印机失败：" + e.getMessage());
-        }
+        
     }
 
 
@@ -245,13 +225,10 @@ public class FeieyunCallbackController {
             @RequestParam("enabled") Integer enabled) {
         log.info("更新打印机启用状态：id={}, enabled={}", id, enabled);
 
-        try {
+        
             boolean success = printerInfoService.updatePrinterEnabled(id, enabled);
             return success ? Result.success(true) : Result.error("操作失败");
-        } catch (Exception e) {
-            log.error("更新打印机启用状态异常", e);
-            return Result.error("更新打印机启用状态失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -264,13 +241,10 @@ public class FeieyunCallbackController {
     public Result<Map<String, Object>> syncAllPrinterStatus() {
         log.info("同步所有打印机状态");
 
-        try {
+        
             Map<String, Object> result = printerInfoService.syncAllPrinterStatus();
             return Result.success(result);
-        } catch (Exception e) {
-            log.error("同步所有打印机状态异常", e);
-            return Result.error("同步所有打印机状态失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -287,7 +261,7 @@ public class FeieyunCallbackController {
             @RequestParam("date") String date) {
         log.info("查询打印机订单统计：sn={}, date={}", sn, date);
 
-        try {
+        
             Map<String, Object> result = printerInfoService.queryOrderInfoByDate(sn, date);
             boolean success = (boolean) result.getOrDefault("success", false);
 
@@ -296,10 +270,7 @@ public class FeieyunCallbackController {
             } else {
                 return Result.error((String) result.getOrDefault("msg", "查询失败"));
             }
-        } catch (Exception e) {
-            log.error("查询打印机订单统计异常", e);
-            return Result.error("查询打印机订单统计失败：" + e.getMessage());
-        }
+        
     }
 
     // ==================== 回调接口 ====================
@@ -331,16 +302,20 @@ public class FeieyunCallbackController {
      * @return 返回"ok"表示接收成功
      */
     @PostMapping("/callback/print")
+    @SaIgnore
     public String printCallback(
             @RequestParam("orderId") String orderId,
             @RequestParam("status") Integer status,
             @RequestParam("time") Long time,
             @RequestParam("sign") String sign) {
 
-        log.info("收到打印回调 - 订单ID: {}, 状态: {}, 时间: {}, 签名: {}",
-                orderId, status, time, sign);
+        log.info("收到打印回调 - 订单ID: {}, 状态: {}, 时间: {}", orderId, status, time);
 
         try {
+            if (time == null || Math.abs(System.currentTimeMillis() / 1000 - time) > 300) {
+                log.warn("打印回调时间戳超出允许窗口: orderId={}", orderId);
+                return "fail";
+            }
             // 1. 构建待验证的数据字符串
             // 根据飞鹅云官方文档，将所有参数（除sign外）按字典序拼接
             StringBuilder dataString = new StringBuilder();
@@ -348,11 +323,9 @@ public class FeieyunCallbackController {
             dataString.append("&status=").append(status);
             dataString.append("&time=").append(time);
 
-            log.debug("待验证字符串: {}", dataString);
-
             // 2. 验证签名，防止恶意请求
             if (!callbackService.verifySignature(dataString.toString(), sign)) {
-                log.error("❌ 签名验证失败！可能是恶意请求 - 订单ID: {}, 签名: {}", orderId, sign);
+                log.error("打印回调签名验证失败 - 订单ID: {}", orderId);
                 // 签名验证失败，返回 fail 拒绝请求
                 return "fail";
             }
@@ -366,8 +339,8 @@ public class FeieyunCallbackController {
             return "ok";
         } catch (Exception e) {
             log.error("处理打印回调失败", e);
-            // 即使处理失败也要返回ok，避免飞鹅云重复回调
-            return "ok";
+            // 处理失败返回 fail，让供应商重试，避免回调静默丢失。
+            return "fail";
         }
     }
 
@@ -403,6 +376,7 @@ public class FeieyunCallbackController {
      * @return 返回"ok"表示接收成功
      */
     @PostMapping("/callback/scan")
+    @SaIgnore
     public String scanCallback(
             @RequestParam("openId") String openId,
             @RequestParam("sn") String sn,
@@ -411,10 +385,12 @@ public class FeieyunCallbackController {
             @RequestParam(value = "content", required = false) String content,
             @RequestParam("sign") String sign) {
 
-        log.info("收到扫码回调 - OpenID: {}, 打印机: {}, 订单ID: {}, 时间: {}, 内容: {}, 签名: {}",
-                openId, sn, orderId, time, content, sign);
+        log.info("收到扫码回调 - 打印机: {}, 订单ID: {}, 时间: {}", sn, orderId, time);
 
         try {
+            if (time == null || Math.abs(System.currentTimeMillis() / 1000 - time) > 300) {
+                return "fail";
+            }
             // 1. 构建待验证的数据字符串
             // 根据飞鹅云官方文档，将所有参数（除sign外）拼接成字符串
             StringBuilder dataString = new StringBuilder();
@@ -428,11 +404,9 @@ public class FeieyunCallbackController {
             dataString.append("&sn=").append(sn);
             dataString.append("&time=").append(time);
 
-            log.debug("待验证字符串: {}", dataString);
-
             // 2. 验证签名，防止恶意请求
             if (!callbackService.verifySignature(dataString.toString(), sign)) {
-                log.error("❌ 签名验证失败！可能是恶意请求 - 签名: {}", sign);
+                log.error("扫码回调签名验证失败: printerSn={}, orderId={}", sn, orderId);
                 return "fail";
             }
 
@@ -445,7 +419,7 @@ public class FeieyunCallbackController {
             return "ok";
         } catch (Exception e) {
             log.error("处理扫码回调失败", e);
-            return "ok";
+            return "fail";
         }
     }
 
@@ -455,6 +429,7 @@ public class FeieyunCallbackController {
      * @return 测试信息
      */
     @GetMapping("/callback/test")
+    @SaCheckPermission(value = {"restaurant:printer"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public JSONObject testCallback() {
         JSONObject result = new JSONObject();
         result.put("status", "ok");

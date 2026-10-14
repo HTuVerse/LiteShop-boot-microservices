@@ -18,6 +18,11 @@ import java.math.BigDecimal;
 @AllArgsConstructor
 public class AlipayTradeWapPayRequestParams {
 
+    /**
+     * 订单所属租户。支付服务按该租户加载应用参数。
+     */
+    private Long tenantId;
+
     // ==================== 必填参数 ====================
 
     /**

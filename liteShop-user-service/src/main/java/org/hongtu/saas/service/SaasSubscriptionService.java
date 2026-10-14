@@ -70,6 +70,18 @@ public class SaasSubscriptionService {
         String billingCycle = request.getBillingCycle() == null ? "MONTHLY" : request.getBillingCycle().trim().toUpperCase();
         if (!Set.of("MONTHLY", "YEARLY", "CUSTOM").contains(billingCycle)) throw new BusinessException(400, "计费周期只能是 MONTHLY、YEARLY 或 CUSTOM");
         LocalDateTime now = LocalDateTime.now();
+        // 试用、宽限期订阅必须显式给出结束时间，且不能是过去时间；
+        // 否则 isEffective 会判定订阅未生效，造成“分配成功却无任何权益”的静默问题。
+        if ("TRIALING".equals(status)) {
+            if (request.getTrialEndAt() == null || !request.getTrialEndAt().isAfter(now)) {
+                throw new BusinessException(400, "试用订阅必须填写晚于当前时间的试用结束时间");
+            }
+        }
+        if ("GRACE".equals(status) || "PAST_DUE".equals(status)) {
+            if (request.getGraceEndAt() == null || !request.getGraceEndAt().isAfter(now)) {
+                throw new BusinessException(400, "宽限期订阅必须填写晚于当前时间的宽限期结束时间");
+            }
+        }
         LocalDateTime periodStart = request.getCurrentPeriodStart() == null ? now : request.getCurrentPeriodStart();
         LocalDateTime periodEnd = request.getCurrentPeriodEnd();
         if (periodEnd == null) {
@@ -92,6 +104,8 @@ public class SaasSubscriptionService {
         LocalDateTime accessEnd = switch (status) {
             case "TRIALING" -> row.getTrialEndAt() == null ? row.getCurrentPeriodEnd() : row.getTrialEndAt();
             case "GRACE", "PAST_DUE" -> row.getGraceEndAt() == null ? row.getCurrentPeriodEnd() : row.getGraceEndAt();
+            // 暂停订阅不产生任何生效权益，访问截止时间同步设为当前时间，避免“无权益却仍可登录”的状态不一致。
+            case "SUSPENDED" -> now;
             default -> row.getCurrentPeriodEnd();
         };
         tenants.updateById(new SysTenant().setId(tenantId).setExpireTime(accessEnd).setUpdateTime(now));

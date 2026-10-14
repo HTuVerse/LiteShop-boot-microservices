@@ -16,6 +16,11 @@ import java.util.List;
 public class CreateOrderRequest {
 
     /**
+     * 客户端生成的下单幂等键。同一业务重试必须复用同一个值。
+     */
+    private String idempotencyKey;
+
+    /**
      * 门店ID
      */
     private Long storeId;

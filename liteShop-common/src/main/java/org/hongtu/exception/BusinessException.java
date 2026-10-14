@@ -33,7 +33,8 @@ public class BusinessException extends RuntimeException {
      */
     public BusinessException(String message) {
         super(message);
-        this.code = 401;
+        // 业务规则校验失败不是登录失效，不能使用 401，否则前端会清除会话。
+        this.code = 400;
         this.message = message;
     }
     

@@ -4,12 +4,16 @@ import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.annotation.SaMode;
+import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
 import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.VO.DishVO;
+import org.hongtu.restaurant.VO.StoreDishConfigRequest;
+import org.hongtu.restaurant.VO.MenuChangeSubmitVO;
 import org.hongtu.restaurant.service.DishService;
+import org.hongtu.restaurant.service.MenuChangeService;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -28,14 +32,20 @@ public class DishController {
     @Resource
     DishService dishService;
 
+    @Resource
+    MenuChangeService menuChangeService;
+
     /**
      * 根据ID查询菜品详情
      * @param id 菜品ID
      * @return 菜品详情
      */
     @GetMapping("/detail/{id}")
-    public Result<DishVO> getDishDetail(@PathVariable Long id) {
-        DishVO dishVO = dishService.getDishDetail(id);
+    public Result<DishVO> getDishDetail(@PathVariable Long id,
+                                       @RequestParam(required = false) Long storeId) {
+        DishVO dishVO = storeId == null
+                ? dishService.getDishDetail(id)
+                : dishService.getEffectiveDish(id, storeId, false);
         if (dishVO != null) {
             return Result.success("查询菜品详情成功", dishVO);
         } else {
@@ -133,7 +143,8 @@ public class DishController {
             @RequestParam(required = false) Integer isHot,
             @RequestParam(required = false) Integer isNew,
             @RequestParam(required = false) Integer saleStatus,
-            @RequestParam(required = false) Integer sceneType
+            @RequestParam(required = false) Integer sceneType,
+            @RequestParam(required = false) Integer sourceType
     ) {
 
         // 封装查询参数
@@ -146,6 +157,7 @@ public class DishController {
         params.put("isNew", isNew);
         params.put("saleStatus", saleStatus);
         params.put("sceneType", sceneType);
+        params.put("sourceType", sourceType);
 
         // 创建分页对象
         Page<Dish> page = new Page<>(currentPage, pageSize);
@@ -171,8 +183,19 @@ public class DishController {
                                     @RequestParam(required = false, defaultValue = "0") Integer isListBySort,
                                     @RequestParam(required = false) Integer isRecommend,
                                     @RequestParam(required = false) Integer isHot,
-                                    @RequestParam(required = false) Integer isNew){
-       return dishService.listDishNoPage(searchKey, isListBySort, isRecommend, isHot, isNew);
+                                    @RequestParam(required = false) Integer isNew,
+                                    @RequestParam(required = false) Long storeId){
+       return dishService.listDishNoPage(storeId, searchKey, isListBySort, isRecommend, isHot, isNew);
+    }
+
+    /**
+     * 更新总部菜品在指定门店的价格、库存和上下架状态。
+     */
+    @PutMapping("/store-config")
+    @SaCheckPermission(value = {"restaurant:dish:edit"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<MenuChangeSubmitVO> updateStoreConfig(@RequestBody StoreDishConfigRequest request) {
+        return Result.success("门店菜品变更已提交",
+                menuChangeService.submit(request, StpUtil.getLoginIdAsLong()));
     }
 
 

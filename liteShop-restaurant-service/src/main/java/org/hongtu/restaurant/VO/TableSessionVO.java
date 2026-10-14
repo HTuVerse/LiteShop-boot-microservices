@@ -32,6 +32,11 @@ public class TableSessionVO implements Serializable {
     private String sessionNo;
 
     /**
+     * 匿名桌台接口与 WebSocket 使用的短期签名票据，仅在扫码/开桌成功时返回。
+     */
+    private String sessionToken;
+
+    /**
      * 就餐人数
      */
     private Integer peopleCount;

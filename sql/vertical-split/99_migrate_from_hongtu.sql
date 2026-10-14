@@ -10,8 +10,8 @@
 --   5. 执行第三部分【行数核对】，确认新旧库行数一致
 --
 -- 说明：
---   - 新表与旧表列顺序完全一致，仅在末尾追加 tenant_id，
---     因此业务表使用 SELECT *, 1（默认租户=1）迁移
+--   - 大多数新表与旧表列顺序一致，仅在末尾追加 tenant_id，使用 SELECT *, 1 迁移；
+--     打印机、打印模板和文件记录因枚举数值化使用显式列清单与 CASE 转换
 --   - sys_permission / sys_role_permission / sys_user_role / user_level
 --     为全局表（无 tenant_id），直接 SELECT *
 --   - 存量自增 ID 原样保留（很小，不会与雪花 ID 冲突），新数据由雪花算法生成
@@ -26,9 +26,13 @@ SELECT id, open_id     FROM hongtu.sys_user            WHERE CHAR_LENGTH(open_id
 SELECT id, username    FROM hongtu.user_points_record  WHERE CHAR_LENGTH(username) > 50;
 SELECT id, phone       FROM hongtu.store_info          WHERE CHAR_LENGTH(phone) > 20;
 SELECT id, pickup_code FROM hongtu.restaurant_order    WHERE CHAR_LENGTH(pickup_code) > 32;
-SELECT id, printer_brand FROM hongtu.printer_info      WHERE CHAR_LENGTH(printer_brand) > 64;
+SELECT id, printer_brand FROM hongtu.printer_info
+WHERE printer_brand IS NOT NULL AND printer_brand NOT IN ('1','2','FEIER','飞鹅','OTHER','其它','其他');
+SELECT id, paper_width FROM hongtu.print_template
+WHERE paper_width IS NOT NULL AND paper_width NOT IN ('0','1','58mm','80mm');
 SELECT id, content_type  FROM hongtu.file_upload       WHERE CHAR_LENGTH(content_type) > 128;
-SELECT id, storage_type  FROM hongtu.file_upload       WHERE CHAR_LENGTH(storage_type) > 20;
+SELECT id, storage_type FROM hongtu.file_upload
+WHERE storage_type IS NOT NULL AND storage_type NOT IN ('0','1','local','LOCAL','oss','OSS');
 -- activity_prize 新表以 (activity_id, prize_id) 为主键，检查是否有重复行
 SELECT activity_id, prize_id, COUNT(*) c FROM hongtu.activity_prize
 GROUP BY activity_id, prize_id HAVING c > 1;
@@ -60,14 +64,40 @@ INSERT INTO liteshop_restaurant.table_info            SELECT *, 1 FROM hongtu.ta
 INSERT INTO liteshop_restaurant.table_session         SELECT *, 1 FROM hongtu.table_session;
 INSERT INTO liteshop_restaurant.restaurant_order      SELECT *, 1 FROM hongtu.restaurant_order;
 INSERT INTO liteshop_restaurant.restaurant_order_item SELECT *, 1 FROM hongtu.restaurant_order_item;
-INSERT INTO liteshop_restaurant.printer_info          SELECT *, 1 FROM hongtu.printer_info;
-INSERT INTO liteshop_restaurant.print_template        SELECT *, 1 FROM hongtu.print_template;
+INSERT INTO liteshop_restaurant.printer_info
+  (id, sn, printer_key, printer_brand, remark, card_num, store_id, template_id, printer_type,
+   status, last_online_time, is_default, enabled, created_at, updated_at, tenant_id)
+SELECT id, sn, printer_key,
+       CASE printer_brand WHEN 'FEIER' THEN 1 WHEN '飞鹅' THEN 1
+         WHEN 'OTHER' THEN 2 WHEN '其它' THEN 2 WHEN '其他' THEN 2
+         ELSE CAST(printer_brand AS UNSIGNED) END,
+       remark, card_num, store_id, template_id, printer_type, status, last_online_time,
+       is_default, enabled, created_at, updated_at, 1
+FROM hongtu.printer_info;
+
+INSERT INTO liteshop_restaurant.print_template
+  (id, template_name, store_id, paper_width, show_logo, logo_url, store_name_style,
+   show_address, show_phone, show_business_hours, order_info_fields, dish_list_style,
+   show_dish_image, show_dish_spec, show_dish_note, show_order_note, show_payment_info,
+   footer_text, show_qrcode, qrcode_template, qrcode_size, font_size, print_density,
+   print_copies, is_default, enabled, remark, created_at, updated_at, show_pickup_code, tenant_id)
+SELECT id, template_name, store_id,
+       CASE paper_width WHEN '58mm' THEN 0 WHEN '80mm' THEN 1 ELSE CAST(paper_width AS UNSIGNED) END,
+       show_logo, logo_url, store_name_style, show_address, show_phone, show_business_hours,
+       order_info_fields, dish_list_style, show_dish_image, show_dish_spec, show_dish_note,
+       show_order_note, show_payment_info, footer_text, show_qrcode, qrcode_template,
+       qrcode_size, font_size, print_density, print_copies, is_default, enabled, remark,
+       created_at, updated_at, show_pickup_code, 1
+FROM hongtu.print_template;
 
 -- ---------- liteshop_coupon ----------
 INSERT INTO liteshop_coupon.coupon           SELECT *, 1 FROM hongtu.coupon;
 INSERT INTO liteshop_coupon.coupon_dish_item SELECT *, 1 FROM hongtu.coupon_dish_item;
 INSERT INTO liteshop_coupon.user_coupon      SELECT *, 1 FROM hongtu.user_coupon;
-INSERT INTO liteshop_coupon.verify_record    SELECT *, 1 FROM hongtu.verify_record;
+INSERT INTO liteshop_coupon.verify_record
+       (id, user_coupon_id, merchant_id, verify_code, verify_time, status, tenant_id)
+SELECT id, user_coupon_id, merchant_id, verify_code, verify_time, status, 1
+FROM hongtu.verify_record;
 
 -- ---------- liteshop_lottery ----------
 INSERT INTO liteshop_lottery.lottery_activity     SELECT *, 1 FROM hongtu.lottery_activity;
@@ -79,7 +109,9 @@ INSERT INTO liteshop_lottery.user_activity_chance SELECT *, 1 FROM hongtu.user_a
 -- ---------- liteshop_file（新表补了 created_at，需显式列清单） ----------
 INSERT INTO liteshop_file.file_upload
   (id, original_file_name, size, content_type, url, storage_type)
-SELECT id, original_file_name, size, content_type, url, storage_type
+SELECT id, original_file_name, size, content_type, url,
+       CASE storage_type WHEN 'local' THEN 0 WHEN 'LOCAL' THEN 0
+         WHEN 'oss' THEN 1 WHEN 'OSS' THEN 1 ELSE CAST(storage_type AS UNSIGNED) END
 FROM hongtu.file_upload;
 
 -- ---------- liteshop_config ----------

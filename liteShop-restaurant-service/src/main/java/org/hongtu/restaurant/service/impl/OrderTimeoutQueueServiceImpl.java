@@ -3,12 +3,16 @@ package org.hongtu.restaurant.service.impl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.restaurant.service.OrderTimeoutQueueService;
+import org.hongtu.exception.BusinessException;
 import org.hongtu.utils.RedisCache;
 import org.springframework.stereotype.Service;
 
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+
 import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * 订单超时队列服务实现
@@ -30,6 +34,13 @@ public class OrderTimeoutQueueServiceImpl implements OrderTimeoutQueueService {
      * Redis ZSet 的 key
      */
     private static final String TIMEOUT_QUEUE_KEY = "order:timeout:queue";
+    private static final DefaultRedisScript<List> CLAIM_SCRIPT = new DefaultRedisScript<>("""
+            local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', '0', ARGV[2])
+            if #items > 0 then
+              redis.call('ZREM', KEYS[1], unpack(items))
+            end
+            return items
+            """, List.class);
 
     @Resource
     private RedisCache redisCache;
@@ -62,6 +73,7 @@ public class OrderTimeoutQueueServiceImpl implements OrderTimeoutQueueService {
             log.info("[订单超时队列] 订单已加入超时队列: orderId={}, 超时时间={}秒后", orderId, timeoutSeconds);
         } catch (Exception e) {
             log.error("[订单超时队列] 添加订单到队列失败: orderId={}, error={}", orderId, e.getMessage(), e);
+            throw new BusinessException("订单超时任务登记失败，请稍后重试");
         }
     }
 
@@ -91,26 +103,34 @@ public class OrderTimeoutQueueServiceImpl implements OrderTimeoutQueueService {
     @SuppressWarnings("unchecked")
     public Set<Long> getTimeoutOrderIds() {
         try {
-            // 当前时间戳（秒）
             double now = System.currentTimeMillis() / 1000.0;
-            
-            // 获取 score 小于当前时间的所有成员（即已超时的订单）
-            Set<Object> timeoutMembers = redisCache.redisTemplate.opsForZSet()
-                    .rangeByScore(TIMEOUT_QUEUE_KEY, 0, now);
-            
-            if (timeoutMembers == null || timeoutMembers.isEmpty()) {
+            // Lua 参数使用数值类型，避免 JSON 序列化后带引号导致 Redis 无法解析数值。
+            List<Object> claimed = (List<Object>) redisCache.redisTemplate.execute(
+                    CLAIM_SCRIPT, Collections.singletonList(TIMEOUT_QUEUE_KEY), now, 200);
+            if (claimed == null || claimed.isEmpty()) {
                 return Collections.emptySet();
             }
-            
-            // 转换为 Long 类型的订单ID集合
-            return timeoutMembers.stream()
-                    .map(obj -> Long.parseLong(obj.toString()))
-                    .collect(Collectors.toSet());
-                    
+            Set<Long> orderIds = new LinkedHashSet<>();
+            claimed.stream()
+                    .map(String::valueOf)
+                    .filter(item -> !item.isBlank())
+                    .map(Long::valueOf)
+                    .forEach(orderIds::add);
+            return orderIds;
         } catch (Exception e) {
-            log.error("[订单超时队列] 获取超时订单列表失败: error={}", e.getMessage(), e);
+            log.error("[订单超时队列] 原子领取超时订单失败: error={}", e.getMessage(), e);
             return Collections.emptySet();
         }
+    }
+
+    /**
+     * 处理失败时把订单放回队列，下一轮继续领取。
+     */
+    public void requeue(Long orderId) {
+        if (orderId == null) {
+            return;
+        }
+        redisCache.redisTemplate.opsForZSet().add(TIMEOUT_QUEUE_KEY, orderId.toString(), System.currentTimeMillis() / 1000.0);
     }
 
     /**

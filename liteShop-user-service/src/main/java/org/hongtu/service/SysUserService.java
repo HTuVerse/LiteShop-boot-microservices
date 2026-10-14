@@ -68,6 +68,9 @@ public interface SysUserService extends IService<SysUser> {
     Result addUserPoints(Long userId, Integer points,String remark);
     Result addUserPoints(Long userId, Integer points);
 
+    /** 同一个幂等键只增加一次积分。 */
+    Result addUserPointsIdempotent(Long userId, Integer points, String idempotencyKey);
+
     Result phoneOrEmailVerifyCodeLogin(String account,String verifyCode);
 
     /**
@@ -95,6 +98,9 @@ public interface SysUserService extends IService<SysUser> {
     Result adminPhoneOrEmailVerifyCodeLogin(String account, String verifyCode);
 
     Result adminLogin(String account, String password);
+
+    /** 使用密码预认证返回的一次性凭证完成动态口令验证。 */
+    Result verifyAdminTotp(String challengeTicket, String totpCode);
 
     Result selectAdminTenant(String selectionTicket, Long tenantId, Long storeId);
 

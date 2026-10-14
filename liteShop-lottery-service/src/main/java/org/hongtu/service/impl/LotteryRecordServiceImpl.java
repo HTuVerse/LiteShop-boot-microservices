@@ -30,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * <p>
@@ -63,6 +64,8 @@ public class LotteryRecordServiceImpl extends ServiceImpl<LotteryRecordMapper, L
 
     @Resource
     private UserFeignClient userFeignClient;
+    @Resource
+    private LotteryPrizeOutboxMapper lotteryPrizeOutboxMapper;
 
     @Resource
     RabbitMQUtils rabbitMQUtils;
@@ -71,6 +74,8 @@ public class LotteryRecordServiceImpl extends ServiceImpl<LotteryRecordMapper, L
      * 最大重试次数，防止无限循环
      */
     private static final int MAX_RETRY_COUNT = 3;
+    private static final ThreadLocal<String> PENDING_PRIZE_TYPE = new ThreadLocal<>();
+    private static final ThreadLocal<String> PENDING_PRIZE_PAYLOAD = new ThreadLocal<>();
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -178,14 +183,17 @@ public class LotteryRecordServiceImpl extends ServiceImpl<LotteryRecordMapper, L
             }
 
             save(record);
+            enqueuePrizeOutbox(record);
             return Result.success(record);
 
         } catch (BusinessException e) {
-            // 业务异常，抛出以触发事务回滚
+            PENDING_PRIZE_TYPE.remove();
+            PENDING_PRIZE_PAYLOAD.remove();
             log.warn("抽奖业务校验失败，userId={}, activityId={}, reason={}", userId, activityId, e.getMessage());
             throw e;
         } catch (Exception e) {
-            // 系统异常，抛出以触发事务回滚
+            PENDING_PRIZE_TYPE.remove();
+            PENDING_PRIZE_PAYLOAD.remove();
             log.error("抽奖过程中发生错误，userId={}, activityId={}", userId, activityId, e);
             throw new BusinessException(500, "抽奖失败，请稍后再试", e);
         }
@@ -221,46 +229,48 @@ public class LotteryRecordServiceImpl extends ServiceImpl<LotteryRecordMapper, L
      * 优惠券发放状态先标记为"待发放"，由消费者处理后更新状态
      */
     private Result<Void> handleCouponPrize(Long userId, LotteryPrize winPrize, LotteryRecord record) {
-        CouponMessageDTO couponMessage = new CouponMessageDTO();
-        couponMessage.setCouponId(winPrize.getCouponId());
-        couponMessage.setUserId(userId);
-        couponMessage.setStartTime(LocalDateTimeUtil.of(DateUtil.beginOfDay(DateUtil.tomorrow())));
-        couponMessage.setExpiredTime(LocalDateTimeUtil.of(DateUtil.endOfDay(DateUtil.nextWeek())));
-        couponMessage.setOperationType(CouponMsgOperateTypeEnum.SEND_OF_MSG);
-
-        try {
-            // 使用异步发送，不等待确认，避免阻塞抽奖接口
-            rabbitMQUtils.sendMessage(
-                    RabbitMQConstants.Coupon.EXCHANGE,
-                    RabbitMQConstants.Coupon.ISSUE_KEY,
-                    couponMessage
-            );
-            log.info("优惠券发放消息已发送，userId={}, couponId={}", userId, winPrize.getCouponId());
-            // 消息已发送，标记为已发放（实际发放由消费者处理）
-            record.setIsReceived(BooleanEnum.YES);
-            return null;
-        } catch (Exception e) {
-            log.error("发送优惠券消息异常，userId={}, couponId={}", userId, winPrize.getCouponId(), e);
-            record.setIsReceived(BooleanEnum.NO);
-            return Result.error("优惠券发送异常");
-        }
+        record.setIsReceived(BooleanEnum.NO);
+        PENDING_PRIZE_TYPE.set("COUPON");
+        PENDING_PRIZE_PAYLOAD.set(cn.hutool.json.JSONUtil.createObj()
+                .set("userId", userId)
+                .set("couponId", winPrize.getCouponId())
+                .set("startTime", LocalDateTimeUtil.of(DateUtil.beginOfDay(DateUtil.tomorrow())).toString())
+                .set("expiredTime", LocalDateTimeUtil.of(DateUtil.endOfDay(DateUtil.nextWeek())).toString())
+                .toString());
+        return null;
     }
 
     /**
      * 处理积分奖品
      */
     private Result<Void> handlePointsPrize(Long userId, LotteryPrize winPrize, LotteryRecord record) {
-        try {
-            Integer pointsToAdd = winPrize.getPoints() != null ? winPrize.getPoints() : 0;
-            // 微服务改造：经 Feign 调 user-service 加积分（与原行为一致，仅调用异常时进入 catch）
-            userFeignClient.addUserPoints(userId, pointsToAdd);
-            record.setIsReceived(BooleanEnum.YES);
-            return null;
-        } catch (Exception e) {
-            log.error("积分发放失败，userId={}, points={}", userId, winPrize.getPoints(), e);
-            record.setIsReceived(BooleanEnum.NO);
-            return Result.error("积分发放失败");
+        record.setIsReceived(BooleanEnum.NO);
+        PENDING_PRIZE_TYPE.set("POINTS");
+        PENDING_PRIZE_PAYLOAD.set(cn.hutool.json.JSONUtil.createObj()
+                .set("userId", userId)
+                .set("points", winPrize.getPoints() != null ? winPrize.getPoints() : 0)
+                .toString());
+        return null;
+    }
+
+    private void enqueuePrizeOutbox(LotteryRecord record) {
+        String prizeType = PENDING_PRIZE_TYPE.get();
+        String payload = PENDING_PRIZE_PAYLOAD.get();
+        PENDING_PRIZE_TYPE.remove();
+        PENDING_PRIZE_PAYLOAD.remove();
+        if (prizeType == null || record.getId() == null) {
+            return;
         }
+        LotteryPrizeOutbox outbox = new LotteryPrizeOutbox();
+        outbox.setEventId("lottery-" + record.getId());
+        outbox.setRecordId(record.getId());
+        outbox.setPrizeType(prizeType);
+        outbox.setPayload(payload);
+        outbox.setStatus("PENDING");
+        outbox.setAttempts(0);
+        outbox.setCreatedAt(LocalDateTime.now());
+        outbox.setUpdatedAt(LocalDateTime.now());
+        lotteryPrizeOutboxMapper.insert(outbox);
     }
 
     @Override

@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: ${MYSQL_URL_RESTAURANT:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_restaurant?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+    url: ${MYSQL_URL_RESTAURANT:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_restaurant?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
   servlet:
     multipart:
       max-file-size: 20MB
@@ -20,6 +20,14 @@ app:
 wx:
   appid: ${WX_APP_ID}
   secret: ${WX_APP_SECRET}
+
+liteshop:
+  payment:
+    # 必须是网关可公网访问的 HTTPS 地址，系统会在末尾自动追加订单所属租户 ID。
+    # 例如：https://api.example.com/restaurant-order/wechatPay/notify
+    wechat-notify-url: ${WECHAT_ORDER_NOTIFY_URL:}
+    # 例如：https://api.example.com/restaurant-order/alipayPay/notify
+    alipay-notify-url: ${ALIPAY_ORDER_NOTIFY_URL:}
 
 feieyun:
   printer:

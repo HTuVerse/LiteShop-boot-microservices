@@ -8,6 +8,9 @@ import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.springframework.scheduling.quartz.QuartzJobBean;
 import org.springframework.stereotype.Component;
+import org.hongtu.utils.RedisJobLease;
+
+import java.time.Duration;
 
 /**
  * 过期优惠券自动下架定时任务
@@ -27,19 +30,26 @@ public class CouponAutoOffShelfJob extends QuartzJobBean {
     @Resource
     private TenantJobExecutor tenantJobExecutor;
 
+    @Resource
+    private RedisJobLease redisJobLease;
+
     @Override
     protected void executeInternal(JobExecutionContext context) throws JobExecutionException {
-        log.info("========== [Quartz] 开始执行过期优惠券自动下架任务 ==========");
-        long startTime = System.currentTimeMillis();
         try {
-            int updatedCount = tenantJobExecutor.executeForActiveTenants(
-                    "优惠券自动下架", couponService::batchOffShelfExpiredCoupons);
-            long costTime = System.currentTimeMillis() - startTime;
-            log.info("[Quartz] 过期优惠券自动下架任务执行完成，下架数量：{}，耗时：{}ms", updatedCount, costTime);
+            boolean executed = redisJobLease.runIfAcquired(
+                    "coupon-auto-off-shelf", Duration.ofMinutes(30), () -> {
+                        long startTime = System.currentTimeMillis();
+                        int updatedCount = tenantJobExecutor.executeForActiveTenants(
+                                "优惠券自动下架", couponService::batchOffShelfExpiredCoupons);
+                        log.info("[Quartz] 过期优惠券自动下架完成，下架数量：{}，耗时：{}ms",
+                                updatedCount, System.currentTimeMillis() - startTime);
+                    });
+            if (!executed) {
+                log.debug("[Quartz] 其他实例正在执行优惠券自动下架，本轮跳过");
+            }
         } catch (Exception e) {
             log.error("[Quartz] 过期优惠券自动下架任务执行异常", e);
             throw new JobExecutionException("过期优惠券自动下架任务执行失败", e);
         }
-        log.info("========== [Quartz] 过期优惠券自动下架任务结束 ==========");
     }
 }

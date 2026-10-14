@@ -1,12 +1,10 @@
 package org.hongtu.utils;
 
 import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.parser.ParserConfig;
-import com.alibaba.fastjson.serializer.SerializerFeature;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.SerializationException;
 
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Redis使用FastJson序列化
@@ -16,14 +14,7 @@ import java.nio.charset.Charset;
 public class FastJsonRedisSerializer<T> implements RedisSerializer<T>
 {
 
-    public static final Charset DEFAULT_CHARSET = Charset.forName("UTF-8");
-
-    private Class<T> clazz;
-
-    static
-    {
-        ParserConfig.getGlobalInstance().setAutoTypeSupport(true);
-    }
+    private final Class<T> clazz;
 
     public FastJsonRedisSerializer(Class<T> clazz)
     {
@@ -38,7 +29,8 @@ public class FastJsonRedisSerializer<T> implements RedisSerializer<T>
         {
             return new byte[0];
         }
-        return JSON.toJSONString(t, SerializerFeature.WriteClassName).getBytes(DEFAULT_CHARSET);
+        // 不写入可控类型信息，避免反序列化时触发危险的 AutoType 路径。
+        return JSON.toJSONString(t).getBytes(StandardCharsets.UTF_8);
     }
 
     @Override
@@ -48,7 +40,7 @@ public class FastJsonRedisSerializer<T> implements RedisSerializer<T>
         {
             return null;
         }
-        String str = new String(bytes, DEFAULT_CHARSET);
+        String str = new String(bytes, StandardCharsets.UTF_8);
 
         return JSON.parseObject(str, clazz);
     }

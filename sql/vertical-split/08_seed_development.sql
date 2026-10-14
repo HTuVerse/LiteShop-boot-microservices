@@ -44,6 +44,7 @@ VALUES
   (35, '订单管理', 'restaurant:order', 30, 1, 'restaurant/order/index', '/restaurant/order', 35, 1, 'List', 0, 0, 1),
   (36, '打印管理', 'restaurant:printer', 30, 1, 'restaurant/printer/index', '/restaurant/printer', 36, 1, 'Printer', 0, 0, 1),
   (37, '经营分析', 'restaurant:analysis', 30, 1, 'restaurant/analysis/index', '/restaurant/analysis', 37, 1, 'DataAnalysis', 0, 0, 1),
+  (39, '租户经营分析', 'restaurant:tenant-analysis', 30, 1, 'restaurant/tenant-analysis/index', '/restaurant/tenant-analysis', 39, 1, 'DataAnalysis', 0, 0, 1),
 
   (40, '营销管理', 'marketing:menu', 0, 1, 'Layout', '/marketing', 40, 1, 'Present', 0, 0, 0),
   (41, '优惠券管理', 'marketing:coupon', 40, 1, 'marketing/coupon/index', '/marketing/coupon', 41, 1, 'Ticket', 0, 0, 1),
@@ -107,7 +108,9 @@ WHERE `status` = 1 AND `permission_code` NOT LIKE 'platform:%';
 -- 门店管理员：餐饮模块全部权限
 INSERT INTO `sys_role_permission` (`tenant_id`, `role_id`, `permission_id`)
 SELECT 1001, 1102, `id` FROM `sys_permission`
-WHERE `status` = 1 AND `permission_code` LIKE 'restaurant:%';
+WHERE `status` = 1
+  AND `permission_code` LIKE 'restaurant:%'
+  AND `permission_code` != 'restaurant:tenant-analysis';
 
 -- 门店员工：餐饮根菜单、餐桌和订单
 INSERT INTO `sys_role_permission` (`tenant_id`, `role_id`, `permission_id`)

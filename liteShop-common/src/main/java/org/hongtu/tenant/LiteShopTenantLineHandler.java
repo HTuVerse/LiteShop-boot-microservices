@@ -9,8 +9,6 @@ import java.util.Set;
 
 /**
  * 多租户 SQL 改写处理器：为 SQL 自动追加 tenant_id 条件（INSERT 自动填充 tenant_id 列）。
- * <p>
- * 通过 liteshop.tenant.enabled=true 启用（见 MybatisPlusConfig）。
  */
 public class LiteShopTenantLineHandler implements TenantLineHandler {
 
@@ -21,13 +19,15 @@ public class LiteShopTenantLineHandler implements TenantLineHandler {
             "sys_tenant",
             "sys_permission",
             "sys_website_config",
+            "sys_ai_model_config",
             "saas_feature",
             "saas_display_feature",
             "saas_plan",
             "saas_plan_version",
             "saas_plan_entitlement",
             "saas_addon",
-            "saas_addon_entitlement"
+            "saas_addon_entitlement",
+            "snowflake_worker_lease"
     );
 
     @Override

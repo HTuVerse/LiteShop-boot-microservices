@@ -156,6 +156,15 @@ public class NettyChannelManager {
         return channels != null && !channels.isEmpty();
     }
 
+    /** 会话结束后关闭本实例上的全部连接，其他实例由 Redis 广播各自执行。 */
+    public void closeSession(String sessionNo) {
+        SessionKey key = currentKey(sessionNo);
+        Set<Channel> channels = sessionChannels.get(key);
+        if (channels != null) {
+            channels.forEach(Channel::close);
+        }
+    }
+
     private SessionKey currentKey(String sessionNo) {
         return new SessionKey(TenantContext.getTenantId(), sessionNo);
     }

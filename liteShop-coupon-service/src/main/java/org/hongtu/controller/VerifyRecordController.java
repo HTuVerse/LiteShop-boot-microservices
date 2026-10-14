@@ -37,12 +37,9 @@ public class VerifyRecordController {
     @SaCheckPermission(value = {"operations:verify-record", "marketing:coupon", "operations:direct-cashier", "operations:table-cashier"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     @GetMapping("/preview")
     public Result<VerifyResultVO> previewVerify(@RequestParam String couponCode) {
-        try {
+        
             return verifyRecordService.previewVerify(couponCode);
-        } catch (Exception e) {
-            log.error("核销预览异常：couponCode={}", couponCode, e);
-            return Result.error("查询失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -53,15 +50,12 @@ public class VerifyRecordController {
     @PostMapping("/verify")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"operations:verify-record:verify", "marketing:coupon:verify", "operations:direct-cashier:verify", "operations:table-cashier:verify"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<VerifyResultVO> verifyCode(@RequestParam String couponCode) {
-        try {
+        
             // 获取当前登录的管理员ID
             Long merchantId = StpUtil.getLoginIdAsLong();
             // 执行核销
             return verifyRecordService.verifyCode(couponCode, merchantId);
-        } catch (Exception e) {
-            log.error("核销优惠券异常：couponCode={}", couponCode, e);
-            return Result.error("核销失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -78,13 +72,10 @@ public class VerifyRecordController {
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) Long merchantId,
             @RequestParam(required = false) Integer status) {
-        try {
+        
             VerifyStatusEnum statusEnum = status != null ? VerifyStatusEnum.getByCode(status) : null;
             return verifyRecordService.getVerifyRecordList(currentPage, pageSize, merchantId, statusEnum);
-        } catch (Exception e) {
-            log.error("查询核销记录列表异常", e);
-            return Result.error("查询失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -94,12 +85,9 @@ public class VerifyRecordController {
      */
     @GetMapping("/detail")
     public Result<VerifyRecord> getVerifyRecordById(@RequestParam Long id) {
-        try {
+        
             return verifyRecordService.getVerifyRecordById(id);
-        } catch (Exception e) {
-            log.error("获取核销记录详情异常：id={}", id, e);
-            return Result.error("获取详情失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -113,13 +101,10 @@ public class VerifyRecordController {
     public Result<Page<VerifyRecord>> getMyVerifyRecords(
             @RequestParam(defaultValue = "1") Integer currentPage,
             @RequestParam(defaultValue = "10") Integer pageSize) {
-        try {
+        
             Long merchantId = StpUtil.getLoginIdAsLong();
             return verifyRecordService.getVerifyRecordList(currentPage, pageSize, merchantId, null);
-        } catch (Exception e) {
-            log.error("查询我的核销记录异常", e);
-            return Result.error("查询失败：" + e.getMessage());
-        }
+        
     }
 
 }

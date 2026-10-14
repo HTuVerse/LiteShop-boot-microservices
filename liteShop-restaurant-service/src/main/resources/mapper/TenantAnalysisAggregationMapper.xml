@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.hongtu.restaurant.DAO.TenantAnalysisAggregationMapper">
+
+    <!-- 行锁配合 SKIP LOCKED，使多个服务实例不会消费同一批刷新键。 -->
+    <select id="selectDirtyBatchForUpdate" resultType="java.util.HashMap">
+        SELECT tenant_id AS tenantId, store_id AS storeId, biz_date AS bizDate
+        FROM analysis_refresh_queue
+        ORDER BY requested_at, tenant_id, store_id, biz_date
+        LIMIT #{limit}
+        FOR UPDATE SKIP LOCKED
+    </select>
+
+    <delete id="deleteStoreDaily">
+        DELETE FROM analysis_store_daily
+        WHERE tenant_id = #{tenantId} AND store_id = #{storeId} AND biz_date = #{bizDate}
+    </delete>
+
+    <insert id="insertStoreDaily">
+        INSERT INTO analysis_store_daily
+            (tenant_id, biz_date, store_id, gross_sales_amount, net_sales_amount,
+             discount_amount, valid_order_count, sales_quantity, updated_at)
+        SELECT ro.tenant_id, #{bizDate}, ro.store_id,
+               COALESCE(SUM(ro.total_amount), 0), COALESCE(SUM(ro.actual_amount), 0),
+               COALESCE(SUM(ro.discount_amount), 0), COUNT(*),
+               COALESCE(SUM((
+                   SELECT COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0
+                                            THEN roi.quantity ELSE 0 END), 0)
+                   FROM restaurant_order_item roi
+                   WHERE roi.tenant_id = ro.tenant_id AND roi.order_id = ro.id
+               )), 0), NOW()
+        FROM restaurant_order ro
+        WHERE ro.tenant_id = #{tenantId}
+          AND ro.store_id = #{storeId}
+          AND ro.payment_status IN (1, 2)
+          AND ro.status != 6
+          AND ro.payment_time &gt;= CONCAT(#{bizDate}, ' 00:00:00')
+          AND ro.payment_time &lt; DATE_ADD(#{bizDate}, INTERVAL 1 DAY)
+        GROUP BY ro.tenant_id, ro.store_id
+    </insert>
+
+    <delete id="deleteStoreDishDaily">
+        DELETE FROM analysis_store_dish_daily
+        WHERE tenant_id = #{tenantId} AND store_id = #{storeId} AND biz_date = #{bizDate}
+    </delete>
+
+    <insert id="insertStoreDishDaily">
+        INSERT INTO analysis_store_dish_daily
+            (tenant_id, biz_date, store_id, dish_id, category_id, sales_quantity,
+             gross_sales_amount, net_sales_amount, cost_amount, gross_profit_amount,
+             order_count, gift_quantity, unknown_cost_quantity, updated_at)
+        SELECT ro.tenant_id, #{bizDate}, ro.store_id, roi.dish_id, COALESCE(roi.category_id, 0),
+               COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN roi.quantity ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0
+                    THEN roi.unit_list_price * roi.quantity ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.item_payable_amount > 0
+                    THEN roi.line_payable_amount * ro.actual_amount / oit.item_payable_amount ELSE 0 END), 0),
+               SUM(roi.line_cost_amount),
+               CASE WHEN SUM(CASE WHEN roi.unit_cost_snapshot IS NULL
+                                  THEN roi.quantity ELSE 0 END) = 0
+                     THEN COALESCE(SUM(CASE WHEN COALESCE(roi.is_gift, 0) = 0 AND oit.item_payable_amount > 0
+                          THEN roi.line_payable_amount * ro.actual_amount / oit.item_payable_amount ELSE 0 END
+                          - COALESCE(roi.line_cost_amount, 0)), 0)
+                    ELSE NULL END,
+               COUNT(DISTINCT CASE WHEN COALESCE(roi.is_gift, 0) = 0 THEN ro.id END),
+               COALESCE(SUM(CASE WHEN roi.is_gift = 1 THEN roi.quantity ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN roi.unit_cost_snapshot IS NULL
+                    THEN roi.quantity ELSE 0 END), 0), NOW()
+        FROM restaurant_order ro
+        INNER JOIN restaurant_order_item roi ON roi.tenant_id = ro.tenant_id AND roi.order_id = ro.id
+        LEFT JOIN (
+            SELECT tenant_id, order_id,
+                   SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS item_payable_amount
+            FROM restaurant_order_item
+            GROUP BY tenant_id, order_id
+        ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
+        WHERE ro.tenant_id = #{tenantId}
+          AND ro.store_id = #{storeId}
+          AND ro.payment_status IN (1, 2)
+          AND ro.status != 6
+          AND ro.payment_time &gt;= CONCAT(#{bizDate}, ' 00:00:00')
+          AND ro.payment_time &lt; DATE_ADD(#{bizDate}, INTERVAL 1 DAY)
+        GROUP BY ro.tenant_id, ro.store_id, roi.dish_id, COALESCE(roi.category_id, 0)
+    </insert>
+
+    <delete id="deleteDirtyKey">
+        DELETE FROM analysis_refresh_queue
+        WHERE tenant_id = #{tenantId} AND store_id = #{storeId} AND biz_date = #{bizDate}
+    </delete>
+</mapper>

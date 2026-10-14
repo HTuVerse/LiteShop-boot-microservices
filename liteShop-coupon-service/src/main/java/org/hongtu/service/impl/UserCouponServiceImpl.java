@@ -395,8 +395,18 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void verifyCouponOnOrder(Long userCouponId, Long orderId) {
-        if (userCouponId == null) {
-            return;
+        if (userCouponId == null || orderId == null) {
+            throw new BusinessException(400, "优惠券ID和订单ID不能为空");
+        }
+
+        VerifyRecord existingRecord = verifyRecordMapper.selectOne(new LambdaQueryWrapper<VerifyRecord>()
+                .eq(VerifyRecord::getUserCouponId, userCouponId)
+                .eq(VerifyRecord::getOrderId, orderId)
+                .last("LIMIT 1"));
+        if (existingRecord != null) {
+            if (existingRecord.getStatus() == VerifyStatusEnum.VERIFYED) {
+                return;
+            }
         }
 
         // 1. 查询用户优惠券
@@ -432,12 +442,17 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         }
 
         // 6. 创建核销记录
-        VerifyRecord record = new VerifyRecord();
+        VerifyRecord record = existingRecord != null ? existingRecord : new VerifyRecord();
         record.setUserCouponId(userCouponId);
+        record.setOrderId(orderId);
         record.setVerifyCode(userCoupon.getCode());
         record.setVerifyTime(now);
         record.setStatus(VerifyStatusEnum.VERIFYED);
-        verifyRecordMapper.insert(record);
+        if (existingRecord == null) {
+            verifyRecordMapper.insert(record);
+        } else {
+            verifyRecordMapper.updateById(record);
+        }
 
         log.info("优惠券核销成功(CAS) - userCouponId: {}, orderId: {}", userCouponId, orderId);
     }
@@ -451,21 +466,31 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void restoreCouponOnCancel(Long userCouponId, Long orderId) {
-        if (userCouponId == null) {
+        if (userCouponId == null || orderId == null) {
+            throw new BusinessException(400, "优惠券ID和订单ID不能为空");
+        }
+
+        // 返还必须绑定原订单，不能仅凭 userCouponId 返还其他订单已核销的券。
+        VerifyRecord record = verifyRecordMapper.selectOne(new LambdaQueryWrapper<VerifyRecord>()
+                .eq(VerifyRecord::getUserCouponId, userCouponId)
+                .eq(VerifyRecord::getOrderId, orderId)
+                .last("FOR UPDATE"));
+        if (record == null) {
+            throw new BusinessException(409, "未找到该订单对应的优惠券核销记录");
+        }
+        if (record.getStatus() == VerifyStatusEnum.NOT_VERIFY) {
             return;
         }
 
         // 1. 查询用户优惠券
         UserCoupon userCoupon = userCouponMapper.selectById(userCouponId);
         if (userCoupon == null) {
-            log.warn("返还优惠券失败，用户优惠券不存在 - userCouponId: {}, orderId: {}", userCouponId, orderId);
-            return;
+            throw new BusinessException(404, "用户优惠券不存在，无法返还");
         }
 
         // 2. 只有已使用的券才需要返还
         if (userCoupon.getStatus() != CouponStatusEnum.USED) {
-            log.warn("优惠券状态不是已使用，跳过返还 - userCouponId: {}, status: {}", userCouponId, userCoupon.getStatus());
-            return;
+            throw new BusinessException(409, "优惠券状态与核销记录不一致，拒绝返还");
         }
 
         // 3. 【CAS乐观锁】判断是否已过期，决定恢复后的状态
@@ -480,25 +505,16 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         }
         int updateRows = userCouponMapper.casRestoreCoupon(userCouponId, newStatus);
         if (updateRows <= 0) {
-            log.warn("优惠券CAS返还失败（状态已变更） - userCouponId: {}, orderId: {}", userCouponId, orderId);
-            return;
+            throw new BusinessException(409, "优惠券状态已变化，返还失败");
         }
 
         // 3.5 重置券码：避免同一张券再次核销时与 verify_record 表 verify_code 唯一索引冲突（历史记录仍保留原码）
         String newCode = generateCouponCode();
         userCouponMapper.updateCodeById(userCouponId, newCode);
 
-        // 4. 将对应的核销记录标记为未核销
-        LambdaQueryWrapper<VerifyRecord> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(VerifyRecord::getUserCouponId, userCouponId)
-                .eq(VerifyRecord::getStatus, VerifyStatusEnum.VERIFYED)
-                .orderByDesc(VerifyRecord::getVerifyTime)
-                .last("LIMIT 1");
-        VerifyRecord record = verifyRecordMapper.selectOne(wrapper);
-        if (record != null) {
-            record.setStatus(VerifyStatusEnum.NOT_VERIFY);
-            verifyRecordMapper.updateById(record);
-        }
+        // 4. 只撤销当前订单对应的核销记录。
+        record.setStatus(VerifyStatusEnum.NOT_VERIFY);
+        verifyRecordMapper.updateById(record);
 
         log.info("优惠券返还成功(CAS) - userCouponId: {}, orderId: {}, 恢复状态: {}", userCouponId, orderId, statusDesc);
     }

@@ -12,6 +12,9 @@ import org.hongtu.restaurant.DTO.TableInfo;
 import org.hongtu.restaurant.VO.TableInfoVO;
 import org.hongtu.restaurant.service.TableInfoService;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
+import org.hongtu.tenant.TenantContext;
+import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -30,6 +33,8 @@ public class TableInfoController {
 
     @Resource
     TableInfoService tableInfoService;
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
 
     /**
      * 根据ID查询桌位详情
@@ -38,7 +43,17 @@ public class TableInfoController {
      */
     @GetMapping("/getDetail")
     @SaIgnore
-    public Result<TableInfoVO> getTableDetail(@RequestParam Long id) {
+    public Result<TableInfoVO> getTableDetail(
+            @RequestParam Long id,
+            @RequestParam(required = false) String scanToken) {
+        if (!isTableOperator()) {
+            TableInfo table = tableInfoService.getById(id);
+            if (table == null) {
+                return Result.error("查询桌位详情失败");
+            }
+            tableSessionTokenService.verifyForTable(
+                    scanToken, id, TenantContext.getTenantId(), table.getStoreId(), table.getScanTokenId());
+        }
         TableInfoVO tableInfo = tableInfoService.getTableDetail(id);
         if (tableInfo != null) {
             return Result.success("查询桌位详情成功", tableInfo);
@@ -156,6 +171,26 @@ public class TableInfoController {
             return Result.success("更新桌位状态成功", result);
         } else {
             return Result.error("更新桌位状态失败");
+        }
+    }
+
+    /**
+     * 重新生成桌台二维码凭据，已打印的旧码立即失效。
+     */
+    @PostMapping("/rotateScanToken")
+    @SaCheckPermission(value = {"restaurant:table"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<String> rotateScanToken(@RequestParam Long id) {
+        return Result.success("扫码凭据已更新，请重新打印二维码", tableInfoService.rotateScanToken(id));
+    }
+
+    private boolean isTableOperator() {
+        try {
+            return StpUtil.isLogin() && (StpUtil.hasRole("SUPER_ADMIN")
+                    || StpUtil.hasPermission("restaurant:table")
+                    || StpUtil.hasPermission("operations:table-cashier")
+                    || StpUtil.hasPermission("operations:console"));
+        } catch (Exception ignored) {
+            return false;
         }
     }
 

@@ -37,16 +37,13 @@ public class StoreInfoController {
     @GetMapping("/getStoreDetail")
     @SaIgnore
     public Result<StoreInfo> getStoreById(@RequestParam Long id) {
-        try {
+        
             StoreInfo storeInfo = storeInfoService.getById(id);
             if (storeInfo == null) {
                 return Result.error("门店不存在");
             }
             return Result.success("查询门店详情成功", storeInfo);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询门店详情失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -65,13 +62,10 @@ public class StoreInfoController {
             @RequestParam(required = false) String storeName,
             @RequestParam(required = false) Integer status
     ) {
-        try {
+        
             Page<StoreInfo> result = storeInfoService.getStorePage(currentPage, pageSize, storeName, status);
             return Result.success("查询门店列表成功", result);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询门店列表失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -82,18 +76,13 @@ public class StoreInfoController {
     @PostMapping("/add")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:store:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<StoreInfo> addStore(@RequestBody StoreInfo storeInfo) {
-        try {
+        
             boolean result = storeInfoService.addStore(storeInfo);
             if (result) {
                 return Result.success("新增门店成功", storeInfo);
             }
             return Result.error("新增门店失败");
-        } catch (BusinessException e) {
-            return Result.error(e.getCode(), e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("新增门店失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -104,7 +93,7 @@ public class StoreInfoController {
     @PutMapping("/update")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:store:edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<StoreInfo> updateStore(@RequestBody StoreInfo storeInfo) {
-        try {
+        
             if (storeInfo.getId() == null) {
                 return Result.error("门店ID不能为空");
             }
@@ -113,10 +102,7 @@ public class StoreInfoController {
                 return Result.success("更新门店成功", storeInfo);
             }
             return Result.error("更新门店失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("更新门店失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -127,18 +113,13 @@ public class StoreInfoController {
     @DeleteMapping("/delete")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:store:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result deleteStore(@RequestParam Long id) {
-        try {
+        
             boolean result = storeInfoService.deleteStore(id);
             if (result) {
                 return Result.success(200, "删除门店成功");
             }
             return Result.error("删除门店失败");
-        } catch (BusinessException e) {
-            return Result.error(e.getCode(), e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("删除门店失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -149,7 +130,7 @@ public class StoreInfoController {
     @DeleteMapping("/deleteBatch")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:store:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result deleteStoresBatch(@RequestBody List<Long> ids) {
-        try {
+        
             if (ids == null || ids.isEmpty()) {
                 return Result.error("门店ID列表不能为空");
             }
@@ -158,12 +139,7 @@ public class StoreInfoController {
                 return Result.success("批量删除门店成功", null);
             }
             return Result.error("批量删除门店失败");
-        } catch (BusinessException e) {
-            return Result.error(e.getCode(), e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("批量删除门店失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -175,7 +151,7 @@ public class StoreInfoController {
     @PutMapping("/updateStatus")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:store:status"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result updateStoreStatus(@RequestParam Long id, @RequestParam Integer status) {
-        try {
+        
             if (status == null || (status != 0 && status != 1)) {
                 return Result.error("状态值无效，只能是0或1");
             }
@@ -184,10 +160,7 @@ public class StoreInfoController {
                 return Result.success(200, "修改门店状态成功");
             }
             return Result.error("修改门店状态失败");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("修改门店状态失败：" + e.getMessage());
-        }
+        
     }
 
 }

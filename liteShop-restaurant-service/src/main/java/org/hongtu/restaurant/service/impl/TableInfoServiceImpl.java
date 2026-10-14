@@ -19,6 +19,8 @@ import org.hongtu.restaurant.service.StoreDataScopeService;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.hongtu.restaurant.service.TableSessionService;
 import org.hongtu.restaurant.service.TableReservationService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
+import org.hongtu.tenant.TenantContext;
 import org.hongtu.utils.BeanCopyUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
@@ -31,6 +33,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -52,13 +55,21 @@ public class TableInfoServiceImpl extends ServiceImpl<TableInfoMapper, TableInfo
     private StoreDataScopeService storeDataScopeService;
     @Resource
     private TableReservationService tableReservationService;
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
 
     @Override
     public TableInfoVO getTableDetail(Long id) {
         TableInfo tableInfo = this.getById(id);
+        if (tableInfo == null) {
+            return null;
+        }
         TableInfoVO tableInfoVO = BeanCopyUtils.copyBean(tableInfo, TableInfoVO.class);
+        tableInfoVO.setScanToken(issueScanToken(tableInfo));
         StoreInfo storeInfo = storeInfoMapper.selectById(tableInfo.getStoreId());
-        tableInfoVO.setStoreName(storeInfo.getStoreName());
+        if (storeInfo != null) {
+            tableInfoVO.setStoreName(storeInfo.getStoreName());
+        }
         fillNextReservation(tableInfoVO, tableReservationService.findNextByTableIds(List.of(id)).get(id));
         return tableInfoVO;
     }
@@ -142,11 +153,21 @@ public class TableInfoServiceImpl extends ServiceImpl<TableInfoMapper, TableInfo
             
             Map<Long, TableReservation> nextReservations = tableReservationService.findNextByTableIds(
                     tableInfoPage.getRecords().stream().map(TableInfo::getId).toList());
+            List<Long> tableIds = tableInfoPage.getRecords().stream().map(TableInfo::getId).toList();
+            Map<Long, TableSession> activeSessions = tableSessionService.list(
+                            new LambdaQueryWrapper<TableSession>()
+                                    .in(TableSession::getTableId, tableIds)
+                                    .eq(TableSession::getStatus, org.hongtu.restaurant.enums.SessionStatusEnum.IN_PROGRESS)
+                                    .orderByDesc(TableSession::getStartTime))
+                    .stream()
+                    .collect(Collectors.toMap(TableSession::getTableId, session -> session,
+                            (first, ignored) -> first));
             // 组装 VO 列表
             voList = tableInfoPage.getRecords().stream().map(tableInfo -> {
                 TableInfoVO vo = BeanCopyUtils.copyBean(tableInfo, TableInfoVO.class);
+                vo.setScanToken(issueScanToken(tableInfo));
                 vo.setStoreName(storeNameMap.get(tableInfo.getStoreId()));
-                TableSession activeSession = tableSessionService.getActiveSessionByTableId(tableInfo.getId());
+                TableSession activeSession = activeSessions.get(tableInfo.getId());
                 if (activeSession != null) {
                     vo.setSessionNo(activeSession.getSessionNo());
                     // 计算用餐时长
@@ -182,6 +203,38 @@ public class TableInfoServiceImpl extends ServiceImpl<TableInfoMapper, TableInfo
                 .set(TableInfo::getStatus, status)
                 .set(TableInfo::getUpdatedAt, LocalDateTime.now());
         return this.update(updateWrapper);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String rotateScanToken(Long id) {
+        TableInfo table = getOne(new LambdaQueryWrapper<TableInfo>().eq(TableInfo::getId, id).last("FOR UPDATE"));
+        if (table == null) {
+            throw new BusinessException(404, "桌位不存在或无权操作");
+        }
+        storeDataScopeService.checkStoreAccess(table.getStoreId());
+        table.setScanTokenId(newScanTokenId());
+        table.setUpdatedAt(LocalDateTime.now());
+        this.updateById(table);
+        return tableSessionTokenService.issueTableToken(
+                TenantContext.getTenantId(), table.getStoreId(), table.getId(), table.getScanTokenId());
+    }
+
+    /**
+     * 保证桌台有可吊销的票据编号，并签发当前有效的扫码凭据。
+     */
+    private String issueScanToken(TableInfo tableInfo) {
+        if (!StringUtils.hasText(tableInfo.getScanTokenId())) {
+            tableInfo.setScanTokenId(newScanTokenId());
+            tableInfo.setUpdatedAt(LocalDateTime.now());
+            this.updateById(tableInfo);
+        }
+        return tableSessionTokenService.issueTableToken(
+                TenantContext.getTenantId(), tableInfo.getStoreId(), tableInfo.getId(), tableInfo.getScanTokenId());
+    }
+
+    private String newScanTokenId() {
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     private void fillNextReservation(TableInfoVO vo, TableReservation reservation) {

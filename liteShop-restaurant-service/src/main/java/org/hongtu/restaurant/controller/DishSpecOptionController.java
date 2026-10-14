@@ -6,10 +6,12 @@ import cn.dev33.satoken.annotation.SaMode;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
 import org.hongtu.restaurant.DTO.DishSpecOption;
+import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.VO.DishSpecOptionRequest;
 import org.hongtu.restaurant.VO.SpecValue;
 import org.hongtu.restaurant.service.DishSpecOptionService;
 import org.hongtu.restaurant.service.DishService;
+import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.utils.SpecValueConverter;
 import org.hongtu.enums.StatusEnum;
 import org.springframework.web.bind.annotation.*;
@@ -32,6 +34,9 @@ public class DishSpecOptionController {
 
     @Resource
     DishService dishService;
+
+    @Resource
+    StoreDataScopeService storeDataScopeService;
 
     /**
      * 添加规格选项
@@ -169,8 +174,16 @@ public class DishSpecOptionController {
     }
 
     private void ensureDishAccessible(Long dishId) {
-        if (dishId == null || dishService.getById(dishId) == null) {
+        Dish dish = dishId == null ? null : dishService.getById(dishId);
+        if (dish == null || Integer.valueOf(1).equals(dish.getDeleted())) {
             throw new SecurityException("菜品不存在或无权访问");
+        }
+        if (storeDataScopeService.requiresStoreRestriction()) {
+            List<Long> stores = storeDataScopeService.getAllowedStoreIds();
+            if (stores.size() != 1) throw new SecurityException("请选择当前有权限的门店");
+            dishService.getEffectiveDish(dishId, stores.getFirst(), false);
+            int sourceType = dish.getSourceType() == null ? (dish.getStoreId() == null ? 0 : 1) : dish.getSourceType();
+            if (sourceType == 0) throw new SecurityException("门店不能修改总部菜品规格");
         }
     }
 }

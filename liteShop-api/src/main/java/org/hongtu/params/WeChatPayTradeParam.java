@@ -19,6 +19,11 @@ import java.math.BigDecimal;
 public class WeChatPayTradeParam {
 
     /**
+     * 订单所属租户。支付服务按该租户加载商户参数。
+     */
+    private Long tenantId;
+
+    /**
      * 商户订单号，必填
      */
     private String outTradeNo;

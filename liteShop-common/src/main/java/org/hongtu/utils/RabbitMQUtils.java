@@ -80,7 +80,13 @@ public class RabbitMQUtils {
                 }
             });
             // 等待确认结果，最多等待5秒
-            return resultFuture.get(5, TimeUnit.SECONDS);
+            boolean confirmed = resultFuture.get(5, TimeUnit.SECONDS);
+            if (confirmed && correlationData.getReturned() != null) {
+                log.error("消息无法路由，exchange={}, routingKey={}, replyText={}",
+                        exchange, routingKey, correlationData.getReturned().getReplyText());
+                return false;
+            }
+            return confirmed;
         } catch (Exception e) {
             log.error("消息发送或确认过程中发生异常", e);
             return false;

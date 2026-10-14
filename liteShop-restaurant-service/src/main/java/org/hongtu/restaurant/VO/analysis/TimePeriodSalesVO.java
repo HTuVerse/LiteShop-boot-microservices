@@ -34,6 +34,16 @@ public class TimePeriodSalesVO {
     private Integer orderCount;
 
     /**
+     * 统计期内日均净实收
+     */
+    private BigDecimal avgDailySales;
+
+    /**
+     * 统计期内日均有效订单数
+     */
+    private BigDecimal avgDailyOrderCount;
+
+    /**
      * 销售额占比（%）
      */
     private BigDecimal salesPercentage;

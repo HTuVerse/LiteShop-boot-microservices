@@ -52,3 +52,24 @@ CREATE TABLE `sys_banner` (
   PRIMARY KEY (`id`),
   INDEX `idx_position_status`(`position`, `status`)
 ) ENGINE = InnoDB COMMENT = '轮播图配置表';
+
+-- ----------------------------
+-- 租户支付账户表
+-- ----------------------------
+DROP TABLE IF EXISTS `tenant_payment_account`;
+CREATE TABLE `tenant_payment_account` (
+  `id` bigint NOT NULL COMMENT '支付账户ID',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `channel` tinyint NOT NULL COMMENT '渠道：1微信，2支付宝',
+  `enabled` tinyint NOT NULL DEFAULT 0 COMMENT '是否启用：0否，1是',
+  `app_id` varchar(64) NOT NULL DEFAULT '' COMMENT '微信小程序或支付宝应用ID',
+  `mch_id` varchar(64) NOT NULL DEFAULT '' COMMENT '微信商户号，支付宝为空',
+  `mch_serial_no` varchar(128) NOT NULL DEFAULT '' COMMENT '微信商户API证书序列号，支付宝为空',
+  `private_key_ciphertext` text NOT NULL COMMENT '加密后的商户私钥PEM或支付宝应用私钥',
+  `api_v3_key_ciphertext` text NOT NULL COMMENT '加密后的微信APIv3密钥，支付宝为空',
+  `alipay_public_key_ciphertext` text NOT NULL COMMENT '加密后的支付宝公钥，微信为空',
+  `updated_by` bigint NULL COMMENT '最后修改的租户管理员用户ID',
+  `updated_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '最后更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tenant_channel` (`tenant_id`, `channel`)
+) ENGINE = InnoDB COMMENT = '租户支付账户';

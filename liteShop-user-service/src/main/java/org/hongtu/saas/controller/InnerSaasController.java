@@ -11,6 +11,9 @@ import org.hongtu.tenant.TenantContext;
 import org.springframework.beans.BeanUtils;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * SaaS 权益核心内部接口：供其它服务通过 Feign 做配额校验、消费与释放。
+ */
 @RestController
 @RequestMapping("/inner/saas")
 @SaIgnore
@@ -24,8 +27,14 @@ public class InnerSaasController {
         return Result.success(copy(service.consume(TenantContext.getTenantId(), dto.getFeatureCode(), dto.getAmount(), dto.getIdempotencyKey())));
     }
     @PostMapping("/release") public Result<EntitlementDecisionDTO> release(@RequestBody EntitlementMutationDTO dto) {
-        return Result.success(copy(service.release(TenantContext.getTenantId(), dto.getFeatureCode(), dto.getAmount(), dto.getIdempotencyKey())));
+        if (dto.getConsumeKey() == null || dto.getConsumeKey().isBlank()
+                || dto.getIdempotencyKey() == null || dto.getIdempotencyKey().isBlank()) {
+            throw new org.hongtu.exception.BusinessException(400, "释放配额必须引用原消费事件");
+        }
+        service.refundConsumption(TenantContext.getTenantId(), dto.getConsumeKey(), dto.getIdempotencyKey());
+        return Result.success(new EntitlementDecisionDTO().setAllowed(true));
     }
+
     private EntitlementDecisionDTO copy(EntitlementDecision source) {
         EntitlementDecisionDTO target = new EntitlementDecisionDTO();
         BeanUtils.copyProperties(source, target);

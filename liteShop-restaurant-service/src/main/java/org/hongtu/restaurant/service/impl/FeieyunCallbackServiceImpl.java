@@ -7,6 +7,11 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.restaurant.config.FeieyunPrinterConfig;
 import org.hongtu.restaurant.service.FeieyunCallbackService;
+import org.hongtu.restaurant.DAO.PrintJobMapper;
+import org.hongtu.restaurant.DTO.PrintJob;
+import org.hongtu.tenant.TenantIgnore;
+import org.hongtu.tenant.TenantScope;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +31,9 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
 
     @Resource
     private FeieyunPrinterConfig config;
+
+    @Resource
+    private PrintJobMapper printJobMapper;
 
     // 注入你的订单服务（根据实际项目调整）
     // @Autowired
@@ -62,10 +70,23 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
         log.info("打印时间: {}", formatTimestamp(time));
 
         try {
-            // 从打印订单ID中提取业务订单号
-            // 打印订单ID格式：订单号_时间戳_序列号
-            String businessOrderNo = extractOrderNo(orderId);
-            log.info("业务订单号: {}", businessOrderNo);
+            PrintJob printJob = TenantIgnore.get(() -> printJobMapper.selectOne(
+                    new LambdaQueryWrapper<PrintJob>()
+                            .eq(PrintJob::getProviderOrderId, orderId)
+                            .last("LIMIT 1")));
+            if (printJob == null || printJob.getTenantId() == null) {
+                throw new IllegalArgumentException("打印任务不存在");
+            }
+            TenantScope.run(printJob.getTenantId(), () -> {
+                PrintJob update = new PrintJob();
+                update.setId(printJob.getId());
+                update.setStatus(status != null && status == 1 ? 1 : 2);
+                update.setLastError(status != null && status == 1 ? null : msg);
+                update.setCallbackTime(LocalDateTime.now());
+                update.setUpdatedAt(LocalDateTime.now());
+                printJobMapper.updateById(update);
+            });
+            String businessOrderNo = String.valueOf(printJob.getOrderId());
 
             if (status == 1) {
                 // ========== 打印成功处理 ==========
@@ -83,31 +104,14 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
                 // 4. 记录订单时间线
                 // orderService.addOrderTimeline(businessOrderNo, "订单已打印到后厨");
 
-                log.info("订单 {} 打印成功，已更新订单状态", businessOrderNo);
-
+                log.info("打印任务已标记成功: orderId={}", businessOrderNo);
             } else {
-                // ========== 打印失败处理 ==========
-                log.error("❌ 打印失败：{}", msg);
-
-                // 1. 记录打印失败信息
-                // orderService.updatePrintStatus(businessOrderNo, false, msg);
-
-                // 2. 判断是否需要自动重试
-                // if (shouldRetryPrint(businessOrderNo)) {
-                //     log.info("自动重试打印订单: {}", businessOrderNo);
-                //     orderService.retryPrint(businessOrderNo);
-                // }
-
-                // 3. 通知商家打印失败（重要订单）
-                // if (isImportantOrder(businessOrderNo)) {
-                //     messageService.sendPrintFailureAlert(businessOrderNo, sn, msg);
-                // }
-
-                log.error("订单 {} 打印失败，原因: {}", businessOrderNo, msg);
+                log.error("打印任务已标记失败: orderId={}, reason={}", businessOrderNo, msg);
             }
 
         } catch (Exception e) {
             log.error("处理打印回调异常", e);
+            throw new IllegalStateException("打印回调业务处理失败", e);
         }
 
         log.info("==============================");
@@ -131,11 +135,9 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
     @Override
     public void handleScanCallback(String openId, String sn, String orderId, Long time, String content) {
         log.info("======== 处理扫码回调 ========");
-        log.info("微信OpenID: {}", openId);
         log.info("打印机编号: {}", sn);
         log.info("订单ID: {}", orderId);
         log.info("扫码时间: {}", formatTimestamp(time));
-        log.info("二维码内容: {}", content);
 
         try {
             // 从打印订单ID中提取业务订单号
@@ -218,9 +220,6 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
 
         try {
             log.debug("======== 开始验证签名 ========");
-            log.debug("待验证字符串: {}", dataString);
-            log.debug("Base64签名: {}", sign);
-
             // 1. 获取签名验证对象（Hutool封装）
             Sign signObj = getSignObject();
             if (signObj == null) {

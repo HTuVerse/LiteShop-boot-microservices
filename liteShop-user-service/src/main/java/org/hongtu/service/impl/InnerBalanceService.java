@@ -1,6 +1,7 @@
 package org.hongtu.service.impl;
 
 import cn.hutool.core.util.NumberUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.SurplusRecordMapper;
@@ -45,6 +46,23 @@ public class InnerBalanceService {
         BalanceResourceEnum type = BalanceResourceEnum.getByCode(dto.getType());
         if (type == null) {
             throw new BusinessException("无效的余额变动类型: " + dto.getType());
+        }
+
+        // orderNo 是跨服务幂等键。远程调用超时后重试时直接返回第一次结果，不能再次加减余额。
+        if (dto.getOrderNo() == null || dto.getOrderNo().isBlank()) {
+            throw new BusinessException("余额变动必须提供幂等订单号");
+        }
+        UserSurplusRecord existingRecord = surplusRecordMapper.selectOne(
+                new LambdaQueryWrapper<UserSurplusRecord>()
+                        .eq(UserSurplusRecord::getOrderNo, dto.getOrderNo())
+                        .last("LIMIT 1"));
+        if (existingRecord != null) {
+            if (!dto.getUserId().equals(existingRecord.getUserId())
+                    || type != existingRecord.getType()
+                    || dto.getAmount().compareTo(existingRecord.getAmount()) != 0) {
+                throw new BusinessException("余额幂等键已被其它业务占用");
+            }
+            return existingRecord.getNewBalance();
         }
 
         int updated;

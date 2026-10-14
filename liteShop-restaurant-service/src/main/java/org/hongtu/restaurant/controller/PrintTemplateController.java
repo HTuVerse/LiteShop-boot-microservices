@@ -44,13 +44,10 @@ public class PrintTemplateController {
         log.info("分页查询打印模板列表：page={}, size={}, storeId={}, enabled={}",
                 currentPage, pageSize, storeId, enabled);
 
-        try {
+        
             Page<PrintTemplate> page = printTemplateService.getTemplatePage(currentPage, pageSize, storeId, enabled);
             return Result.success(page);
-        } catch (Exception e) {
-            log.error("查询打印模板列表异常", e);
-            return Result.error("查询打印模板列表失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -64,17 +61,14 @@ public class PrintTemplateController {
     public Result<PrintTemplate> getTemplateById(@RequestParam("id") Long id) {
         log.info("根据ID查询打印模板：id={}", id);
 
-        try {
+        
             PrintTemplate template = printTemplateService.getById(id);
             if (template != null) {
                 return Result.success(template);
             } else {
                 return Result.error("模板不存在");
             }
-        } catch (Exception e) {
-            log.error("查询打印模板异常", e);
-            return Result.error("查询打印模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -90,13 +84,10 @@ public class PrintTemplateController {
 
         log.info("根据门店获取模板：storeId={}", storeId);
 
-        try {
+        
             PrintTemplate template = printTemplateService.getTemplateByStore(storeId);
             return Result.success(template);
-        } catch (Exception e) {
-            log.error("查询打印模板异常", e);
-            return Result.error("查询打印模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -109,17 +100,14 @@ public class PrintTemplateController {
     public Result<PrintTemplate> getDefaultTemplate() {
         log.info("获取默认打印模板");
 
-        try {
+        
             PrintTemplate template = printTemplateService.getDefaultTemplate();
             if (template != null) {
                 return Result.success(template);
             } else {
                 return Result.error("默认模板不存在");
             }
-        } catch (Exception e) {
-            log.error("查询默认模板异常", e);
-            return Result.error("查询默认模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -133,13 +121,10 @@ public class PrintTemplateController {
     public Result<Boolean> createTemplate(@RequestBody PrintTemplate template) {
         log.info("创建打印模板：{}", template.getTemplateName());
 
-        try {
+        
             boolean success = printTemplateService.createTemplate(template);
             return success ? Result.success(true) : Result.error("创建失败");
-        } catch (Exception e) {
-            log.error("创建打印模板异常", e);
-            return Result.error("创建打印模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -153,13 +138,10 @@ public class PrintTemplateController {
     public Result<Boolean> updateTemplate(@RequestBody PrintTemplate template) {
         log.info("更新打印模板：id={}", template.getId());
 
-        try {
+        
             boolean success = printTemplateService.updateTemplate(template);
             return success ? Result.success(true) : Result.error("更新失败");
-        } catch (Exception e) {
-            log.error("更新打印模板异常", e);
-            return Result.error("更新打印模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -173,13 +155,10 @@ public class PrintTemplateController {
     public Result<Boolean> deleteTemplate(@PathVariable("id") Long id) {
         log.info("删除打印模板：id={}", id);
 
-        try {
+        
             boolean success = printTemplateService.deleteTemplate(id);
             return success ? Result.success(true) : Result.error("删除失败");
-        } catch (Exception e) {
-            log.error("删除打印模板异常", e);
-            return Result.error("删除打印模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -193,13 +172,10 @@ public class PrintTemplateController {
     public Result<Boolean> setDefaultTemplate(@RequestParam("id") Long id) {
         log.info("设置默认模板：id={}", id);
 
-        try {
+        
             boolean success = printTemplateService.setDefaultTemplate(id);
             return success ? Result.success(true) : Result.error("操作失败");
-        } catch (Exception e) {
-            log.error("设置默认模板异常", e);
-            return Result.error("设置默认模板失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -216,13 +192,10 @@ public class PrintTemplateController {
             @RequestParam("enabled") Integer enabled) {
         log.info("更新模板启用状态：id={}, enabled={}", id, enabled);
 
-        try {
+        
             boolean success = printTemplateService.updateEnabled(id, enabled);
             return success ? Result.success(true) : Result.error("操作失败");
-        } catch (Exception e) {
-            log.error("更新模板启用状态异常", e);
-            return Result.error("更新模板启用状态失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -239,16 +212,13 @@ public class PrintTemplateController {
             @RequestParam("newTemplateName") String newTemplateName) {
         log.info("复制模板：id={}, newName={}", id, newTemplateName);
 
-        try {
+        
             PrintTemplate newTemplate = printTemplateService.copyTemplate(id, newTemplateName);
             if (newTemplate != null) {
                 return Result.success(newTemplate);
             } else {
                 return Result.error("复制失败");
             }
-        } catch (Exception e) {
-            log.error("复制模板异常", e);
-            return Result.error("复制模板失败：" + e.getMessage());
-        }
+        
     }
 }

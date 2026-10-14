@@ -3,8 +3,8 @@
 -- 变更说明（相对 hongtu 单库）：
 --   1. 主键改雪花 ID：bigint，去掉 AUTO_INCREMENT（由 MyBatis-Plus ASSIGN_ID 生成）
 --   2. 移除全部外键（拆库后跨库外键不可用；库内外键也不再保留，由应用层保证）
---   3. 业务表末尾追加 tenant_id（多租户预留，默认租户=1）；
---      sys_permission / sys_role_permission / sys_user_role / user_level 为全局表，不加
+--   3. 平台账号、角色及其授权的 tenant_id 为空，商户账号按租户隔离；
+--      sys_permission 为全局定义，user_level 由12号脚本升级为租户等级体系
 --   4. 统一排序规则 utf8mb4_0900_ai_ci
 --   5. 修复 create_time 误加 ON UPDATE CURRENT_TIMESTAMP 的问题
 --   6. 索引优化：username/role_code 唯一键改为租户内唯一；补充 open_id/phone 索引
@@ -20,6 +20,7 @@ USE `liteshop_user`;
 DROP TABLE IF EXISTS `sys_tenant`;
 CREATE TABLE `sys_tenant` (
   `id` bigint NOT NULL COMMENT '租户ID（雪花ID）',
+  `tenant_code` varchar(50) NOT NULL COMMENT '租户编码，用于登录与外部标识',
   `tenant_name` varchar(100) NOT NULL COMMENT '商户名称',
   `contact_name` varchar(50) NULL DEFAULT NULL COMMENT '联系人',
   `contact_phone` varchar(20) NULL DEFAULT NULL COMMENT '联系电话',
@@ -29,6 +30,7 @@ CREATE TABLE `sys_tenant` (
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
+  UNIQUE INDEX `uk_tenant_code`(`tenant_code`),
   UNIQUE INDEX `uk_tenant_name`(`tenant_name`)
 ) ENGINE = InnoDB COMMENT = '租户（商户）表';
 
@@ -55,9 +57,13 @@ CREATE TABLE `sys_user` (
   `open_id` varchar(64) NULL DEFAULT NULL COMMENT '小程序唯一标识符',
   `surplus_money` decimal(10, 2) NULL DEFAULT 0.00 COMMENT '用户余额',
   `birthday` date NULL DEFAULT NULL COMMENT '生日',
-  `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
+  `tenant_id` bigint NULL DEFAULT NULL COMMENT '租户ID；平台账号为空',
+  `tenant_scope_id` bigint GENERATED ALWAYS AS (IFNULL(`tenant_id`,0)) STORED COMMENT '唯一索引租户范围，0表示平台',
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `uk_tenant_username`(`tenant_id`, `username`),
+  UNIQUE INDEX `uk_tenant_username`(`tenant_scope_id`, `username`),
+  UNIQUE INDEX `uk_tenant_open_id`(`tenant_id`, `open_id`),
+  UNIQUE INDEX `uk_tenant_phone`(`tenant_id`, `phone`),
+  UNIQUE INDEX `uk_tenant_email`(`tenant_id`, `email`),
   INDEX `idx_open_id`(`open_id`),
   INDEX `idx_phone`(`phone`)
 ) ENGINE = InnoDB COMMENT = '系统用户表';
@@ -74,9 +80,10 @@ CREATE TABLE `sys_role` (
   `status` tinyint NULL DEFAULT 1 COMMENT '状态（1-启用 0-禁用）',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
+  `tenant_id` bigint NULL DEFAULT NULL COMMENT '租户ID；平台角色为空',
+  `tenant_scope_id` bigint GENERATED ALWAYS AS (IFNULL(`tenant_id`,0)) STORED COMMENT '唯一索引租户范围，0表示平台',
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `uk_tenant_role_code`(`tenant_id`, `role_code`),
+  UNIQUE INDEX `uk_tenant_role_code`(`tenant_scope_id`, `role_code`),
   UNIQUE INDEX `uk_tenant_role_name`(`tenant_id`, `role_name`)
 ) ENGINE = InnoDB COMMENT = '系统角色表';
 
@@ -111,10 +118,12 @@ CREATE TABLE `sys_permission` (
 -- ----------------------------
 DROP TABLE IF EXISTS `sys_role_permission`;
 CREATE TABLE `sys_role_permission` (
+  `tenant_id` bigint NULL DEFAULT NULL COMMENT '租户ID；平台角色授权为空',
   `role_id` bigint NOT NULL COMMENT '角色ID',
   `permission_id` bigint NOT NULL COMMENT '权限ID',
   PRIMARY KEY (`role_id`, `permission_id`),
-  INDEX `idx_permission_id`(`permission_id`)
+  INDEX `idx_permission_id`(`permission_id`),
+  INDEX `idx_tenant_role`(`tenant_id`, `role_id`)
 ) ENGINE = InnoDB COMMENT = '角色权限关联表';
 
 -- ----------------------------
@@ -122,11 +131,28 @@ CREATE TABLE `sys_role_permission` (
 -- ----------------------------
 DROP TABLE IF EXISTS `sys_user_role`;
 CREATE TABLE `sys_user_role` (
+  `tenant_id` bigint NULL DEFAULT NULL COMMENT '租户ID；平台用户授权为空',
   `user_id` bigint NOT NULL COMMENT '用户ID',
   `role_id` bigint NOT NULL COMMENT '角色ID',
   PRIMARY KEY (`user_id`, `role_id`),
-  INDEX `idx_role_id`(`role_id`)
+  INDEX `idx_role_id`(`role_id`),
+  INDEX `idx_tenant_user`(`tenant_id`, `user_id`)
 ) ENGINE = InnoDB COMMENT = '用户角色关联表';
+
+-- 用户可管理的门店范围，管理员角色通过应用规则决定是否需要逐店授权。
+DROP TABLE IF EXISTS `sys_user_store`;
+CREATE TABLE `sys_user_store` (
+  `id` bigint NOT NULL COMMENT '授权ID（雪花ID）',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `store_id` bigint NOT NULL COMMENT '门店ID',
+  `is_default` tinyint NOT NULL DEFAULT 0 COMMENT '默认门店：0否，1是',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `uk_tenant_user_store`(`tenant_id`, `user_id`, `store_id`),
+  INDEX `idx_tenant_user`(`tenant_id`, `user_id`),
+  INDEX `idx_tenant_store`(`tenant_id`, `store_id`)
+) ENGINE=InnoDB COMMENT='用户可管理门店关联表';
 
 -- ----------------------------
 -- 用户等级配置表（全局配置，不区分租户）

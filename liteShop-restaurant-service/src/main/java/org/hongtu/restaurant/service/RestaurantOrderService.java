@@ -36,6 +36,14 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
     RestaurantOrderVO createOrder(CreateOrderRequest request);
 
     /**
+     * 收银员代会员下单。会员身份由服务端参数决定，不读取普通顾客登录态。
+     */
+    RestaurantOrderVO createProxyOrder(CreateOrderRequest request, Long memberUserId, Long operatorId);
+
+    /** 根据租户内幂等键返回已创建订单。 */
+    RestaurantOrderVO getByRequestKey(String requestKey);
+
+    /**
      * 更新订单状态
      * @param orderId 订单ID
      * @param status 订单状态
@@ -198,26 +206,29 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
     boolean handlePaymentError(Long orderId, String reason);
 
     /**
-     * 处理微信支付回调通知
-     * 验证签名、解密数据、更新订单状态
-     *
-     * @param requestBody 请求体（加密的回调数据）
-     * @param signature 签名
-     * @param timestamp 时间戳
-     * @param nonce 随机串
-     * @param serial 证书序列号
-     * @return 处理结果JSON字符串
+     * 处理微信支付回调。路径中的租户只用于选择验签密钥。
      */
-    String handleWeChatPayNotify(String requestBody, String signature, String timestamp, String nonce, String serial);
+    String handleWeChatPayNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial);
 
     /**
-     * 处理支付宝支付回调通知
-     * 验证签名、更新订单状态
-     *
-     * @param params 回调参数
-     * @return 处理结果（"success"或"failure"）
+     * 处理支付宝支付回调。路径中的租户只用于选择验签密钥。
      */
-    String handleAlipayNotify(Map<String, String> params);
+    String handleAlipayNotify(Long tenantId, Map<String, String> params);
+
+    /**
+     * 处理微信退款回调。核对退款单后再入账。
+     */
+    String handleWeChatRefundNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial);
+
+    /**
+     * 处理支付宝退款通知。核对退款单后再入账。
+     */
+    String handleAlipayRefundNotify(Long tenantId, Map<String, String> params);
+
+    /**
+     * 补偿仍处于已申请或处理中的退款单。
+     */
+    void reconcileOpenRefunds();
 
 
     // ================== 收银台专用方法 ==================
@@ -261,5 +272,5 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
      * @param orderTotalAmount 订单总金额（用于计算整单折扣）
      * @return 计算结果：usable、totalDiscountAmount、couponDetails（各券明细）
      */
-    Result calcCouponDiscount(Long userId, List<Long> userCouponIds, BigDecimal orderTotalAmount);
+    Result calcCouponDiscount(Long userId, List<Long> userCouponIds, BigDecimal orderTotalAmount, Long storeId);
 }

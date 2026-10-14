@@ -28,6 +28,11 @@ public class RefundDishRequest {
      * 退菜原因
      */
     private String refundReason;
+
+    /**
+     * 客户端为一次退菜操作生成的幂等键，重试必须复用同一个值。
+     */
+    private String idempotencyKey;
     
     /**
      * 操作人ID
@@ -50,7 +55,7 @@ public class RefundDishRequest {
         private Integer refundQuantity;
         
         /**
-         * 退款金额（可选，如果不传则自动计算）
+         * 客户端预估退款金额（可选，仅用于与服务端计算结果做一致性校验）
          */
         private BigDecimal refundAmount;
     }

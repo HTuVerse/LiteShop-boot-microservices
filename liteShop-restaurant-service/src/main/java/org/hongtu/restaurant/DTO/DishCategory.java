@@ -40,6 +40,21 @@ public class DishCategory implements Serializable {
     private Long storeId;
 
     /**
+     * 分类来源：0-总部分类，1-门店自建分类。
+     */
+    private Integer sourceType;
+
+    /**
+     * 门店分类所属门店；总部分类为空。
+     */
+    private Long ownerStoreId;
+
+    /**
+     * 逻辑删除：0-正常，1-删除。
+     */
+    private Integer deleted;
+
+    /**
      * 分类名称
      */
     private String categoryName;

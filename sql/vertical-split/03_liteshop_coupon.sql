@@ -33,7 +33,8 @@ CREATE TABLE `coupon` (
   `exclusive_group` int NULL DEFAULT NULL COMMENT '互斥组ID(同组互斥)',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),
-  INDEX `idx_tenant_status`(`tenant_id`, `status`)
+  INDEX `idx_tenant_status`(`tenant_id`, `status`),
+  INDEX `idx_tenant_status_end` (`tenant_id`, `status`, `end_time`)
 ) ENGINE = InnoDB COMMENT = '优惠券';
 
 -- ----------------------------
@@ -71,7 +72,9 @@ CREATE TABLE `user_coupon` (
   INDEX `idx_user_coupon`(`user_id`, `coupon_id`),
   INDEX `idx_coupon_id`(`coupon_id`),
   INDEX `idx_code`(`code`),
-  INDEX `idx_status_expire`(`status`, `expire_time`)
+  INDEX `idx_status_expire`(`status`, `expire_time`),
+  INDEX `idx_tenant_status_expire` (`tenant_id`, `status`, `expire_time`),
+  INDEX `idx_tenant_status_start` (`tenant_id`, `status`, `start_time`)
 ) ENGINE = InnoDB COMMENT = '用户优惠券关联表';
 
 -- ----------------------------
@@ -81,6 +84,7 @@ DROP TABLE IF EXISTS `verify_record`;
 CREATE TABLE `verify_record` (
   `id` bigint NOT NULL COMMENT '核销ID（雪花ID）',
   `user_coupon_id` bigint NOT NULL COMMENT '用户优惠券ID',
+  `order_id` bigint NULL DEFAULT NULL COMMENT '订单核销来源，人工核销为空',
   `merchant_id` bigint NULL DEFAULT NULL COMMENT '核销管理员ID',
   `verify_code` varchar(50) NOT NULL COMMENT '核销码',
   `verify_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '核销时间',
@@ -89,5 +93,18 @@ CREATE TABLE `verify_record` (
   PRIMARY KEY (`id`),
   UNIQUE INDEX `uk_verify_code`(`verify_code`),
   INDEX `idx_merchant_time`(`merchant_id`, `verify_time`),
-  INDEX `idx_user_coupon_id`(`user_coupon_id`)
+  INDEX `idx_user_coupon_id`(`user_coupon_id`),
+  UNIQUE INDEX `uk_tenant_coupon_order`(`tenant_id`, `user_coupon_id`, `order_id`)
 ) ENGINE = InnoDB COMMENT = '核销记录';
+
+-- ----------------------------
+-- 优惠券消息消费幂等凭据
+-- ----------------------------
+DROP TABLE IF EXISTS `coupon_message_receipt`;
+CREATE TABLE `coupon_message_receipt` (
+  `event_id` varchar(64) NOT NULL COMMENT '业务事件唯一键',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`event_id`),
+  INDEX `idx_tenant_created`(`tenant_id`, `created_at`)
+) ENGINE = InnoDB COMMENT = '优惠券消息消费幂等凭据';

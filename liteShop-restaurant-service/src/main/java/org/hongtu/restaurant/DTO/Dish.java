@@ -38,9 +38,39 @@ public class Dish implements Serializable {
     private Long id;
 
     /**
+     * 租户内稳定菜品编码。
+     */
+    private String dishCode;
+
+    /**
      * 门店ID
      */
     private Long storeId;
+
+    /**
+     * 菜品来源：0-总部统一菜品，1-门店自建菜品。
+     */
+    private Integer sourceType;
+
+    /**
+     * 门店自建菜品的所属门店；总部菜品为空。
+     */
+    private Long ownerStoreId;
+
+    /**
+     * 总部状态：0-草稿，1-启用，2-全局停用。
+     */
+    private Integer masterStatus;
+
+    /**
+     * 总部菜品版本，用于标识门店继承到的版本。
+     */
+    private Integer version;
+
+    /**
+     * 逻辑删除：0-正常，1-删除。
+     */
+    private Integer deleted;
 
     /**
      * 分类ID
@@ -63,14 +93,9 @@ public class Dish implements Serializable {
     private String dishPics;
 
     /**
-     * 优惠价
+     * 总部正常售价。活动价、会员价均由统一定价服务计算，不落在菜品主表。
      */
-    private BigDecimal price;
-
-    /**
-     * 原价
-     */
-    private BigDecimal originalPrice;
+    private BigDecimal salePrice;
 
     /**
      * 成本价

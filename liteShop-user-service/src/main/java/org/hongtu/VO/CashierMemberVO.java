@@ -13,6 +13,8 @@ public class CashierMemberVO {
     private String phone;
     private String avatar;
     private Integer level;
+    /** 当前生效的会员等级名称。 */
+    private String levelName;
     private Integer points;
     private BigDecimal surplusMoney;
 }

@@ -19,6 +19,7 @@ public interface DishCategoryService extends IService<DishCategory> {
     /**
      * 分页查询分类，支持 searchKey、显隐、分类层级
      */
-    Page<DishCategory> getCategoryPage(Integer currentPage, Integer pageSize, String searchKey, Integer isShow, Integer level);
+    Page<DishCategory> getCategoryPage(Integer currentPage, Integer pageSize, String searchKey,
+                                       Integer isShow, Integer level, Long storeId, Integer sourceType);
 
 }

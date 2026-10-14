@@ -95,7 +95,7 @@ public class AdminLoginSecurity {
 
     public Map<String, Object> captcha(String remoteAddress) {
         if (!Boolean.TRUE.equals(policy().getCaptchaEnabled())) return Map.of("enabled", false);
-        if (!rateLimit.isAllowed("admin-captcha:" + remoteAddress, 20, 60))
+        if (!rateLimit.isAllowed(RateLimitUtil.globalKey("admin-captcha", remoteAddress), 20, 60))
             throw new BusinessException(429, "验证码获取过于频繁，请稍后再试");
         String alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
         StringBuilder code = new StringBuilder();

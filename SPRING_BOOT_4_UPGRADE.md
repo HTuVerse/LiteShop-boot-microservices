@@ -29,13 +29,10 @@
 
 ## AI 服务
 
-AI 服务端口为 `9009`，Gateway 路由为 `/ai/**`。默认 `AI_CHAT_PROVIDER=none`，所以未提供密钥时仍可正常启动：
+AI 服务端口为 `9009`，Gateway 路由为 `/ai/**`。模型配置由平台后台保存到数据库并动态读取，
+未配置模型时服务仍可正常启动：
 
 ```powershell
-$env:AI_CHAT_PROVIDER = 'openai'
-$env:AI_API_KEY = 'your-api-key'
-$env:AI_BASE_URL = 'https://api.openai.com'
-$env:AI_MODEL = 'gpt-5-mini'
 mvn -pl liteShop-ai-service spring-boot:run
 ```
 
@@ -45,7 +42,8 @@ mvn -pl liteShop-ai-service spring-boot:run
 - `POST /ai/chat`，JSON：`{"message":"你好"}`
 - `POST /ai/chat/stream`，请求体相同，响应为 SSE
 
-OpenAI-compatible 平台只需替换 `AI_BASE_URL` 和 `AI_MODEL`。密钥必须来自环境变量或外部配置中心，禁止提交到仓库。
+OpenAI-compatible 平台只需在「网站配置 → AI 模型配置」填写 Base URL、模型 ID 和 API Key。
+密钥经配置服务加密后保存，禁止提交到仓库或 Nacos。
 
 ## 部署前检查
 

@@ -4,15 +4,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.restaurant.DAO.*;
 import org.hongtu.restaurant.DTO.*;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
-import org.hongtu.restaurant.VO.TableSessionVO;
-import org.hongtu.restaurant.service.TableSessionService;
 import org.hongtu.utils.BeanCopyUtils;
 import org.springframework.stereotype.Component;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -65,7 +67,7 @@ public class RestaurantOrderConverter {
         fillOrderItems(vo, order.getId());
 
         // 5. 填充会话状态
-        fillSessionRelatedInfo(vo,order.getOrderNo());
+        fillSessionRelatedInfo(vo, order.getSessionNo());
         return vo;
     }
 
@@ -91,7 +93,7 @@ public class RestaurantOrderConverter {
         fillTableInfo(vo, order.getTableId());
 
         // 4. 填充会话状态
-        fillSessionRelatedInfo(vo,order.getOrderNo());
+        fillSessionRelatedInfo(vo, order.getSessionNo());
 
         return vo;
     }
@@ -107,9 +109,7 @@ public class RestaurantOrderConverter {
             return List.of();
         }
         
-        return orders.stream()
-                .map(this::toVO)
-                .collect(Collectors.toList());
+        return toVOListInternal(orders, true);
     }
 
     /**
@@ -124,9 +124,84 @@ public class RestaurantOrderConverter {
             return List.of();
         }
         
-        return orders.stream()
-                .map(this::toVOWithoutItems)
-                .collect(Collectors.toList());
+        return toVOListInternal(orders, false);
+    }
+
+    /**
+     * 批量加载关联信息，避免订单列表按行查询门店、桌台、明细、菜品和会话。
+     */
+    private List<RestaurantOrderVO> toVOListInternal(List<RestaurantOrder> orders, boolean includeItems) {
+        List<Long> storeIds = orders.stream().map(RestaurantOrder::getStoreId)
+                .filter(Objects::nonNull).distinct().toList();
+        List<Long> tableIds = orders.stream().map(RestaurantOrder::getTableId)
+                .filter(Objects::nonNull).distinct().toList();
+        List<String> sessionNos = orders.stream().map(RestaurantOrder::getSessionNo)
+                .filter(Objects::nonNull).distinct().toList();
+
+        Map<Long, StoreInfo> stores = storeIds.isEmpty() ? Collections.emptyMap()
+                : storeInfoMapper.selectByIds(storeIds).stream()
+                .collect(Collectors.toMap(StoreInfo::getId, Function.identity(), (left, right) -> left));
+        Map<Long, TableInfo> tables = tableIds.isEmpty() ? Collections.emptyMap()
+                : tableInfoMapper.selectByIds(tableIds).stream()
+                .collect(Collectors.toMap(TableInfo::getId, Function.identity(), (left, right) -> left));
+        Map<String, TableSession> sessions = sessionNos.isEmpty() ? Collections.emptyMap()
+                : tableSessionMapper.selectList(new LambdaQueryWrapper<TableSession>()
+                        .in(TableSession::getSessionNo, sessionNos)).stream()
+                .collect(Collectors.toMap(TableSession::getSessionNo, Function.identity(), (left, right) -> left));
+
+        Map<Long, List<RestaurantOrderItem>> itemsByOrder = Collections.emptyMap();
+        Map<Long, Dish> dishes = Collections.emptyMap();
+        if (includeItems) {
+            List<Long> orderIds = orders.stream().map(RestaurantOrder::getId)
+                    .filter(Objects::nonNull).distinct().toList();
+            List<RestaurantOrderItem> items = orderIds.isEmpty() ? List.of()
+                    : restaurantOrderItemMapper.selectList(new LambdaQueryWrapper<RestaurantOrderItem>()
+                    .in(RestaurantOrderItem::getOrderId, orderIds));
+            itemsByOrder = items.stream().collect(Collectors.groupingBy(RestaurantOrderItem::getOrderId));
+            List<Long> dishIds = items.stream().map(RestaurantOrderItem::getDishId)
+                    .filter(Objects::nonNull).distinct().toList();
+            dishes = dishIds.isEmpty() ? Collections.emptyMap()
+                    : dishMapper.selectByIds(dishIds).stream()
+                    .collect(Collectors.toMap(Dish::getId, Function.identity(), (left, right) -> left));
+        }
+
+        Map<Long, List<RestaurantOrderItem>> finalItemsByOrder = itemsByOrder;
+        Map<Long, Dish> finalDishes = dishes;
+        return orders.stream().map(order -> {
+            RestaurantOrderVO vo = BeanCopyUtils.copyBean(order, RestaurantOrderVO.class);
+            applyStoreInfo(vo, stores.get(order.getStoreId()));
+            applyTableInfo(vo, tables.get(order.getTableId()));
+            applySessionInfo(vo, sessions.get(order.getSessionNo()));
+            if (includeItems) {
+                vo.setItems(finalItemsByOrder.getOrDefault(order.getId(), List.of()).stream()
+                        .map(item -> toOrderItemVO(item, finalDishes.get(item.getDishId())))
+                        .toList());
+            }
+            return vo;
+        }).toList();
+    }
+
+    private void applyStoreInfo(RestaurantOrderVO vo, StoreInfo storeInfo) {
+        if (storeInfo == null) {
+            return;
+        }
+        vo.setStoreName(storeInfo.getStoreName());
+        vo.setAddress(storeInfo.getAddress());
+        vo.setPhone(storeInfo.getPhone());
+        vo.setBusinessHours(storeInfo.getBusinessHours());
+        vo.setPickupMode(storeInfo.getPickupMode());
+    }
+
+    private void applyTableInfo(RestaurantOrderVO vo, TableInfo tableInfo) {
+        if (tableInfo != null) {
+            vo.setTableName(tableInfo.getTableName());
+        }
+    }
+
+    private void applySessionInfo(RestaurantOrderVO vo, TableSession tableSession) {
+        if (tableSession != null) {
+            vo.setSessionStatus(tableSession.getStatus());
+        }
     }
 
     /**
@@ -142,13 +217,7 @@ public class RestaurantOrderConverter {
 
         try {
             StoreInfo storeInfo = storeInfoMapper.selectById(storeId);
-            if (storeInfo != null) {
-                vo.setStoreName(storeInfo.getStoreName());
-                vo.setAddress(storeInfo.getAddress());
-                vo.setPhone(storeInfo.getPhone());
-                vo.setBusinessHours(storeInfo.getBusinessHours());
-                vo.setPickupMode(storeInfo.getPickupMode());
-            }
+            applyStoreInfo(vo, storeInfo);
         } catch (Exception e) {
             log.error("填充门店信息失败，门店ID：{}", storeId, e);
         }
@@ -167,9 +236,7 @@ public class RestaurantOrderConverter {
 
         try {
             TableInfo tableInfo = tableInfoMapper.selectById(tableId);
-            if (tableInfo != null) {
-                vo.setTableName(tableInfo.getTableName());
-            }
+            applyTableInfo(vo, tableInfo);
         } catch (Exception e) {
             log.error("填充餐桌信息失败，餐桌ID：{}", tableId, e);
         }
@@ -213,11 +280,9 @@ public class RestaurantOrderConverter {
 
         try {
             TableSession tableSession = tableSessionMapper.selectBySessionNo(sessionNo);
-            if (tableSession != null) {
-                vo.setSessionStatus(tableSession.getStatus());
-            }
+            applySessionInfo(vo, tableSession);
         } catch (Exception e) {
-            log.error("填充餐桌信息失败，餐桌ID：{}", sessionNo, e);
+            log.error("填充会话信息失败，会话编号：{}", sessionNo, e);
         }
     }
 
@@ -243,6 +308,15 @@ public class RestaurantOrderConverter {
             }
         }
 
+        return itemVO;
+    }
+
+    private RestaurantOrderVO.OrderItemVO toOrderItemVO(RestaurantOrderItem item, Dish dish) {
+        RestaurantOrderVO.OrderItemVO itemVO = BeanCopyUtils.copyBean(item, RestaurantOrderVO.OrderItemVO.class);
+        if (dish != null) {
+            itemVO.setDishName(dish.getDishName());
+            itemVO.setMainPic(dish.getDishPics());
+        }
         return itemVO;
     }
 

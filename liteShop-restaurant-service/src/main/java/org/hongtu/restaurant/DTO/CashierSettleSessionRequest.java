@@ -26,7 +26,7 @@ public class CashierSettleSessionRequest {
     private PaymentTypeEnum paymentType;
 
     /**
-     * 实收金额（选填；不传则用订单应付金额，传了则用于找零与记录）
+     * 客户端实收金额（仅现金找零使用，不能覆盖服务端计算的订单应付金额）
      */
     private BigDecimal actualAmount;
 

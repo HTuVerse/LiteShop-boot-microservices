@@ -34,7 +34,11 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.hongtu.enums.CodeMsg.DINNER_NOT_EXIST;
@@ -127,7 +131,8 @@ public class TableSessionServiceImpl extends ServiceImpl<TableSessionMapper, Tab
     public TableSessionVO updatePeopleCount(String sessionNo, Integer peopleCount) {
         // 1. 查询会话是否存在
         LambdaQueryWrapper<TableSession> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(TableSession::getSessionNo, sessionNo);
+        // 串行修改同一会话，避免并发覆盖就餐人数。
+        queryWrapper.eq(TableSession::getSessionNo, sessionNo).last("FOR UPDATE");
         TableSession session = this.getOne(queryWrapper);
 
         if (session == null) {
@@ -247,11 +252,14 @@ public class TableSessionServiceImpl extends ServiceImpl<TableSessionMapper, Tab
         // 2. 更新会话状态
         LambdaUpdateWrapper<TableSession> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.eq(TableSession::getSessionNo, sessionNo)
-                .set(TableSession::getStatus, 2) // 已结束
+                .eq(TableSession::getStatus, SessionStatusEnum.IN_PROGRESS)
+                .set(TableSession::getStatus, SessionStatusEnum.ENDED)
                 .set(TableSession::getEndTime, LocalDateTime.now())
                 .set(TableSession::getPaidAmount, paidAmount)
                 .set(TableSession::getUpdatedAt, LocalDateTime.now());
-        this.update(updateWrapper);
+        if (!this.update(updateWrapper)) {
+            throw new BusinessException("桌台会话状态已变化，请刷新后重试");
+        }
 
         // 3. 更新桌位状态为"空闲"
         LambdaUpdateWrapper<TableInfo> tableUpdateWrapper = new LambdaUpdateWrapper<>();
@@ -291,9 +299,7 @@ public class TableSessionServiceImpl extends ServiceImpl<TableSessionMapper, Tab
                 .orderByDesc(TableSession::getStartTime);
 
         List<TableSession> sessions = this.list(queryWrapper);
-        return sessions.stream()
-                .map(this::buildSessionVO)
-                .collect(Collectors.toList());
+        return buildSessionVOList(sessions);
     }
 
     @Override
@@ -320,9 +326,7 @@ public class TableSessionServiceImpl extends ServiceImpl<TableSessionMapper, Tab
         Page<TableSession> sessionPage = new Page<>(page.getCurrent(), page.getSize());
         sessionPage = this.page(sessionPage, queryWrapper);
 
-        List<TableSessionVO> voList = sessionPage.getRecords().stream()
-                .map(this::buildSessionVO)
-                .collect(Collectors.toList());
+        List<TableSessionVO> voList = buildSessionVOList(sessionPage.getRecords());
 
         Page<TableSessionVO> resultPage = new Page<>(page.getCurrent(), page.getSize(), sessionPage.getTotal());
         resultPage.setRecords(voList);
@@ -334,51 +338,59 @@ public class TableSessionServiceImpl extends ServiceImpl<TableSessionMapper, Tab
      * 构建会话 VO
      */
     private TableSessionVO buildSessionVO(TableSession session) {
-        TableSessionVO vo = new TableSessionVO();
-        BeanUtils.copyProperties(session, vo);
+        return buildSessionVOList(List.of(session)).get(0);
+    }
 
-        // 设置状态描述
-        vo.setStatusDesc(session.getStatus() == SessionStatusEnum.IN_PROGRESS ? "进行中" : "已结束");
-
-        // 计算用餐时长
-        if (session.getStartTime() != null) {
-            LocalDateTime endTime = session.getEndTime() != null ? session.getEndTime() : LocalDateTime.now();
-            Duration duration = Duration.between(session.getStartTime(), endTime);
-            vo.setDurationMinutes(duration.toMinutes());
+    /**
+     * 批量构建会话视图，避免会话分页产生桌台、门店和订单的 N+1 查询。
+     */
+    private List<TableSessionVO> buildSessionVOList(List<TableSession> sessions) {
+        if (sessions == null || sessions.isEmpty()) {
+            return List.of();
         }
+        List<Long> tableIds = sessions.stream().map(TableSession::getTableId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, TableInfo> tables = tableIds.isEmpty() ? Collections.emptyMap()
+                : tableInfoMapper.selectByIds(tableIds).stream()
+                .collect(Collectors.toMap(TableInfo::getId, Function.identity(), (left, right) -> left));
+        List<Long> storeIds = tables.values().stream().map(TableInfo::getStoreId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, StoreInfo> stores = storeIds.isEmpty() ? Collections.emptyMap()
+                : storeInfoMapper.selectByIds(storeIds).stream()
+                .collect(Collectors.toMap(StoreInfo::getId, Function.identity(), (left, right) -> left));
 
-        // 查询桌位信息
-        if (session.getTableId() != null) {
-            TableInfo tableInfo = tableInfoMapper.selectById(session.getTableId());
+        List<String> sessionNos = sessions.stream().map(TableSession::getSessionNo)
+                .filter(Objects::nonNull).distinct().toList();
+        List<RestaurantOrder> orders = sessionNos.isEmpty() ? List.of()
+                : restaurantOrderMapper.selectList(new LambdaQueryWrapper<RestaurantOrder>()
+                .in(RestaurantOrder::getSessionNo, sessionNos)
+                .orderByDesc(RestaurantOrder::getCreatedAt));
+        Map<String, List<RestaurantOrderVO>> ordersBySession = restaurantOrderConverter.toVOList(orders).stream()
+                .filter(order -> order.getSessionNo() != null)
+                .collect(Collectors.groupingBy(RestaurantOrderVO::getSessionNo));
+
+        return sessions.stream().map(session -> {
+            TableSessionVO vo = new TableSessionVO();
+            BeanUtils.copyProperties(session, vo);
+            vo.setStatusDesc(session.getStatus() == SessionStatusEnum.IN_PROGRESS ? "进行中" : "已结束");
+            if (session.getStartTime() != null) {
+                LocalDateTime endTime = session.getEndTime() != null ? session.getEndTime() : LocalDateTime.now();
+                vo.setDurationMinutes(Duration.between(session.getStartTime(), endTime).toMinutes());
+            }
+            TableInfo tableInfo = tables.get(session.getTableId());
             if (tableInfo != null) {
                 vo.setTableNumber(tableInfo.getTableNumber());
                 vo.setTableName(tableInfo.getTableName());
                 vo.setTableId(tableInfo.getId());
-                // 查询门店信息
-                if (tableInfo.getStoreId() != null) {
-                    vo.setStoreId(tableInfo.getStoreId());
-                    StoreInfo storeInfo = storeInfoMapper.selectById(tableInfo.getStoreId());
-                    if (storeInfo != null) {
-                        vo.setStoreName(storeInfo.getStoreName());
-                    }
+                vo.setStoreId(tableInfo.getStoreId());
+                StoreInfo storeInfo = stores.get(tableInfo.getStoreId());
+                if (storeInfo != null) {
+                    vo.setStoreName(storeInfo.getStoreName());
                 }
             }
-        }
-
-        // 查询该会话下的订单
-        LambdaQueryWrapper<RestaurantOrder> orderQueryWrapper = new LambdaQueryWrapper<>();
-        orderQueryWrapper.eq(RestaurantOrder::getSessionNo, session.getSessionNo());
-
-        orderQueryWrapper.orderByDesc(RestaurantOrder::getCreatedAt);
-
-        List<RestaurantOrder> orders = restaurantOrderMapper.selectList(orderQueryWrapper);
-
-        // 转换为VO
-        List<RestaurantOrderVO> orderVOList = restaurantOrderConverter.toVOList(orders);
-
-        vo.setOrders(orderVOList);
-
-        return vo;
+            vo.setOrders(ordersBySession.getOrDefault(session.getSessionNo(), List.of()));
+            return vo;
+        }).toList();
     }
 
     /**

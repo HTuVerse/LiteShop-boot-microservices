@@ -10,11 +10,17 @@ import org.hongtu.restaurant.service.RestaurantOrderService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
 import org.quartz.Job;
+import org.quartz.DisallowConcurrentExecution;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.springframework.stereotype.Component;
 
 import java.util.Set;
+import java.util.Collections;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import org.hongtu.utils.RedisCache;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 /**
  * 订单超时自动取消定时任务
@@ -26,13 +32,25 @@ import java.util.Set;
  */
 @Slf4j
 @Component
+@DisallowConcurrentExecution
 public class OrderTimeoutJob implements Job {
+
+    private static final String JOB_LOCK_KEY = "job:restaurant:order-timeout";
+    private static final DefaultRedisScript<Long> RELEASE_LOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            Long.class);
+    private static final DefaultRedisScript<Long> RENEW_LOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+            Long.class);
 
     @Resource
     private OrderTimeoutQueueService orderTimeoutQueueService;
 
     @Resource
     private RestaurantOrderService restaurantOrderService;
+
+    @Resource
+    private RedisCache redisCache;
 
     /**
      * 执行定时任务
@@ -43,12 +61,24 @@ public class OrderTimeoutJob implements Job {
      */
     @Override
     public void execute(JobExecutionContext context) throws JobExecutionException {
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = redisCache.redisTemplate.opsForValue()
+                .setIfAbsent(JOB_LOCK_KEY, lockValue, 10, TimeUnit.MINUTES);
+        if (!Boolean.TRUE.equals(locked)) {
+            log.debug("[订单超时任务] 其他实例正在执行，本轮跳过");
+            return;
+        }
         try {
+            try {
+                restaurantOrderService.reconcileOpenRefunds();
+            } catch (Exception exception) {
+                log.warn("[订单超时任务] 退款补偿失败: {}", exception.getMessage());
+            }
             // 1. 获取所有已超时的订单ID
             Set<Long> timeoutOrderIds = orderTimeoutQueueService.getTimeoutOrderIds();
             
             if (timeoutOrderIds.isEmpty()) {
-                return; // 没有超时订单，直接返回
+                return;
             }
 
             log.info("[订单超时任务] 发现 {} 个超时订单，开始处理...", timeoutOrderIds.size());
@@ -59,6 +89,7 @@ public class OrderTimeoutJob implements Job {
 
             // 2. 遍历处理每个超时订单
             for (Long orderId : timeoutOrderIds) {
+                renewLease(lockValue);
                 try {
                     // 2.1 查询订单当前状态
                     RestaurantOrder order = TenantIgnore.get(() -> restaurantOrderService.getById(orderId));
@@ -103,6 +134,7 @@ public class OrderTimeoutJob implements Job {
                         log.info("[订单超时任务] 订单超时取消成功: orderId={}, orderNo={}", 
                                 orderId, order.getOrderNo());
                     } else {
+                        orderTimeoutQueueService.requeue(orderId);
                         failCount++;
                         log.warn("[订单超时任务] 订单超时取消失败，将在下次调度重试: orderId={}, orderNo={}",
                                 orderId, order.getOrderNo());
@@ -114,9 +146,8 @@ public class OrderTimeoutJob implements Job {
                 } catch (Exception e) {
                     TenantContext.clear();
                     failCount++;
-                    // 单个订单处理失败不影响其他订单
+                    orderTimeoutQueueService.requeue(orderId);
                     log.error("[订单超时任务] 处理订单异常: orderId={}, error={}", orderId, e.getMessage(), e);
-                    // 保留队列成员，瞬时故障恢复后由下次调度继续处理。
                 }
             }
 
@@ -126,12 +157,19 @@ public class OrderTimeoutJob implements Job {
         } catch (Exception e) {
             log.error("[订单超时任务] 执行异常: {}", e.getMessage(), e);
             // 不抛出异常，避免影响下次调度
+        } finally {
+            try {
+                redisCache.redisTemplate.execute(
+                        RELEASE_LOCK_SCRIPT, Collections.singletonList(JOB_LOCK_KEY), lockValue);
+            } catch (Exception releaseError) {
+                log.error("[订单超时任务] 释放任务租约失败", releaseError);
+            }
         }
     }
 
     /**
      * 判断订单是否需要处理
-     * 只有未支付且状态为待支付/已下单的订单才需要超时取消
+     * 只有支付状态为未支付且订单尚未结束时才需要超时取消
      */
     private boolean needProcess(RestaurantOrder order) {
         // 已支付的订单不处理
@@ -151,5 +189,14 @@ public class OrderTimeoutJob implements Job {
         
         // 只处理未支付状态的订单
         return order.getPaymentStatus() == PaymentStatusEnum.UNPAID;
+    }
+
+    private void renewLease(String lockValue) {
+        try {
+            redisCache.redisTemplate.execute(
+                    RENEW_LOCK_SCRIPT, Collections.singletonList(JOB_LOCK_KEY), lockValue, 600);
+        } catch (Exception renewError) {
+            log.warn("[订单超时任务] 续租约失败", renewError);
+        }
     }
 }

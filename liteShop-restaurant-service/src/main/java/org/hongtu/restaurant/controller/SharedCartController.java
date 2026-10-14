@@ -11,6 +11,8 @@ import org.hongtu.restaurant.netty.NettyWebSocketPushService;
 import org.hongtu.restaurant.service.SharedCartService;
 import org.hongtu.restaurant.service.TableInfoService;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
+import org.hongtu.tenant.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -38,13 +40,16 @@ public class SharedCartController {
     private NettyWebSocketPushService webSocketPushService;
     @Resource
     TableSessionService tableSessionService;
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
     /**
      * 添加商品到购物车
      */
     @PostMapping("/add")
     @SaIgnore
-    public Result<CartItemVO> addItem(@RequestBody AddCartItemRequest request) {
-        try {
+    public Result<CartItemVO> addItem(@RequestBody AddCartItemRequest request,
+                                     @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken) {
+        
             // 验证参数
             if (request.getSessionNo() == null || request.getDishId() == null || request.getQuantity() == null) {
                 return Result.error(PARAM_ERROR);
@@ -52,15 +57,13 @@ public class SharedCartController {
             if (request.getQuantity() <= 0) {
                 throw new RuntimeException("数量必须大于0");
             }
+            verifySessionToken(sessionToken, request.getSessionNo());
             CartItemVO cartItem = sharedCartService.addItem(request);
             // WebSocket 推送：通知同桌其他用户
             webSocketPushService.pushCartItemAdded(request.getSessionNo(), cartItem);
 
             return Result.success("添加成功", cartItem);
-        } catch (Exception e) {
-            log.error("添加购物车商品失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -68,14 +71,19 @@ public class SharedCartController {
      */
     @PutMapping("/update")
     @SaIgnore
-    public Result<CartItemVO> updateItem(@RequestBody UpdateCartItemRequest request) {
-        try {
+    public Result<CartItemVO> updateItem(@RequestBody UpdateCartItemRequest request,
+                                        @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken) {
+        
             if (request.getSessionNo() == null || request.getCartItemId() == null || request.getQuantity() == null) {
                 return Result.error(PARAM_ERROR);
             }
-            if (request.getQuantity() == 0 ||request.getQuantity()<0) {
-                this.removeItem(request.getSessionNo(), request.getCartItemId());
-                return null;
+            verifySessionToken(sessionToken, request.getSessionNo());
+            if (request.getQuantity() <= 0) {
+                boolean removed = sharedCartService.removeItem(request.getSessionNo(), request.getCartItemId());
+                if (removed) {
+                    webSocketPushService.pushCartItemRemoved(request.getSessionNo(), request.getCartItemId());
+                }
+                return Result.success("商品已移除", null);
             }
             CartItemVO cartItem = sharedCartService.updateItem(request);
             // 如果数量更新为0，商品已被移除，推送移除消息
@@ -88,10 +96,7 @@ public class SharedCartController {
             webSocketPushService.pushCartItemUpdated(request.getSessionNo(), cartItem);
 
             return Result.success("更新成功", cartItem);
-        } catch (Exception e) {
-            log.error("更新购物车商品失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -101,9 +106,11 @@ public class SharedCartController {
     @SaIgnore
     public Result<Boolean> removeItem(
             @RequestParam String sessionNo,
-            @RequestParam String cartItemId
+            @RequestParam String cartItemId,
+            @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken
     ) {
-        try {
+        
+            verifySessionToken(sessionToken, sessionNo);
             tableSessionService.validateSession(sessionNo);
             boolean result = sharedCartService.removeItem(sessionNo, cartItemId);
 
@@ -113,10 +120,7 @@ public class SharedCartController {
             }
 
             return Result.success("移除成功", result);
-        } catch (Exception e) {
-            log.error("移除购物车商品失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -124,8 +128,10 @@ public class SharedCartController {
      */
     @DeleteMapping("/clear")
     @SaIgnore
-    public Result<Boolean> clearCart(@RequestParam String sessionNo) {
-        try {
+    public Result<Boolean> clearCart(@RequestParam String sessionNo,
+                                     @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken) {
+        
+            verifySessionToken(sessionToken, sessionNo);
             tableSessionService.validateSession(sessionNo);
 
             boolean result = sharedCartService.clearCart(sessionNo);
@@ -136,10 +142,7 @@ public class SharedCartController {
             }
 
             return Result.success("清空成功", result);
-        } catch (Exception e) {
-            log.error("清空购物车失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -147,15 +150,14 @@ public class SharedCartController {
      */
     @GetMapping("/list")
     @SaIgnore
-    public Result<List<CartItemVO>> getCartItems(@RequestParam String sessionNo) {
-        try {
+    public Result<List<CartItemVO>> getCartItems(@RequestParam String sessionNo,
+                                                 @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken) {
+        
+            verifySessionToken(sessionToken, sessionNo);
             tableSessionService.validateSession(sessionNo);
             List<CartItemVO> items = sharedCartService.getCartItems(sessionNo);
             return Result.success("查询成功", items);
-        } catch (Exception e) {
-            log.error("查询购物车失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -163,8 +165,10 @@ public class SharedCartController {
      */
     @GetMapping("/summary")
     @SaIgnore
-    public Result<Map<String, Object>> getCartSummary(@RequestParam String sessionNo) {
-        try {
+    public Result<Map<String, Object>> getCartSummary(@RequestParam String sessionNo,
+                                                      @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken) {
+        
+            verifySessionToken(sessionToken, sessionNo);
             tableSessionService.validateSession(sessionNo);
             int itemCount = sharedCartService.getCartItemCount(sessionNo);
             BigDecimal totalAmount = sharedCartService.getCartTotalAmount(sessionNo);
@@ -175,10 +179,11 @@ public class SharedCartController {
             summary.put("totalAmount", totalAmount);
 
             return Result.success("查询成功", summary);
-        } catch (Exception e) {
-            log.error("查询购物车统计失败: {}", e.getMessage(), e);
-            return Result.error(e.getMessage());
-        }
+        
+    }
+
+    private void verifySessionToken(String sessionToken, String sessionNo) {
+        tableSessionTokenService.verifyForSession(sessionToken, sessionNo, TenantContext.getTenantId());
     }
 }
 

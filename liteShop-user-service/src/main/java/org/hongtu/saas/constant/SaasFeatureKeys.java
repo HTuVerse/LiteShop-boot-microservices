@@ -11,9 +11,14 @@ public final class SaasFeatureKeys {
     public static final String STORE_COUNT = SaasFeatureCode.STORE_COUNT;
 
     /**
-     * 新增编码前必须先在对应业务服务完成：真实用量统计、并发占额、失败补偿和删除释放。
+     * 新增编码前，数值权益需完成用量闭环；布尔权益需在业务接口完成服务端校验。
      */
-    public static final Set<String> SELLABLE = Set.of(STORE_COUNT);
+    public static final String AI_MANAGER = SaasFeatureCode.AI_MANAGER;
+
+    /** AI 生成次数由用户服务的原子计数器统计。 */
+    public static final String AI_MANAGER_CALLS = SaasFeatureCode.AI_MANAGER_CALLS;
+
+    public static final Set<String> SELLABLE = Set.of(STORE_COUNT, AI_MANAGER, AI_MANAGER_CALLS);
 
     public static boolean isSellable(String featureCode) {
         return featureCode != null && SELLABLE.contains(featureCode.trim().toLowerCase());

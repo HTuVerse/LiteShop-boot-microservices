@@ -9,7 +9,7 @@
 3. 执行 `sql/vertical-split/25_saas_restaurant_plans.sql`，创建基础版、专业版、连锁版、`store_count` 权益和额外门店加购项，不会自动绑定租户。
 4. 部署 `liteShop-common`、`liteShop-api`、`liteShop-user-service` 和 `liteS`。
 5. 将 `nacos-config/liteShop-gateway.example.yml` 发布为 Nacos 的 `liteShop-gateway.yml`，确保用户服务路由包含 `/saas/**`。
-6. 超级管理员退出商户作用域，在“平台管理 → 套餐与权益”中配置增值服务、套餐草稿和加购项。
+6. 超级管理员退出商户作用域，在顶级菜单“套餐与权益管理”下分别进入“套餐权益”“功能权益”“租户权益”完成配置。
 7. 发布套餐版本后再向租户分配。已发布版本不可修改；新版本不会自动迁移存量租户。
 
 `23_saas_demo.sql` 已停用，不再生成把基础菜单当权益的演示记录。
@@ -75,7 +75,7 @@ try {
 - `POST /inner/saas/consume`：幂等、原子检查并占用额度。
 - `POST /inner/saas/release`：幂等释放额度，最低回到零。
 
-租户管理端还可以使用 `/saas/entitlements/me`、`/check`、`/consume` 和 `/release`。业务代码不得判断 `planCode`，只依赖稳定的 `featureCode`。
+租户端只提供只读接口 `GET /saas/entitlements/me`（需登录）用于展示当前额度；`check`、`consume`、`release` 仅通过上述 `/inner/saas/*` 内部接口由其它服务经 Feign 调用，不对租户前端开放。业务代码不得判断 `planCode`，只依赖稳定的 `featureCode`。
 
 ## 配额语义
 

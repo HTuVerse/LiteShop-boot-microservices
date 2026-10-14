@@ -18,6 +18,9 @@ public class CouponMessageDTO implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /** 业务事件唯一键，消费者据此保证幂等。 */
+    private String eventId;
+
     /**
      * 优惠券ID
      */
@@ -44,4 +47,4 @@ public class CouponMessageDTO implements Serializable {
      * 额外信息（JSON格式）
      */
     private String extraInfo;
-} 
+}

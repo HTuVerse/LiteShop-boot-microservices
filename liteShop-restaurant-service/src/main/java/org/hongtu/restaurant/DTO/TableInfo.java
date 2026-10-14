@@ -50,6 +50,11 @@ public class TableInfo implements Serializable {
     private String tableName;
 
     /**
+     * 扫码票据编号。重新生成后，已打印的旧二维码立即失效。
+     */
+    private String scanTokenId;
+
+    /**
      * 二维码内容
      */
     private String qrCode;

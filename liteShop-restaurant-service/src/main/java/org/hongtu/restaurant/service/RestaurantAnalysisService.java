@@ -4,6 +4,7 @@ import org.hongtu.restaurant.VO.analysis.*;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 餐厅数据分析服务接口
@@ -58,17 +59,6 @@ public interface RestaurantAnalysisService {
     OrderAnalysisVO getOrderAnalysis(Long storeId, Integer days, LocalDate startDate, LocalDate endDate);
 
     /**
-     * 获取订单状态分布
-     *
-     * @param storeId   门店ID
-     * @param days      统计天数
-     * @param startDate 开始日期（可选）
-     * @param endDate   结束日期（可选）
-     * @return 订单状态分布列表
-     */
-    List<OrderStatusDistributionVO> getOrderStatusDistribution(Long storeId, Integer days, LocalDate startDate, LocalDate endDate);
-
-    /**
      * 获取订单取消原因分析
      *
      * @param storeId   门店ID
@@ -93,29 +83,13 @@ public interface RestaurantAnalysisService {
      */
     List<DishSalesRankingVO> getTopSellingDishes(Long storeId, Integer days, Integer topN, LocalDate startDate, LocalDate endDate);
 
-    /**
-     * 获取菜品销售额排行
-     *
-     * @param storeId   门店ID
-     * @param days      统计天数
-     * @param topN      获取前N名，默认10
-     * @param startDate 开始日期（可选）
-     * @param endDate   结束日期（可选）
-     * @return 菜品销售额排行列表
-     */
-    List<DishSalesRankingVO> getDishSalesAmountRanking(Long storeId, Integer days, Integer topN, LocalDate startDate, LocalDate endDate);
+    /** 获取指定菜品每日净销售趋势。 */
+    List<DishSalesTrendVO> getDishSalesTrend(Long storeId, Long dishId, Integer days,
+                                              LocalDate startDate, LocalDate endDate);
 
-    /**
-     * 获取某个菜品的销售趋势
-     *
-     * @param storeId   门店ID
-     * @param dishId    菜品ID
-     * @param days      查询天数，默认30天
-     * @param startDate 开始日期（可选）
-     * @param endDate   结束日期（可选）
-     * @return 菜品销售趋势列表
-     */
-    List<DishSalesTrendVO> getDishSalesTrend(Long storeId, Long dishId, Integer days, LocalDate startDate, LocalDate endDate);
+    /** 获取加退菜统计。 */
+    List<DishChangeStatisticsVO> getDishChangeStatistics(Long storeId, Integer days, Integer changeType,
+                                                          LocalDate startDate, LocalDate endDate);
 
     /**
      * 获取滞销菜品分析
@@ -139,35 +113,40 @@ public interface RestaurantAnalysisService {
      */
     List<CategoryAnalysisVO> getCategoryAnalysis(Long storeId, Integer days, LocalDate startDate, LocalDate endDate);
 
-    /**
-     * 获取菜品利润率排行
-     *
-     * @param storeId   门店ID
-     * @param days      统计天数
-     * @param topN      获取前N名，默认10
-     * @param startDate 开始日期（可选）
-     * @param endDate   结束日期（可选）
-     * @return 菜品利润率排行列表
-     */
-    List<DishSalesRankingVO> getDishProfitRateRanking(Long storeId, Integer days, Integer topN, LocalDate startDate, LocalDate endDate);
+    /** 已下线：历史成本没有成交快照，不能继续输出利润类指标。 */
+    @Deprecated
+    default List<MonthlySalesProfitVO> getMonthlySalesProfit(Long storeId, Integer year) {
+        throw new UnsupportedOperationException("月度利润指标已下线");
+    }
 
-    /**
-     * 获取菜品利润矩阵分析（销量-利润率四象限）
-     *
-     * @param storeId   门店ID
-     * @param days      统计天数
-     * @param startDate 开始日期（可选）
-     * @param endDate   结束日期（可选）
-     * @return 菜品利润矩阵列表
-     */
-    List<DishProfitMatrixVO> getDishProfitMatrix(Long storeId, Integer days, LocalDate startDate, LocalDate endDate);
+    /** 已下线：历史状态分布属于实时履约监控。 */
+    @Deprecated
+    default List<OrderStatusDistributionVO> getOrderStatusDistribution(Long storeId, Integer days,
+                                                                         LocalDate startDate, LocalDate endDate) {
+        throw new UnsupportedOperationException("历史订单状态分布已下线");
+    }
 
-    /**
-     * 获取年度月度销售额和利润数据
-     *
-     * @param storeId 门店ID
-     * @param year    年份
-     * @return 每月销售额和利润列表
-     */
-    List<MonthlySalesProfitVO> getMonthlySalesProfit(Long storeId, Integer year);
+    /** 已下线：销售额排行已合并到菜品经营表现。 */
+    @Deprecated
+    default List<DishSalesRankingVO> getDishSalesAmountRanking(Long storeId, Integer days, Integer topN,
+                                                                LocalDate startDate, LocalDate endDate) {
+        throw new UnsupportedOperationException("重复菜品销售额排行已下线");
+    }
+
+    /** 已下线：无成交成本快照时利润率不可作为决策依据。 */
+    @Deprecated
+    default List<DishSalesRankingVO> getDishProfitRateRanking(Long storeId, Integer days, Integer topN,
+                                                               LocalDate startDate, LocalDate endDate) {
+        throw new UnsupportedOperationException("菜品利润率排行已下线");
+    }
+
+    /** 已下线：中位数四象限不能可靠指导菜单决策。 */
+    @Deprecated
+    default List<DishProfitMatrixVO> getDishProfitMatrix(Long storeId, Integer days,
+                                                          LocalDate startDate, LocalDate endDate) {
+        throw new UnsupportedOperationException("菜品利润矩阵已下线");
+    }
+
+    /** AI 经营分析使用的有界匿名聚合快照。 */
+    Map<String, Object> getAiExtendedAnalysisSnapshot(Long storeId);
 }

@@ -10,7 +10,6 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DTO.LotteryRecord;
 import org.hongtu.Result.Result;
-import org.hongtu.exception.BusinessException;
 import org.hongtu.service.LotteryRecordService;
 import org.hongtu.utils.RateLimitUtil;
 import org.springframework.web.bind.annotation.*;
@@ -63,24 +62,14 @@ public class LotteryRecordController {
         }
 
         // 2. 幂等性保护（防止重复点击）
-        String idempotentKey = "lottery:" + userId + ":" + activityId;
+        String idempotentKey = RateLimitUtil.tenantKey("lottery", String.valueOf(userId), String.valueOf(activityId));
         if (!rateLimitUtil.setIdempotentMark(idempotentKey, IDEMPOTENT_EXPIRE)) {
             log.warn("抽奖重复请求被拦截，userId={}, activityId={}", userId, activityId);
             return Result.error("请求处理中，请勿重复点击");
         }
 
-        try {
-            return lotteryRecordService.drawLottery(userId, activityId);
-        } catch (BusinessException e) {
-            log.warn("抽奖业务异常，userId={}, activityId={}, reason={}", userId, activityId, e.getMessage());
-            return Result.error(e.getMessage());
-        } catch (Exception e) {
-            log.error("抽奖异常，userId={}, activityId={}", userId, activityId, e);
-            return Result.error("抽奖失败，请稍后再试");
-        } finally {
-            // 请求结束后删除幂等性标记（或者让它自然过期也可以）
-            // 这里选择让它自然过期，可以更好地防止快速重复点击
-        }
+        // 幂等标记按过期时间自然失效，避免失败后立刻重复点击。
+        return lotteryRecordService.drawLottery(userId, activityId);
     }
 
     /**
@@ -96,13 +85,8 @@ public class LotteryRecordController {
             return Result.error("活动ID无效");
         }
 
-        try {
-            Long userId = StpUtil.getLoginIdAsLong();
-            return lotteryRecordService.getUserLotteryRecordsByActivity(userId, activityId, currentPage, pageSize);
-        } catch (Exception e) {
-            log.error("获取活动抽奖记录异常，activityId={}", activityId, e);
-            return Result.error("获取记录失败");
-        }
+        Long userId = StpUtil.getLoginIdAsLong();
+        return lotteryRecordService.getUserLotteryRecordsByActivity(userId, activityId, currentPage, pageSize);
     }
 
     /**
@@ -128,13 +112,7 @@ public class LotteryRecordController {
             return Result.error("活动ID无效");
         }
 
-        try {
-            return lotteryRecordService.getActivityAllRecords(activityId, userId, prizeType, isReceived, currentPage, pageSize);
-        } catch (Exception e) {
-            log.error("管理员获取活动抽奖记录异常，activityId={}, userId={}, prizeType={}, isReceived={}",
-                    activityId, userId, prizeType, isReceived, e);
-            return Result.error("获取记录失败");
-        }
+        return lotteryRecordService.getActivityAllRecords(activityId, userId, prizeType, isReceived, currentPage, pageSize);
     }
 
     /**
@@ -147,18 +125,12 @@ public class LotteryRecordController {
             return Result.error("记录ID无效");
         }
 
-        try {
-            Long userId = StpUtil.getLoginIdAsLong();
-            boolean success = lotteryRecordService.receivePrize(userId, recordId);
-            if (success) {
-                return Result.success(true);
-            } else {
-                return Result.error("领取失败，可能已经领取过或记录不存在");
-            }
-        } catch (Exception e) {
-            log.error("领取奖品异常，recordId={}", recordId, e);
-            return Result.error("领取失败，请稍后再试");
+        Long userId = StpUtil.getLoginIdAsLong();
+        boolean success = lotteryRecordService.receivePrize(userId, recordId);
+        if (success) {
+            return Result.success(true);
         }
+        return Result.error("领取失败，可能已经领取过或记录不存在");
     }
 
 
@@ -173,16 +145,10 @@ public class LotteryRecordController {
             return Result.error("活动ID无效");
         }
 
-        try {
-            boolean success = lotteryRecordService.clearActivityRecords(activityId);
-            if (success) {
-                return Result.success(true);
-            } else {
-                return Result.error("清空失败");
-            }
-        } catch (Exception e) {
-            log.error("清空活动抽奖记录异常，activityId={}", activityId, e);
-            return Result.error("清空失败，请稍后再试");
+        boolean success = lotteryRecordService.clearActivityRecords(activityId);
+        if (success) {
+            return Result.success(true);
         }
+        return Result.error("清空失败");
     }
 }

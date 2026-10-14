@@ -60,7 +60,7 @@ public class PrintContentBuilder {
         StringBuilder content = new StringBuilder();
 
         // 纸张宽度（用于计算列宽）
-        int paperWidth = "80mm".equals(template.getPaperWidth()) ? 48 : 32;
+        int paperWidth = template.getPaperWidth() == null ? 32 : template.getPaperWidth().getCharactersPerLine();
 
         // ============ 顶部Logo ============
         if (template.getShowLogo() != null && template.getShowLogo() == StatusEnum.getByCode(1) &&
@@ -182,10 +182,10 @@ public class PrintContentBuilder {
             int dishNameWidth = paperWidth == 48 ? 18 : 11;
 
             String dishName = item.getDishName();
-            BigDecimal price = item.getPrice();
+            BigDecimal price = item.getUnitSellingPrice();
             Integer quantity = item.getQuantity();
-            BigDecimal itemTotal = item.getTotalPrice();
-            BigDecimal discountPrice = item.getDiscountPrice();
+            BigDecimal itemTotal = item.getLinePayableAmount();
+            BigDecimal discountPrice = item.getDiscountAmount();
             Integer isGift = item.getIsGift();
 
             totalAmount = totalAmount.add(itemTotal);
@@ -313,7 +313,7 @@ public class PrintContentBuilder {
         StringBuilder content = new StringBuilder();
 
         // 纸张宽度（用于计算列宽）
-        int paperWidth = "80mm".equals(template.getPaperWidth()) ? 48 : 32;
+        int paperWidth = template.getPaperWidth() == null ? 32 : template.getPaperWidth().getCharactersPerLine();
 
         // ============ 店铺名称（简化显示） ============
         content.append("<CB>").append(orderVO.getStoreName()).append("</CB><BR>");
@@ -361,10 +361,10 @@ public class PrintContentBuilder {
         for (RestaurantOrderVO.OrderItemVO item : items) {
             // 菜品信息
             String dishName = item.getDishName();
-            BigDecimal price = item.getPrice();
+            BigDecimal price = item.getUnitSellingPrice();
             Integer quantity = item.getQuantity();
-            BigDecimal itemTotal = item.getTotalPrice();
-            BigDecimal discountPrice = item.getDiscountPrice();
+            BigDecimal itemTotal = item.getLinePayableAmount();
+            BigDecimal discountPrice = item.getDiscountAmount();
             Integer isGift = item.getIsGift();
 
             // 格式化显示宽度

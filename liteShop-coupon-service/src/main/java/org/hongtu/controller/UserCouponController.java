@@ -41,14 +41,12 @@ public class UserCouponController {
                                  @RequestParam(defaultValue = "10") Integer pageSize,
                                  @RequestParam(defaultValue = "最近领取") String searchKey,
                                  @RequestParam(required = false) Integer status) {
-        try {
+        
             // 获取当前登录用户ID
             Long userId = StpUtil.getLoginIdAsLong();
             // 获取用户优惠券列表
             return userCouponService.getUserCoupons(currentPage, pageSize, searchKey, userId, CouponStatusEnum.getByCode(status));
-        } catch (Exception e) {
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**

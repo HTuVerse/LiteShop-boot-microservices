@@ -30,7 +30,10 @@ public class CouponRabbitConfig {
         // 强制声明交换机、队列和绑定
         try {
             DirectExchange exchange = new DirectExchange(RabbitMQConstants.Coupon.EXCHANGE, true, false);
-            Queue issueQueue = QueueBuilder.durable(RabbitMQConstants.Coupon.ISSUE_QUEUE).build();
+            Queue issueQueue = QueueBuilder.durable(RabbitMQConstants.Coupon.ISSUE_QUEUE)
+                    .deadLetterExchange(RabbitMQConstants.Coupon.DEAD_LETTER_EXCHANGE)
+                    .deadLetterRoutingKey(RabbitMQConstants.Coupon.ISSUE_DEAD_KEY)
+                    .build();
             Binding issueBinding = BindingBuilder.bind(issueQueue).to(exchange).with(RabbitMQConstants.Coupon.ISSUE_KEY);
             
             amqpAdmin.declareExchange(exchange);
@@ -57,7 +60,27 @@ public class CouponRabbitConfig {
      */
     @Bean
     public Queue couponIssueQueue() {
-        return QueueBuilder.durable(RabbitMQConstants.Coupon.ISSUE_QUEUE).build();
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.ISSUE_QUEUE)
+                .deadLetterExchange(RabbitMQConstants.Coupon.DEAD_LETTER_EXCHANGE)
+                .deadLetterRoutingKey(RabbitMQConstants.Coupon.ISSUE_DEAD_KEY)
+                .build();
+    }
+
+    @Bean
+    public DirectExchange couponDeadLetterExchange() {
+        return new DirectExchange(RabbitMQConstants.Coupon.DEAD_LETTER_EXCHANGE, true, false);
+    }
+
+    @Bean
+    public Queue couponIssueDeadQueue() {
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.ISSUE_DEAD_QUEUE).build();
+    }
+
+    @Bean
+    public Binding bindingCouponIssueDeadQueue(
+            @Qualifier("couponIssueDeadQueue") Queue queue,
+            @Qualifier("couponDeadLetterExchange") DirectExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with(RabbitMQConstants.Coupon.ISSUE_DEAD_KEY);
     }
 
     /**
@@ -104,4 +127,4 @@ public class CouponRabbitConfig {
                                            @Qualifier("couponExchange") DirectExchange exchange) {
         return BindingBuilder.bind(queue).to(exchange).with(RabbitMQConstants.Coupon.COUNT_QUERY_KEY);
     }
-} 
+}

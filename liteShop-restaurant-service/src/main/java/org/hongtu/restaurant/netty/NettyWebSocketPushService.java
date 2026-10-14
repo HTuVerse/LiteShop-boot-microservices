@@ -26,6 +26,8 @@ public class NettyWebSocketPushService {
 
     @Resource
     private NettyChannelManager channelManager;
+    @Resource
+    private ClusterWebSocketBroadcaster clusterBroadcaster;
 
     /**
      * 推送新订单创建消息
@@ -49,7 +51,7 @@ public class NettyWebSocketPushService {
         );
         message.setMsg(userName + " 创建了新订单");
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送订单创建消息: sessionNo={}, orderId={}", sessionNo, order.getId());
     }
 
@@ -64,7 +66,7 @@ public class NettyWebSocketPushService {
                 "新订单创建"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送订单创建消息: sessionNo={}, orderId={}", sessionNo, orderVO.getId());
     }
 
@@ -79,7 +81,7 @@ public class NettyWebSocketPushService {
                 "订单已更新"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
     }
 
     /**
@@ -92,7 +94,7 @@ public class NettyWebSocketPushService {
                 sessionNo,
                 "订单已支付"
         );
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
     }
 
     /**
@@ -112,7 +114,7 @@ public class NettyWebSocketPushService {
                 "订单支付成功"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送订单支付成功通知: sessionNo={}, orderId={}, pickupCode={}", sessionNo, orderId, pickupCode);
     }
 
@@ -132,7 +134,7 @@ public class NettyWebSocketPushService {
                 "订单已取消"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送订单取消消息: sessionNo={}, orderId={}", sessionNo, orderId);
     }
 
@@ -152,7 +154,7 @@ public class NettyWebSocketPushService {
                 "会话统计已更新"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
     }
 
     /**
@@ -171,7 +173,7 @@ public class NettyWebSocketPushService {
                 "会话已结束"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送会话结束消息: sessionNo={}, paidAmount={}", sessionNo, paidAmount);
     }
 
@@ -190,7 +192,7 @@ public class NettyWebSocketPushService {
                 title
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
     }
 
     /**
@@ -208,7 +210,7 @@ public class NettyWebSocketPushService {
                 userName + " 加入了餐桌"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送用户加入消息: sessionNo={}, userName={}", sessionNo, userName);
     }
 
@@ -227,7 +229,7 @@ public class NettyWebSocketPushService {
                 userName + " 离开了餐桌"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送用户离开消息: sessionNo={}, userName={}", sessionNo, userName);
     }
 
@@ -259,7 +261,7 @@ public class NettyWebSocketPushService {
 
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送购物车商品添加: sessionNo={}, dishName={}", sessionNo, cartItem.getDishName());
     }
 
@@ -274,7 +276,7 @@ public class NettyWebSocketPushService {
                 "购物车商品已更新"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送购物车商品更新: sessionNo={}, cartItemId={}", sessionNo, cartItem.getCartItemId());
     }
 
@@ -293,7 +295,7 @@ public class NettyWebSocketPushService {
                 "购物车商品已移除"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送购物车商品移除: sessionNo={}, cartItemId={}", sessionNo, cartItemId);
     }
 
@@ -312,7 +314,7 @@ public class NettyWebSocketPushService {
                 "购物车已清空"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
         log.info("推送购物车清空: sessionNo={}", sessionNo);
     }
 
@@ -327,7 +329,7 @@ public class NettyWebSocketPushService {
                 "就餐人数已更新"
         );
 
-        channelManager.sendToSession(sessionNo, message);
+        clusterBroadcaster.broadcast(sessionNo, message);
     }
 }
 

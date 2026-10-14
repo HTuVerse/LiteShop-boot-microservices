@@ -23,8 +23,11 @@ public class StoreDataPermissionHandler implements MultiDataPermissionHandler {
 
     private static final Map<String, String> STORE_COLUMNS = Map.of(
             "store_info", "id",
-            "dish_category", "store_id",
-            "dish", "store_id",
+            // 菜品和分类是租户级主数据，门店边界由 store_dish 关联承担。
+            "store_dish", "store_id",
+            "store_menu_policy", "store_id",
+            "menu_change_record", "store_id",
+            "store_group_member", "store_id",
             "table_info", "store_id",
             "table_session", "store_id",
             "restaurant_order", "store_id",

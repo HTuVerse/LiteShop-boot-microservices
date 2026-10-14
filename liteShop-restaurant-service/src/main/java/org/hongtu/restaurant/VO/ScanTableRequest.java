@@ -21,6 +21,9 @@ public class ScanTableRequest implements Serializable {
      */
     private Long tableId;
 
+    /** 服务端为桌台二维码签发的能力票据，匿名扫码时必填。 */
+    private String scanToken;
+
     /** 管理端办理预约到店时传入。 */
     private Long reservationId;
 

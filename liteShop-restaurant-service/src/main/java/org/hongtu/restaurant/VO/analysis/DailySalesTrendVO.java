@@ -29,12 +29,7 @@ public class DailySalesTrendVO {
     private Integer orderCount;
 
     /**
-     * 平均客单价
+     * 单均消费
      */
     private BigDecimal avgOrderAmount;
-
-    /**
-     * 当日利润
-     */
-    private BigDecimal profit;
 }

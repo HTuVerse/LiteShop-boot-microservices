@@ -2,17 +2,19 @@ package org.hongtu.restaurant.service.impl;
 
 import cn.hutool.crypto.SecureUtil;
 import com.alibaba.fastjson.JSON;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.restaurant.DAO.DishCategoryMapper;
-import org.hongtu.restaurant.DAO.DishMapper;
-import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.DTO.DishCategory;
+import org.hongtu.restaurant.DTO.TableSession;
+import org.hongtu.restaurant.VO.DishVO;
 import org.hongtu.restaurant.VO.cart.AddCartItemRequest;
 import org.hongtu.restaurant.VO.cart.CartItemVO;
 import org.hongtu.restaurant.VO.cart.UpdateCartItemRequest;
 import org.hongtu.restaurant.service.SharedCartService;
+import org.hongtu.restaurant.service.DishService;
 import org.hongtu.restaurant.service.TableSessionService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.utils.RedisCache;
@@ -48,7 +50,7 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     );
 
     @Resource
-    private DishMapper dishMapper;
+    private DishService dishService;
     @Resource
     private DishCategoryMapper dishCategoryMapper;
     @Resource
@@ -60,10 +62,10 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     public CartItemVO addItem(AddCartItemRequest request) {
         validateAddRequest(request);
         tableSessionService.validateSession(request.getSessionNo());
-        Dish dish = dishMapper.selectById(request.getDishId());
-        if (dish == null) {
-            throw new BusinessException("菜品不存在");
-        }
+        TableSession session = tableSessionService.getOne(new LambdaQueryWrapper<TableSession>()
+                .eq(TableSession::getSessionNo, request.getSessionNo()));
+        if (session == null) throw new BusinessException("桌位会话不存在");
+        DishVO dish = dishService.getEffectiveDish(request.getDishId(), session.getStoreId(), true);
 
         String cartKey = cartKey(request.getSessionNo());
         String cartItemId = generateCartItemId(request.getDishId(), request.getSpecText());
@@ -78,7 +80,7 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
                 return existingItem;
             }
 
-            BigDecimal basePrice = dish.getPrice() != null ? dish.getPrice() : dish.getOriginalPrice();
+            BigDecimal basePrice = dish.getDisplayPrice();
             if (basePrice == null || basePrice.signum() < 0) {
                 throw new BusinessException("菜品价格配置异常");
             }

@@ -30,13 +30,15 @@ BEGIN
   INSERT INTO tmp_liteshop_menu_seed VALUES
     (60, '工作台', 'common:console', '', 'dashboard/console/index', '/dashboard/console', 1, 'ri:dashboard-line', 0),
     (61, '个人中心', 'common:profile', '', 'system/user-center/index', '/system/user-center', 99, 'ri:user-line', 1),
+    (86, 'AI店长', 'ai:manager:menu', '', 'Layout', '/ai-manager', 55, 'ri:robot-line', 0),
     (24, '会员等级', 'system:level', 'system:menu', 'system/level/index', '/system/level', 24, 'ri:vip-crown-line', 0),
     (70, '运营工具', 'operations:menu', '', 'Layout', '/operations', 60, 'ri:store-2-line', 0),
     (71, '直接收银', 'operations:direct-cashier', 'operations:menu', 'cashier/workspace/index', '/operations/direct-cashier', 10, 'ri:cash-line', 0),
     (72, '餐桌收银', 'operations:table-cashier', 'operations:menu', 'cashier/tableCashier/index', '/operations/table-cashier', 20, 'ri:restaurant-line', 0),
     (74, '核销记录', 'operations:verify-record', 'operations:menu', 'activity/record/index', '/operations/verify-record', 40, 'ri:coupon-line', 0),
     (75, '打印模板', 'operations:templates', 'operations:menu', 'device/template/index', '/operations/templates', 50, 'ri:printer-line', 0),
-    (76, '经营助手', 'operations:assistant', 'operations:menu', 'operations/assistant/index', '/operations/assistant', 60, 'ri:robot-line', 0);
+    (76, '经营洞察', 'operations:assistant', 'ai:manager:menu', 'operations/assistant/index', '/operations/assistant', 10, 'ri:sparkling-line', 0),
+    (77, '经营顾问', 'operations:assistant:advisor', 'ai:manager:menu', 'operations/advisor/index', '/operations/advisor', 20, 'ri:chat-ai-line', 0);
 
   START TRANSACTION;
   -- 同权限编码视为已有配置，不覆盖、不重新授予已撤销的角色权限。

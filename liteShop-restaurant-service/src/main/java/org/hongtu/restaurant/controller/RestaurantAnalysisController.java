@@ -1,6 +1,5 @@
 package org.hongtu.restaurant.controller;
 
-import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaMode;
 import jakarta.annotation.Resource;
@@ -47,7 +46,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -58,8 +57,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -76,21 +75,18 @@ public class RestaurantAnalysisController {
             SalesOverviewVO overview = analysisService.getSalesOverview(storeId, days, startDate, endDate);
             return Result.success("查询销售概览成功", overview);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询销售概览失败：" + e.getMessage());
-        }
+        
     }
 
     /**
      * 获取销售趋势图数据
-     * 展示近N天的每日销售额和利润折线图
+     * 展示近N天的每日净实收、有效订单数和单均消费趋势
      *
      * @param storeId   门店ID（必填）
      * @param days      天数，默认30天（可选）。表示包括今天在内的最近N天，例如：days=1查询当天，days=7查询今天+过去6天
      * @param startDate 开始日期（可选，格式：yyyy-MM-dd）。如果提供了startDate和endDate，则忽略days参数
      * @param endDate   结束日期（可选，格式：yyyy-MM-dd）。如果提供了startDate和endDate，则忽略days参数
-     * @return 每日销售趋势列表（包含每日利润）
+     * @return 每日销售趋势列表
      *
      * 示例1：GET /restaurant-analysis/sales/trend?storeId=1&days=30
      * 示例2：GET /restaurant-analysis/sales/trend?storeId=1&startDate=2025-01-01&endDate=2025-01-31
@@ -102,7 +98,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -113,8 +109,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -131,10 +127,7 @@ public class RestaurantAnalysisController {
             List<DailySalesTrendVO> trendList = analysisService.getSalesTrend(storeId, days, startDate, endDate);
             return Result.success("查询销售趋势成功", trendList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询销售趋势失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -157,7 +150,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -168,8 +161,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -186,10 +179,7 @@ public class RestaurantAnalysisController {
             List<TimePeriodSalesVO> periodList = analysisService.getTimePeriodSales(storeId, days, startDate, endDate);
             return Result.success("查询时段销售分布成功", periodList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询时段销售分布失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -212,7 +202,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -223,8 +213,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -241,10 +231,7 @@ public class RestaurantAnalysisController {
             OrderAnalysisVO analysis = analysisService.getOrderAnalysis(storeId, days, startDate, endDate);
             return Result.success("查询订单分析成功", analysis);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询订单分析失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -260,14 +247,14 @@ public class RestaurantAnalysisController {
      * 示例1：GET /restaurant-analysis/order/status-distribution?storeId=1&days=30
      * 示例2：GET /restaurant-analysis/order/status-distribution?storeId=1&startDate=2025-01-01&endDate=2025-01-31
      */
-    @GetMapping("/order/status-distribution")
+    @Deprecated
     @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<List<OrderStatusDistributionVO>> getOrderStatusDistribution(
             @RequestParam Long storeId,
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -278,8 +265,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -297,10 +284,7 @@ public class RestaurantAnalysisController {
                     storeId, days, startDate, endDate);
             return Result.success("查询订单状态分布成功", distributionList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询订单状态分布失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -323,7 +307,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -334,8 +318,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -353,10 +337,7 @@ public class RestaurantAnalysisController {
                     storeId, days, startDate, endDate);
             return Result.success("查询取消原因分析成功", reasonList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询取消原因分析失败：" + e.getMessage());
-        }
+        
     }
 
     // ==================== 菜品与分类分析接口 ====================
@@ -383,7 +364,7 @@ public class RestaurantAnalysisController {
             @RequestParam(defaultValue = "10") Integer topN,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -400,8 +381,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -419,10 +400,7 @@ public class RestaurantAnalysisController {
                     storeId, days, topN, startDate, endDate);
             return Result.success("查询热销菜品排行成功", topDishes);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询热销菜品排行失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -439,7 +417,7 @@ public class RestaurantAnalysisController {
      * 示例1：GET /restaurant-analysis/dish/sales-amount-ranking?storeId=1&days=30&topN=10
      * 示例2：GET /restaurant-analysis/dish/sales-amount-ranking?storeId=1&startDate=2025-01-01&endDate=2025-01-31&topN=10
      */
-    @GetMapping("/dish/sales-amount-ranking")
+    @Deprecated
     @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<List<DishSalesRankingVO>> getDishSalesAmountRanking(
             @RequestParam Long storeId,
@@ -447,7 +425,7 @@ public class RestaurantAnalysisController {
             @RequestParam(defaultValue = "10") Integer topN,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -464,8 +442,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -483,10 +461,7 @@ public class RestaurantAnalysisController {
                     storeId, days, topN, startDate, endDate);
             return Result.success("查询菜品销售额排行成功", rankingList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询菜品销售额排行失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -511,7 +486,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -525,8 +500,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -543,10 +518,7 @@ public class RestaurantAnalysisController {
             List<DishSalesTrendVO> trendList = analysisService.getDishSalesTrend(storeId, dishId, days, startDate, endDate);
             return Result.success("查询菜品销售趋势成功", trendList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询菜品销售趋势失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -570,7 +542,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -581,8 +553,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
                 // 检查日期范围是否至少7天
                 long daysBetween = java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) + 1;
@@ -607,15 +579,12 @@ public class RestaurantAnalysisController {
             List<SlowMovingDishVO> slowMovingList = analysisService.getSlowMovingDishes(storeId, days, startDate, endDate);
             return Result.success("查询滞销菜品成功", slowMovingList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询滞销菜品失败：" + e.getMessage());
-        }
+        
     }
 
     /**
      * 获取菜品分类贡献分析
-     * 分析各分类的销售额、销量、利润占比
+     * 分析各分类的净销售额和付费销量占比
      *
      * @param storeId   门店ID（必填）
      * @param days      统计天数，默认30天（可选）。表示包括今天在内的最近N天，例如：days=1查询当天，days=7查询今天+过去6天
@@ -633,7 +602,7 @@ public class RestaurantAnalysisController {
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -644,8 +613,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -663,10 +632,7 @@ public class RestaurantAnalysisController {
                     storeId, days, startDate, endDate);
             return Result.success("查询分类贡献分析成功", categoryList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询分类贡献分析失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -683,7 +649,7 @@ public class RestaurantAnalysisController {
      * 示例1：GET /restaurant-analysis/dish/profit-rate-ranking?storeId=1&days=30&topN=10
      * 示例2：GET /restaurant-analysis/dish/profit-rate-ranking?storeId=1&startDate=2025-01-01&endDate=2025-01-31&topN=10
      */
-    @GetMapping("/dish/profit-rate-ranking")
+    @Deprecated
     @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<List<DishSalesRankingVO>> getDishProfitRateRanking(
             @RequestParam Long storeId,
@@ -691,7 +657,7 @@ public class RestaurantAnalysisController {
             @RequestParam(defaultValue = "10") Integer topN,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -708,8 +674,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -727,10 +693,7 @@ public class RestaurantAnalysisController {
                     storeId, days, topN, startDate, endDate);
             return Result.success("查询菜品利润率排行成功", profitRateList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询菜品利润率排行失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -750,14 +713,14 @@ public class RestaurantAnalysisController {
      * 示例1：GET /restaurant-analysis/dish/profit-matrix?storeId=1&days=30
      * 示例2：GET /restaurant-analysis/dish/profit-matrix?storeId=1&startDate=2025-01-01&endDate=2025-01-31
      */
-    @GetMapping("/dish/profit-matrix")
+    @Deprecated
     @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<List<DishProfitMatrixVO>> getDishProfitMatrix(
             @RequestParam Long storeId,
             @RequestParam(required = false, defaultValue = "30") Integer days,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -768,8 +731,8 @@ public class RestaurantAnalysisController {
                 if (startDate.isAfter(endDate)) {
                     return Result.error("开始日期不能晚于结束日期");
                 }
-                if (startDate.isAfter(LocalDate.now())) {
-                    return Result.error("开始日期不能晚于当前日期");
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
                 }
             } else if (startDate != null || endDate != null) {
                 return Result.error("开始日期和结束日期必须同时提供");
@@ -787,10 +750,7 @@ public class RestaurantAnalysisController {
                     storeId, days, startDate, endDate);
             return Result.success("查询菜品利润矩阵成功", matrixList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询菜品利润矩阵失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -803,12 +763,12 @@ public class RestaurantAnalysisController {
      *
      * 示例：GET /restaurant-analysis/sales/monthly-profit?storeId=1&year=2025
      */
-    @GetMapping("/sales/monthly-profit")
+    @Deprecated
     @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<List<MonthlySalesProfitVO>> getMonthlySalesProfit(
             @RequestParam Long storeId,
             @RequestParam Integer year) {
-        try {
+        
             // 参数校验
             if (storeId == null) {
                 return Result.error("门店ID不能为空");
@@ -826,10 +786,42 @@ public class RestaurantAnalysisController {
             List<MonthlySalesProfitVO> monthlyList = analysisService.getMonthlySalesProfit(storeId, year);
             return Result.success("查询年度月度销售和利润成功", monthlyList);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return Result.error("查询年度月度销售和利润失败：" + e.getMessage());
-        }
+        
+    }
+
+    /**
+     * 获取加退菜统计。退菜数据以不可变事件日志为准。
+     */
+    @GetMapping("/dish/change-statistics")
+    @SaCheckPermission(value = {"restaurant:analysis"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<List<DishChangeStatisticsVO>> getDishChangeStatistics(
+            @RequestParam Long storeId,
+            @RequestParam(required = false, defaultValue = "30") Integer days,
+            @RequestParam(required = false, defaultValue = "1") Integer changeType,
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate startDate,
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
+        
+            if (storeId == null) {
+                return Result.error("门店ID不能为空");
+            }
+            if (startDate != null && endDate != null) {
+                if (startDate.isAfter(endDate)) {
+                    return Result.error("开始日期不能晚于结束日期");
+                }
+                if (endDate.isAfter(LocalDate.now())) {
+                    return Result.error("结束日期不能晚于当前日期");
+                }
+            } else if (startDate != null || endDate != null) {
+                return Result.error("开始日期和结束日期必须同时提供");
+            } else if (days == null || days <= 0 || days > 365) {
+                return Result.error("天数必须在1-365之间");
+            }
+            if (changeType != 1 && changeType != 2) {
+                return Result.error("统计类型只能是1-加菜或2-退菜");
+            }
+            return Result.success("查询加退菜统计成功",
+                    analysisService.getDishChangeStatistics(storeId, days, changeType, startDate, endDate));
+        
     }
 
 }

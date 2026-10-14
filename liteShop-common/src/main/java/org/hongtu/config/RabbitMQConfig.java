@@ -35,6 +35,8 @@ public class RabbitMQConfig {
     @Bean
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
         RabbitTemplate rabbitTemplate = new RabbitTemplate(connectionFactory);
+        // 强制路由失败返回生产者，避免交换机存在但路由键未绑定时仍收到 confirm ack。
+        rabbitTemplate.setMandatory(true);
         // 设置消息转换器
         rabbitTemplate.setMessageConverter(messageConverter());
         // 发送消息时自动携带当前租户ID，消费端由 TenantMqAdvice 恢复租户上下文

@@ -14,6 +14,7 @@ import org.hongtu.restaurant.VO.WsMessage;
 import org.hongtu.restaurant.enums.SessionStatusEnum;
 import org.hongtu.restaurant.enums.WsMessageTypeEnum;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -38,6 +39,12 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
     @Resource
     private TableSessionService tableSessionService;
 
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
+
+    @Resource
+    private ClusterWebSocketBroadcaster clusterBroadcaster;
+
     private final ObjectMapper objectMapper;
 
     public NettyWebSocketHandler(ObjectMapper objectMapper) {
@@ -54,14 +61,12 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
                     (WebSocketServerProtocolHandler.HandshakeComplete) evt;
 
             String uri = handshake.requestUri();
-            log.info("🔗 WebSocket 握手请求: uri={}", uri);
-
-            // WebSocket 直连 Netty 端口，不经过 HTTP 租户拦截器，租户ID必须显式传入。
+            // WebSocket 直连 Netty 端口，不经过 HTTP 租户拦截器，租户必须从签名票据中恢复。
             HandshakeParams params = extractHandshakeParams(uri);
             String sessionNo = params == null ? null : params.sessionNo();
 
             if (params == null) {
-                log.error("❌ WebSocket 缺少有效 tenantId/sessionNo，关闭连接: uri={}", uri);
+                log.error("WebSocket 缺少有效 sessionNo/token，关闭连接");
                 ctx.close();
                 return;
             }
@@ -81,11 +86,12 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
                 tableSessionService.increaseUserCount(sessionNo);
 
                 Map<String, Object> joinData = new HashMap<>();
-                joinData.put("currentUserCount", channelManager.getChannelCount(sessionNo));
+                joinData.put("currentUserCount",
+                        tableSessionService.getSessionDetailByNo(sessionNo).getCurrentUserCount());
                 joinData.put("sessionNo", sessionNo);
                 WsMessage<Map<String, Object>> joinMessage = WsMessage.create(
                         WsMessageTypeEnum.USER_JOIN.getCode(), joinData, sessionNo, "新用户加入");
-                channelManager.sendToSession(sessionNo, joinMessage);
+                clusterBroadcaster.broadcast(sessionNo, joinMessage);
 
                 log.info("✅ WebSocket 连接建立: tenantId={}, sessionNo={}, channelId={}, 在线人数={}",
                         params.tenantId(), sessionNo, ctx.channel().id().asShortText(),
@@ -121,8 +127,8 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
         String sessionNo = sessionKey == null ? null : sessionKey.sessionNo();
         String message = frame.text();
 
-        log.info("📨 收到消息: sessionNo={}, channelId={}, message={}",
-                sessionNo, ctx.channel().id().asShortText(), message);
+        log.info("收到消息: sessionNo={}, channelId={}, bytes={}",
+                sessionNo, ctx.channel().id().asShortText(), message == null ? 0 : message.length());
 
         try {
             // 解析消息
@@ -165,11 +171,12 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
                 tableSessionService.decreaseUserCount(sessionNo);
 
                 Map<String, Object> leaveData = new HashMap<>();
-                leaveData.put("currentUserCount", channelManager.getChannelCount(sessionNo));
+                leaveData.put("currentUserCount",
+                        tableSessionService.getSessionDetailByNo(sessionNo).getCurrentUserCount());
                 leaveData.put("sessionNo", sessionNo);
                 WsMessage<Map<String, Object>> leaveMessage = WsMessage.create(
                         WsMessageTypeEnum.USER_LEAVE.getCode(), leaveData, sessionNo, "用户离开");
-                channelManager.sendToSession(sessionNo, leaveMessage);
+                clusterBroadcaster.broadcast(sessionNo, leaveMessage);
 
                 log.info("❌ WebSocket 连接断开: tenantId={}, sessionNo={}, channelId={}, 剩余在线人数={}",
                         sessionKey.tenantId(), sessionNo, ctx.channel().id().asShortText(),
@@ -194,21 +201,23 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
         ctx.close();
     }
 
-    /** URI: /ws/table-session?tenantId={tenantId}&sessionNo={sessionNo} */
+    /** URI: /ws/table-session?sessionNo={sessionNo}&token={signedToken} */
     private HandshakeParams extractHandshakeParams(String uri) {
         if (uri == null || uri.isBlank()) {
             return null;
         }
         QueryStringDecoder decoder = new QueryStringDecoder(uri);
-        String tenantValue = firstQueryValue(decoder, "tenantId");
         String sessionNo = firstQueryValue(decoder, "sessionNo");
-        if (tenantValue == null || sessionNo == null || sessionNo.isBlank()) {
+        String token = firstQueryValue(decoder, "token");
+        if (token == null || sessionNo == null || sessionNo.isBlank()) {
             return null;
         }
         try {
-            long tenantId = Long.parseLong(tenantValue);
-            return tenantId > 0 ? new HandshakeParams(tenantId, sessionNo) : null;
-        } catch (NumberFormatException ignored) {
+            TableSessionTokenService.Claims claims = tableSessionTokenService.verify(token);
+            return claims.sessionNo().equals(sessionNo)
+                    ? new HandshakeParams(claims.tenantId(), sessionNo)
+                    : null;
+        } catch (RuntimeException ignored) {
             return null;
         }
     }

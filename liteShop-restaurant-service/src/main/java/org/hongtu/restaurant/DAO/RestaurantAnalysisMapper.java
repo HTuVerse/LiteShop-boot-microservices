@@ -54,18 +54,6 @@ public interface RestaurantAnalysisMapper {
                                                @Param("endTime") String endTime);
 
     /**
-     * 查询订单状态分布
-     *
-     * @param storeId   门店ID
-     * @param startTime 开始时间
-     * @param endTime   结束时间
-     * @return 订单状态分布列表
-     */
-    List<OrderStatusDistributionVO> getOrderStatusDistribution(@Param("storeId") Long storeId,
-                                                               @Param("startTime") String startTime,
-                                                               @Param("endTime") String endTime);
-
-    /**
      * 查询订单取消原因分析
      *
      * @param storeId   门店ID
@@ -105,19 +93,17 @@ public interface RestaurantAnalysisMapper {
                                                   @Param("endTime") String endTime,
                                                   @Param("limit") Integer limit);
 
-    /**
-     * 查询某个菜品的销售趋势
-     *
-     * @param storeId   门店ID
-     * @param dishId    菜品ID
-     * @param startDate 开始日期
-     * @param endDate   结束日期
-     * @return 菜品销售趋势列表
-     */
-    List<Map<String, Object>> getDishSalesTrendByDishId(@Param("storeId") Long storeId,
-                                                        @Param("dishId") Long dishId,
-                                                        @Param("startDate") String startDate,
-                                                        @Param("endDate") String endDate);
+    /** 查询指定菜品每日净销售趋势。 */
+    List<DishSalesTrendVO> getDishSalesTrendByDishId(@Param("storeId") Long storeId,
+                                                      @Param("dishId") Long dishId,
+                                                      @Param("startDate") String startDate,
+                                                      @Param("endDate") String endDate);
+
+    /** 查询加退菜统计。 */
+    List<DishChangeStatisticsVO> getDishChangeStatistics(@Param("storeId") Long storeId,
+                                                          @Param("startTime") String startTime,
+                                                          @Param("endTime") String endTime,
+                                                          @Param("changeType") Integer changeType);
 
     /**
      * 查询滞销菜品数据
@@ -167,13 +153,39 @@ public interface RestaurantAnalysisMapper {
                                   @Param("startTime") String startTime,
                                   @Param("endTime") String endTime);
 
-    /**
-     * 查询年度月度销售额和利润数据
-     *
-     * @param storeId 门店ID
-     * @param year    年份
-     * @return 每月销售额和利润列表
-     */
-    List<MonthlySalesProfitVO> getMonthlySalesProfit(@Param("storeId") Long storeId,
-                                                     @Param("year") Integer year);
+    /** 匿名会员经营分群，只返回人数和订单聚合，不返回用户标识。 */
+    Map<String, Object> getAiMemberAggregate(@Param("storeId") Long storeId,
+                                              @Param("startDate") String startDate,
+                                              @Param("endDate") String endDate);
+
+    /** 最近30天堂食、自提等渠道经营表现。 */
+    List<Map<String, Object>> getAiChannelPerformance(@Param("storeId") Long storeId,
+                                                       @Param("startDate") String startDate,
+                                                       @Param("endDate") String endDate);
+
+    /** 库存跟踪菜品的低库存和售罄风险，仅返回有限样本。 */
+    List<Map<String, Object>> getAiInventoryRisks(@Param("storeId") Long storeId,
+                                                   @Param("lowStock") Integer lowStock,
+                                                   @Param("limit") Integer limit);
+
+    /** 桌台翻台和平均就餐时长聚合。 */
+    Map<String, Object> getAiTableEfficiency(@Param("storeId") Long storeId,
+                                              @Param("startDate") String startDate,
+                                              @Param("endDate") String endDate);
+
+    /** 优惠与优惠券订单的经营成本代理指标。 */
+    Map<String, Object> getAiMarketingPerformance(@Param("storeId") Long storeId,
+                                                   @Param("startDate") String startDate,
+                                                   @Param("endDate") String endDate);
+
+    /** 订单取消率等经营健康指标。 */
+    Map<String, Object> getAiOrderHealth(@Param("storeId") Long storeId,
+                                          @Param("startDate") String startDate,
+                                          @Param("endDate") String endDate);
+
+    /** 退菜数量和金额作为损耗代理指标，并明确不等同于实际盘点损耗。 */
+    Map<String, Object> getAiWasteProxy(@Param("storeId") Long storeId,
+                                         @Param("startDate") String startDate,
+                                         @Param("endDate") String endDate);
+
 }

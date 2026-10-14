@@ -3,12 +3,10 @@ package org.hongtu.saas.controller;
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
-import org.hongtu.api.dto.EntitlementMutationDTO;
 import org.hongtu.saas.service.SaasEntitlementService;
-import org.hongtu.tenant.TenantContext;
-import org.springframework.web.bind.annotation.*;
-
-import java.math.BigDecimal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/saas/entitlements")
@@ -16,16 +14,6 @@ import java.math.BigDecimal;
 public class SaasEntitlementController {
     @Resource private SaasEntitlementService service;
 
+    /** 当前租户只读配额。配额变更只允许内部接口按原消费事件释放。 */
     @GetMapping("/me") public Result<?> current() { return Result.success(service.resolveCurrent()); }
-    @GetMapping("/check") public Result<?> check(@RequestParam String featureCode,
-                                                 @RequestParam(defaultValue = "0") BigDecimal amount,
-                                                 @RequestParam(required = false) BigDecimal currentUsage) {
-        return Result.success(service.checkQuota(TenantContext.getTenantId(), featureCode, currentUsage, amount));
-    }
-    @PostMapping("/consume") public Result<?> consume(@RequestBody EntitlementMutationDTO dto) {
-        return Result.success(service.consume(TenantContext.getTenantId(), dto.getFeatureCode(), dto.getAmount(), dto.getIdempotencyKey()));
-    }
-    @PostMapping("/release") public Result<?> release(@RequestBody EntitlementMutationDTO dto) {
-        return Result.success(service.release(TenantContext.getTenantId(), dto.getFeatureCode(), dto.getAmount(), dto.getIdempotencyKey()));
-    }
 }

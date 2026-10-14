@@ -1,6 +1,11 @@
 spring:
   datasource:
-    url: ${MYSQL_URL_CONFIG:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_config?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+    url: ${MYSQL_URL_CONFIG:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_config?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
 
 lite-shop:
   config-loaded: true
+
+liteshop:
+  credentials:
+    # AI Key 与租户支付私钥共用同一套 AES-GCM 凭据加密器；生产环境必须固定配置且妥善备份。
+    encryption-key: ${CONFIG_CREDENTIAL_ENCRYPTION_KEY:liteShop_config_credential_encryption_key}

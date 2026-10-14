@@ -45,6 +45,34 @@ class StoreQuotaEnforcementTest {
     }
 
     @Test
+    void technicalQuotaReasonIsConvertedToActionableMessage() {
+        Fixture fixture = fixture();
+        when(fixture.mapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(fixture.user.consumeEntitlement(any())).thenReturn(Result.success(new EntitlementDecisionDTO()
+                .setAllowed(false).setFeatureCode("store_count").setReason("QUOTA_EXCEEDED")));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> fixture.service.addStore(new StoreInfo().setStoreCode("S-QUOTA")));
+
+        assertEquals(SaasErrorCode.QUOTA_EXCEEDED, error.getCode());
+        assertEquals("门店数量已达到当前套餐上限，请升级套餐或购买额外门店", error.getMessage());
+    }
+
+    @Test
+    void disabledStoreEntitlementKeepsFeatureDisabledErrorCode() {
+        Fixture fixture = fixture();
+        when(fixture.mapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(fixture.user.consumeEntitlement(any())).thenReturn(Result.success(new EntitlementDecisionDTO()
+                .setAllowed(false).setFeatureCode("store_count").setReason("FEATURE_DISABLED")));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> fixture.service.addStore(new StoreInfo().setStoreCode("S-NO-PLAN")));
+
+        assertEquals(SaasErrorCode.FEATURE_DISABLED, error.getCode());
+        assertEquals("当前套餐未开通门店额度，请先分配已发布的套餐版本", error.getMessage());
+    }
+
+    @Test
     void failedStoreInsertCompensatesReservedQuota() {
         Fixture fixture = fixture();
         when(fixture.mapper.selectCount(any(Wrapper.class))).thenReturn(0L);
@@ -70,6 +98,7 @@ class StoreQuotaEnforcementTest {
 
         verify(fixture.user).releaseEntitlement(argThat(request ->
                 "store:delete:9".equals(request.getIdempotencyKey())
+                        && "store:create:9".equals(request.getConsumeKey())
                         && java.math.BigDecimal.ONE.compareTo(request.getAmount()) == 0));
     }
 

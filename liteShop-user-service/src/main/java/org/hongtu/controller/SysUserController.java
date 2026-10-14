@@ -9,6 +9,8 @@ import cn.hutool.core.util.StrUtil;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import org.hongtu.DTO.SysUser;
+import org.hongtu.DTO.UserLevel;
+import org.hongtu.DAO.UserLevelMapper;
 import org.hongtu.Result.Result;
 import org.hongtu.VO.CashierMemberVO;
 import org.hongtu.enums.StatusEnum;
@@ -16,6 +18,8 @@ import org.hongtu.service.SysUserService;
 import org.hongtu.utils.IpUtil;
 import org.hongtu.utils.hongTuUtil;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  *用户
@@ -72,6 +76,22 @@ public class SysUserController {
         }
         return adminLoginSecurity.authenticate(account, captchaId, captchaCode,
                 () -> sysUserService.adminLogin(account, password));
+    }
+
+    /**
+     * 管理端动态口令二次验证，验证成功后继续商户选择或签发正式 Token。
+     */
+    @PostMapping("/admin/verify-totp")
+    @SaIgnore
+    public Result verifyAdminTotp(@RequestParam("challengeTicket") String challengeTicket,
+                                  @RequestParam("totpCode") String totpCode) {
+        if (StrUtil.isBlank(challengeTicket)) {
+            return Result.error("二次验证凭证不能为空");
+        }
+        if (StrUtil.isBlank(totpCode) || !totpCode.matches("\\d{6}")) {
+            return Result.error("请输入 6 位动态口令");
+        }
+        return sysUserService.verifyAdminTotp(challengeTicket, totpCode);
     }
 
     /**
@@ -190,6 +210,8 @@ public class SysUserController {
 
     @Resource
     private org.hongtu.DAO.SysUserMapper recipientMapper;
+    @Resource
+    private UserLevelMapper cashierLevelMapper;
 
     /** 收银台按手机号精确加载会员，只返回结算所需字段。 */
     @GetMapping("/cashier/member")
@@ -218,6 +240,9 @@ public class SysUserController {
         result.setPhone(user.getPhone());
         result.setAvatar(user.getAvatar());
         result.setLevel(user.getLevel());
+        UserLevel level = user.getLevel() == null ? null
+                : cashierLevelMapper.getLevelByLevelCode(user.getLevel());
+        result.setLevelName(level == null ? null : level.getLevelName());
         result.setPoints(user.getPoints());
         result.setSurplusMoney(user.getSurplusMoney());
         return Result.success(result);
@@ -257,13 +282,13 @@ public class SysUserController {
     /**
      * 管理员重置用户密码
      * @param userId 用户ID
-     * @param newPassword 新密码（可选，不传则重置为默认密码123456）
+     * @param newPassword 管理员设置的新临时密码
      * @return 重置结果
      */
     @PostMapping("/admin/resetPassword")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:reset-password"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result adminResetPassword(@RequestParam Long userId,
-                                     @RequestParam(required = false) String newPassword) {
+                                     @RequestParam String newPassword) {
         if (userId == null) {
             return Result.error("用户ID不能为空");
         }

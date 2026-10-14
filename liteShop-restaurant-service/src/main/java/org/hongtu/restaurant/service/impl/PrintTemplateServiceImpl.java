@@ -8,6 +8,7 @@ import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.restaurant.DAO.PrintTemplateMapper;
 import org.hongtu.restaurant.DTO.PrintTemplate;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.service.PrintTemplateService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
 import jakarta.annotation.Resource;
@@ -246,7 +247,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
     private PrintTemplate createBuiltInDefaultTemplate() {
         PrintTemplate template = new PrintTemplate();
         template.setTemplateName("内置默认模板");
-        template.setPaperWidth("58mm");
+        template.setPaperWidth(PaperWidthEnum.MM_58);
         template.setShowLogo(StatusEnum.DISABLED);
         template.setStoreNameStyle(2); // 加粗+居中
         template.setShowAddress(StatusEnum.NORMAL);

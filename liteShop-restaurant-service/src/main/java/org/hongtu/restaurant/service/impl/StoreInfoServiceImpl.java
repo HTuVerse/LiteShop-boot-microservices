@@ -110,7 +110,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
             }
             return true;
         } catch (RuntimeException error) {
-            compensateQuota("store:create:rollback:" + storeInfo.getId(), BigDecimal.ONE, error);
+            compensateQuota("store:create:" + storeInfo.getId(), "store:create:rollback:" + storeInfo.getId(), error);
             throw error;
         }
     }
@@ -164,7 +164,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         // 例如：检查是否有未完成的订单等
 
         boolean removed = this.removeById(id);
-        if (removed) releaseQuota("store:delete:" + id, BigDecimal.ONE);
+        if (removed) releaseQuota("store:create:" + id, "store:delete:" + id);
         return removed;
     }
 
@@ -188,10 +188,9 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
 
         boolean removed = this.removeByIds(normalizedIds);
         if (removed) {
-            String idsKey = normalizedIds.stream().sorted().map(String::valueOf)
-                    .collect(java.util.stream.Collectors.joining("-"));
-            String digest = DigestUtils.md5DigestAsHex(idsKey.getBytes(StandardCharsets.UTF_8));
-            releaseQuota("store:delete-batch:" + digest, BigDecimal.valueOf(normalizedIds.size()));
+            for (Long id : normalizedIds) {
+                releaseQuota("store:create:" + id, "store:delete:" + id);
+            }
         }
         return removed;
     }
@@ -219,18 +218,41 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
     private void reserveQuota(String idempotencyKey, BigDecimal amount) {
         EntitlementDecisionDTO decision = invokeEntitlement(true, idempotencyKey, amount);
         if (!decision.isAllowed()) {
-            throw new BusinessException(SaasErrorCode.QUOTA_EXCEEDED,
-                    StringUtils.hasText(decision.getReason()) ? decision.getReason() : "门店数量已达到当前套餐上限，请升级套餐或购买额外门店");
+            String reason = decision.getReason() == null ? "" : decision.getReason();
+            String message = switch (reason) {
+                case "FEATURE_DISABLED" -> "当前套餐未开通门店额度，请先分配已发布的套餐版本";
+                case "QUOTA_EXCEEDED" -> "门店数量已达到当前套餐上限，请升级套餐或购买额外门店";
+                default -> StringUtils.hasText(reason) ? reason
+                        : "门店数量已达到当前套餐上限，请升级套餐或购买额外门店";
+            };
+            int errorCode = "FEATURE_DISABLED".equals(reason)
+                    ? SaasErrorCode.FEATURE_DISABLED : SaasErrorCode.QUOTA_EXCEEDED;
+            throw new BusinessException(errorCode, message);
         }
     }
 
-    private void releaseQuota(String idempotencyKey, BigDecimal amount) {
-        invokeEntitlement(false, idempotencyKey, amount);
+    private void releaseQuota(String consumeKey, String refundKey) {
+        EntitlementMutationDTO request = new EntitlementMutationDTO();
+        request.setFeatureCode(SaasFeatureCode.STORE_COUNT);
+        request.setAmount(BigDecimal.ONE);
+        request.setConsumeKey(consumeKey);
+        request.setIdempotencyKey(refundKey);
+        Result<EntitlementDecisionDTO> response;
+        try {
+            response = userFeignClient.releaseEntitlement(request);
+        } catch (RuntimeException error) {
+            throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE,
+                    "套餐权益服务暂不可用，为防止超额本次操作已拒绝，请稍后重试", error);
+        }
+        if (response == null || !Result.CODE_SUCCESS.equals(response.getCode()) || response.getData() == null
+                || !response.getData().isAllowed()) {
+            throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE, "门店额度释放失败");
+        }
     }
 
-    private void compensateQuota(String idempotencyKey, BigDecimal amount, RuntimeException original) {
+    private void compensateQuota(String consumeKey, String refundKey, RuntimeException original) {
         try {
-            releaseQuota(idempotencyKey, amount);
+            releaseQuota(consumeKey, refundKey);
         } catch (RuntimeException compensationFailure) {
             original.addSuppressed(compensationFailure);
         }

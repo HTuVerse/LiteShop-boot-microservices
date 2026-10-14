@@ -17,6 +17,9 @@ public class RabbitMQConstants {
         public static final String ISSUE_QUEUE = "coupon.issue.queue";
         public static final String EXPIRE_QUEUE = "coupon.expire.queue";
         public static final String COUNT_QUERY_QUEUE = "coupon.count.query";
+        public static final String DEAD_LETTER_EXCHANGE = "coupon.dead.exchange";
+        public static final String ISSUE_DEAD_QUEUE = "coupon.issue.dead.queue";
+        public static final String ISSUE_DEAD_KEY = "coupon.issue.dead";
 
         // 路由键
         public static final String ISSUE_KEY = "coupon.issue";
@@ -53,4 +56,4 @@ public class RabbitMQConstants {
         public static final String CREATE_KEY = "order.create";
         public static final String PAY_KEY = "order.pay";
     }
-} 
+}

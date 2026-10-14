@@ -64,4 +64,7 @@ public interface OrderPrintService {
      */
     Map<String, Object> printAddItems(Long orderId, List<Long> orderItemIds, Long printerId, Long templateId);
 
+    /** 把失败的打印任务重新放回待发送队列。 */
+    boolean reprint(Long printJobId);
+
 }

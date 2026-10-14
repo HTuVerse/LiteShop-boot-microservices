@@ -1,10 +1,21 @@
 spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: ${FEIGN_CONNECT_TIMEOUT_MS:3000}
+            read-timeout: ${FEIGN_READ_TIMEOUT_MS:8000}
+            logger-level: basic
+          payFeignClient:
+            connect-timeout: ${PAY_FEIGN_CONNECT_TIMEOUT_MS:5000}
+            read-timeout: ${PAY_FEIGN_READ_TIMEOUT_MS:20000}
   datasource:
     # 垂直拆库后 jdbc url 由各服务自己的配置文件提供（liteShop-xxx-service.yml），
     # 这里只保留公共的驱动、账号与连接池配置
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD}
+    password: ${MYSQL_PASSWORD:123456}
     hikari:
       minimum-idle: ${MYSQL_POOL_MIN_IDLE:5}
       maximum-pool-size: ${MYSQL_POOL_MAX_SIZE:20}
@@ -14,7 +25,8 @@ spring:
       connection-test-query: SELECT 1
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
+    # 本地 Docker 映射为 5673:5672；其他部署通过 RABBITMQ_PORT 覆盖。
+    port: ${RABBITMQ_PORT:5673}
     username: ${RABBITMQ_USERNAME}
     password: ${RABBITMQ_PASSWORD}
     virtual-host: ${RABBITMQ_VIRTUAL_HOST:/}
@@ -27,7 +39,7 @@ spring:
       database: ${REDIS_DATABASE:1}
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:hongTuVerse}
       timeout: 3s
       lettuce:
         pool:
@@ -42,11 +54,17 @@ mybatis-plus:
 
 liteshop:
   internal-call:
-    secret: ${INTERNAL_CALL_SECRET:}
-  # 雪花 ID 生成器：同一服务多实例部署时，每个实例必须配置不同的 worker-id（0~31）
+    # 本地开发未注入环境变量时使用统一默认值；生产环境必须通过环境变量覆盖。
+    secret: ${INTERNAL_CALL_SECRET:liteshop-dev-secret}
+  table-session:
+    token-secret: ${TABLE_SESSION_TOKEN_SECRET:liteshop-dev-table-secret0123456789abcdef0123456789abcdef}
+    # 桌台二维码扫码票据有效期，默认 30 天。轮换 scan_token_id 后旧码立即失效。
+    table-token-ttl-seconds: ${TABLE_TOKEN_TTL_SECONDS:2592000}
+  # 默认从数据库租约分配唯一雪花节点。关闭租约时才手填 worker-id，且每个实例必须不同。
   id:
-    worker-id: ${SNOWFLAKE_WORKER_ID:1}
-    datacenter-id: ${SNOWFLAKE_DATACENTER_ID:1}
+    lease-enabled: ${SNOWFLAKE_LEASE_ENABLED:true}
+    worker-id: ${SNOWFLAKE_WORKER_ID:0}
+    datacenter-id: ${SNOWFLAKE_DATACENTER_ID:0}
   # 多租户开关（预留）：启用后 MyBatis-Plus 自动为 SQL 追加 tenant_id 条件
   tenant:
     enabled: ${TENANT_ENABLED:true}
@@ -57,6 +75,6 @@ sa-token:
   active-timeout: -1
   is-concurrent: true
   is-share: false
-  jwt-secret-key: ${SA_TOKEN_JWT_SECRET}
+  jwt-secret-key: ${SA_TOKEN_JWT_SECRET:liteshop-dev-jwt-secret}
   token-style: uuid
   is-log: false

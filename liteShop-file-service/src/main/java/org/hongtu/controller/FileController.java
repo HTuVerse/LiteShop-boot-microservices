@@ -7,6 +7,7 @@ import org.apache.commons.io.FilenameUtils;
 import org.hongtu.DTO.FileUpload;
 import org.hongtu.Result.Result;
 import org.hongtu.config.FileUploadConfig;
+import org.hongtu.enums.StorageTypeEnum;
 import org.hongtu.service.FileUploadService;
 import org.hongtu.utils.FileUploadUtil;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,8 +41,8 @@ public class FileController {
      */
     @SaCheckLogin
     @PostMapping("/upload/image")
-    public Result<FileUpload> uploadImage(@RequestParam("file") MultipartFile file) {
-        try {
+    public Result<FileUpload> uploadImage(@RequestParam("file") MultipartFile file) throws IOException {
+        
             // 检查文件是否为空
             if (file.isEmpty()) {
                 return Result.error("上传的文件为空");
@@ -60,20 +61,17 @@ public class FileController {
             uploadDTO.setSize(file.getSize());
             uploadDTO.setContentType(file.getContentType());
             uploadDTO.setUrl(fileUrl);
-            uploadDTO.setStorageType(fileUploadConfig.isOssEnabled() ? "oss" : "local");
+            uploadDTO.setStorageType(resolveStorageType());
             fileUploadService.save(uploadDTO);
             return Result.success("上传成功", uploadDTO);
-        } catch (IOException e) {
-            log.error("文件上传失败", e);
-            return Result.error("文件上传失败: " + e.getMessage());
-        }
+        
     }
 
     /** 上传公告附件，允许常见图片、文档和压缩包，单文件最大 20MB。 */
     @SaCheckLogin
     @PostMapping("/upload/file")
-    public Result<FileUpload> uploadFile(@RequestParam("file") MultipartFile file) {
-        try {
+    public Result<FileUpload> uploadFile(@RequestParam("file") MultipartFile file) throws IOException {
+        
             if (file.isEmpty()) return Result.error("上传的文件为空");
             String extension = FilenameUtils.getExtension(file.getOriginalFilename());
             if (!fileUploadConfig.isAllowedAttachmentType(extension)) {
@@ -83,10 +81,7 @@ public class FileController {
             FileUpload uploadDTO = buildUploadRecord(file, fileUrl);
             fileUploadService.save(uploadDTO);
             return Result.success("上传成功", uploadDTO);
-        } catch (IOException e) {
-            log.error("附件上传失败", e);
-            return Result.error("附件上传失败: " + e.getMessage());
-        }
+        
     }
 
     private FileUpload buildUploadRecord(MultipartFile file, String fileUrl) {
@@ -95,7 +90,7 @@ public class FileController {
         uploadDTO.setSize(file.getSize());
         uploadDTO.setContentType(file.getContentType());
         uploadDTO.setUrl(fileUrl);
-        uploadDTO.setStorageType(fileUploadConfig.isOssEnabled() ? "oss" : "local");
+        uploadDTO.setStorageType(resolveStorageType());
         return uploadDTO;
     }
 
@@ -106,8 +101,8 @@ public class FileController {
      */
     @SaCheckLogin
     @PostMapping("/upload/images")
-    public Result<FileUpload[]> uploadImages(@RequestParam("files") MultipartFile[] files) {
-        try {
+    public Result<FileUpload[]> uploadImages(@RequestParam("files") MultipartFile[] files) throws IOException {
+        
             if (files == null || files.length == 0) {
                 return Result.error("上传的文件为空");
             }
@@ -128,14 +123,15 @@ public class FileController {
                 uploadDTO.setSize(file.getSize());
                 uploadDTO.setContentType(file.getContentType());
                 uploadDTO.setUrl(fileUrl);
-                uploadDTO.setStorageType(fileUploadConfig.isOssEnabled() ? "oss" : "local");
+                uploadDTO.setStorageType(resolveStorageType());
                 fileUploadService.save(uploadDTO);
                 results[i] = uploadDTO;
             }
             return Result.success("上传成功", results);
-        } catch (IOException e) {
-            log.error("文件上传失败", e);
-            return Result.error("文件上传失败: " + e.getMessage());
-        }
+        
+    }
+
+    private StorageTypeEnum resolveStorageType() {
+        return fileUploadConfig.isOssEnabled() ? StorageTypeEnum.OSS : StorageTypeEnum.LOCAL;
     }
 }

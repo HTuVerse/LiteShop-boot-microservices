@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: ${MYSQL_URL_FILE:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_file?useSSL=false&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+    url: ${MYSQL_URL_FILE:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_file?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
   servlet:
     multipart:
       max-file-size: 20MB

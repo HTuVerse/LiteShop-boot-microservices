@@ -40,6 +40,11 @@ public class VerifyRecord implements Serializable {
     private Long userCouponId;
 
     /**
+     * 订单核销来源；人工扫码核销时为空。
+     */
+    private Long orderId;
+
+    /**
      * 核销管理员ID
      */
     private Long merchantId;

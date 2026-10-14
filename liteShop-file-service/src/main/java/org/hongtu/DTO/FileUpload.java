@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
+import org.hongtu.enums.StorageTypeEnum;
 
 import java.io.Serializable;
 
@@ -49,9 +50,9 @@ public class FileUpload implements Serializable {
     private String url;
 
     /**
-     * 存储类型（local/oss）
+     * 存储类型：0本地，1对象存储
      */
-    private String storageType;
+    private StorageTypeEnum storageType;
 
 
 }

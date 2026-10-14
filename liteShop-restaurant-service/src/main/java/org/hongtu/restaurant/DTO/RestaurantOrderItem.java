@@ -49,25 +49,28 @@ public class RestaurantOrderItem implements Serializable {
      */
     private Long categoryId;
 
-    /**
-     * 单价
-     */
-    private BigDecimal price;
+    /** 门店正常售价快照（含规格加价）。 */
+    private BigDecimal unitListPrice;
+
+    /** 菜品级活动和会员价计算后的成交单价。 */
+    private BigDecimal unitSellingPrice;
+
+    /** 下单时门店实际单位成本快照；为空表示当时未维护成本。 */
+    private BigDecimal unitCostSnapshot;
 
     /**
      * 数量
      */
     private Integer quantity;
 
-    /**
-     * 优惠金额
-     */
-    private BigDecimal discountPrice;
+    /** 当前订单项全部优惠金额。 */
+    private BigDecimal discountAmount;
 
-    /**
-     * 小计
-     */
-    private BigDecimal totalPrice;
+    /** 当前订单项最终应付金额。 */
+    private BigDecimal linePayableAmount;
+
+    /** 当前剩余数量对应的成交成本总额。 */
+    private BigDecimal lineCostAmount;
 
     /**
      * 是否赠送（0-否，1-是）

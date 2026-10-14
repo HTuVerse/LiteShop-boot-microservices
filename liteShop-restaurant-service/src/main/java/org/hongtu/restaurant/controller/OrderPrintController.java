@@ -40,7 +40,7 @@ public class OrderPrintController {
             ) {
         log.info("打印订单（默认打印机）：orderId={}", orderId);
 
-        try {
+        
             Map<String, Object> result = orderPrintService.printOrder(orderId,printerId,templateId);
             boolean success = (boolean) result.getOrDefault("success", false);
             
@@ -49,10 +49,7 @@ public class OrderPrintController {
             } else {
                 return Result.error((String) result.getOrDefault("msg", "打印失败"));
             }
-        } catch (Exception e) {
-            log.error("打印订单异常", e);
-            return Result.error("打印订单失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -70,13 +67,19 @@ public class OrderPrintController {
         
         log.info("批量打印订单：orderIds={}, printerId={}", orderIds, printerId);
 
-        try {
+        
             Map<String, Object> result = orderPrintService.batchPrintOrders(orderIds, printerId);
             return Result.success(result);
-        } catch (Exception e) {
-            log.error("批量打印订单异常", e);
-            return Result.error("批量打印订单失败：" + e.getMessage());
-        }
+        
+    }
+
+    /**
+     * 人工补打失败的打印任务。
+     */
+    @PostMapping("/reprint")
+    @SaCheckPermission(value = {"restaurant:printer:print", "restaurant:order:print"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<Boolean> reprint(@RequestParam Long printJobId) {
+        return Result.success(orderPrintService.reprint(printJobId));
     }
 
     /**
@@ -94,7 +97,7 @@ public class OrderPrintController {
         
         log.info("测试打印：printerId={}, templateId={}", printerId, templateId);
 
-        try {
+        
             Map<String, Object> result = orderPrintService.testPrint(printerId, templateId);
             boolean success = (boolean) result.getOrDefault("success", false);
             
@@ -103,10 +106,7 @@ public class OrderPrintController {
             } else {
                 return Result.error((String) result.getOrDefault("msg", "测试打印失败"));
             }
-        } catch (Exception e) {
-            log.error("测试打印异常", e);
-            return Result.error("测试打印失败：" + e.getMessage());
-        }
+        
     }
 
 }

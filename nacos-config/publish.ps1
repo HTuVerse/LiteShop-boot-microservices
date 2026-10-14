@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ServerAddr = "http://localhost:8848",
     [string]$Group = "LITESHOP_GROUP",
     [string]$Namespace = "public",

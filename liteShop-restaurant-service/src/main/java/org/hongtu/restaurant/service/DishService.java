@@ -4,6 +4,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.restaurant.DTO.Dish;
 import com.baomidou.mybatisplus.spring.service.IService;
 import org.hongtu.restaurant.VO.DishVO;
+import org.hongtu.restaurant.VO.StoreDishConfigRequest;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
 import java.util.List;
@@ -71,7 +72,21 @@ public interface DishService extends IService<Dish> {
      * @param isNew 是否新品：1-是，0-否
      * @return 菜品列表（当isListBySort=0时）或按分类分组的菜品列表（当isListBySort=1时）
      */
-    Result listDishNoPage(String searchKey, Integer isListBySort, Integer isRecommend, Integer isHot, Integer isNew);
+    Result listDishNoPage(Long storeId, String searchKey, Integer isListBySort,
+                          Integer isRecommend, Integer isHot, Integer isNew);
+
+    /**
+     * 获取菜品在指定门店的有效配置和价格。
+     */
+    DishVO getEffectiveDish(Long dishId, Long storeId, boolean requireSaleable);
+
+    /** 校验门店菜品配置及当前账号对应的菜单策略。 */
+    void validateStoreDishConfig(StoreDishConfigRequest request);
+
+    /**
+     * 更新菜品在指定门店的个性化配置。
+     */
+    DishVO updateStoreDishConfig(StoreDishConfigRequest request);
 
     /**
      * 减少菜品库存
@@ -81,6 +96,9 @@ public interface DishService extends IService<Dish> {
      */
     boolean decreaseStock(Long dishId, Integer quantity);
 
+    /** 按门店扣减菜品库存。 */
+    boolean decreaseStock(Long storeId, Long dishId, Integer quantity);
+
     /**
      * 批量减少菜品库存
      * @param dishStockMap 菜品ID和对应减少数量的映射
@@ -88,12 +106,27 @@ public interface DishService extends IService<Dish> {
      */
     boolean batchDecreaseStock(Map<Long, Integer> dishStockMap);
 
+    /** 按门店批量扣减菜品库存。已支付加菜同时增加销量。 */
+    boolean batchDecreaseStock(Long storeId, Map<Long, Integer> dishStockMap);
+
+    /** 未支付订单只预占库存。 */
+    boolean batchReserveStock(Long storeId, Map<Long, Integer> dishStockMap);
+
+    /** 支付成功后计入销量。 */
+    boolean batchCommitSales(Long storeId, Map<Long, Integer> dishStockMap);
+
+    /** 取消未支付订单时归还预占库存。 */
+    boolean batchReleaseReservedStock(Long storeId, Map<Long, Integer> dishStockMap);
+
     /**
      * 退菜时批量加回库存并减少销量
      * @param dishQuantityMap 菜品ID和对应加回数量的映射
      * @return 是否成功
      */
     boolean batchIncreaseStockAndDecreaseSales(Map<Long, Integer> dishQuantityMap);
+
+    /** 按门店批量恢复库存并减少销量。 */
+    boolean batchIncreaseStockAndDecreaseSales(Long storeId, Map<Long, Integer> dishQuantityMap);
 
     /**
      * 更新菜品销量

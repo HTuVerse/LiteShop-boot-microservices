@@ -4,6 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 抽奖服务启动类（活动/奖品/记录/次数）
@@ -11,6 +12,7 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
 @SpringBootApplication(scanBasePackages = "org.hongtu")
 @EnableDiscoveryClient
 @EnableFeignClients(basePackages = "org.hongtu.api.client")
+@EnableScheduling
 public class LotteryServiceApplication {
 
     public static void main(String[] args) {

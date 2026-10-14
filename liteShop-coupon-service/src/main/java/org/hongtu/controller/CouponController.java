@@ -44,13 +44,10 @@ public class CouponController {
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) String name,
             @RequestParam(required = false) Integer status) {
-        try {
+        
             OnOrOffShelfEnum statusEnum = status != null ? OnOrOffShelfEnum.getByCode(status) : null;
             return couponService.getCouponList(currentPage, pageSize, name, statusEnum);
-        } catch (Exception e) {
-            log.error("查询优惠券列表异常", e);
-            return Result.error("查询失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -61,12 +58,9 @@ public class CouponController {
     @SaCheckPermission(value = {"marketing:coupon"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     @GetMapping("/detail")
     public Result<Coupon> getCouponById(@RequestParam Long id) {
-        try {
+        
             return couponService.getCouponById(id);
-        } catch (Exception e) {
-            log.error("获取优惠券详情异常：id={}", id, e);
-            return Result.error("获取详情失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -77,12 +71,9 @@ public class CouponController {
     @PostMapping
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"marketing:coupon:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Coupon> createCoupon(@RequestBody Coupon coupon) {
-        try {
+        
             return couponService.createCoupon(coupon);
-        } catch (Exception e) {
-            log.error("创建优惠券异常", e);
-            return Result.error("创建失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -93,12 +84,9 @@ public class CouponController {
     @PutMapping
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"marketing:coupon:edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Coupon> updateCoupon(@RequestBody Coupon coupon) {
-        try {
+        
             return couponService.updateCoupon(coupon);
-        } catch (Exception e) {
-            log.error("更新优惠券异常：id={}", coupon != null ? coupon.getId() : null, e);
-            return Result.error("更新失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -109,12 +97,9 @@ public class CouponController {
     @DeleteMapping("/delete")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"marketing:coupon:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result deleteCoupon(@RequestParam Long id) {
-        try {
+        
             return couponService.deleteCoupon(id);
-        } catch (Exception e) {
-            log.error("删除优惠券异常：id={}", id, e);
-            return Result.error("删除失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -126,12 +111,9 @@ public class CouponController {
     @PutMapping("/toggle-status")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"marketing:coupon:status"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result toggleStatus(@RequestParam Long id) {
-        try {
+        
             return couponService.toggleCouponStatus(id);
-        } catch (Exception e) {
-            log.error("切换优惠券状态异常：id={}", id, e);
-            return Result.error("操作失败：" + e.getMessage());
-        }
+        
     }
 
 }

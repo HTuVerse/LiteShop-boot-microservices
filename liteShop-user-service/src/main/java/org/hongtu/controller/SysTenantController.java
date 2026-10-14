@@ -10,6 +10,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.saas.domain.TenantCreateRequest;
 import org.hongtu.tenant.TenantConstants;
+import org.hongtu.tenant.TenantAccessValidator;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
@@ -21,6 +22,9 @@ public class SysTenantController {
 
     @Resource
     private SysTenantService tenantService;
+
+    @Resource
+    private TenantAccessValidator tenantAccessValidator;
 
     @GetMapping("/page")
     public Result<Page<SysTenant>> page(@RequestParam(defaultValue = "1") Integer currentPage,
@@ -73,6 +77,10 @@ public class SysTenantController {
         }
         if (tenant.getExpireTime() != null && tenant.getExpireTime().isBefore(LocalDateTime.now())) {
             return Result.error("租户服务已到期");
+        }
+        // 必须在写入会话前执行与请求拦截器一致的完整校验，避免无效租户作用域污染会话。
+        if (!tenantAccessValidator.isActive(id)) {
+            return Result.error(Result.CODE_FORBIDDEN, "商户未分配有效套餐或套餐已失效");
         }
         StpUtil.getSession().set(TenantConstants.SESSION_TENANT_ID, id);
         return Result.success("已进入租户作用域", tenant);

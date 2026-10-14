@@ -75,14 +75,13 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
         snlist.append(printerInfo.getRemark() != null ? printerInfo.getRemark() : "").append("#");
         snlist.append(printerInfo.getCardNum() != null ? printerInfo.getCardNum() : "");
 
-        log.info("调用飞鹅云添加打印机，参数：{}", snlist);
+        log.info("调用飞鹅云添加打印机: sn={}, remark={}", printerInfo.getSn(), printerInfo.getRemark());
 
         // 3. 调用飞鹅云API
         String apiResult = feieyunPrinterUtil.addPrinter(snlist.toString());
-        log.info("飞鹅云添加打印机返回：{}", apiResult);
-
         JSONObject apiResponse = JSON.parseObject(apiResult);
         int ret = apiResponse.getIntValue("ret");
+        log.info("飞鹅云添加打印机返回: sn={}, ret={}", printerInfo.getSn(), ret);
 
         if (ret == 0) {
             // API调用成功
@@ -131,7 +130,8 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
             // API调用失败
             result.put("success", false);
             result.put("msg", "飞鹅云API错误：" + apiResponse.getString("msg"));
-            log.error("飞鹅云API调用失败：{}", apiResult);
+            log.error("飞鹅云API调用失败: sn={}, ret={}, msg={}",
+                    printerInfo.getSn(), ret, apiResponse.getString("msg"));
         }
 
         return result;

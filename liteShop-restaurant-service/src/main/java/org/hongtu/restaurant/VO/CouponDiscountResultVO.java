@@ -131,14 +131,10 @@ public class CouponDiscountResultVO {
          */
         private String dishPic;
 
-        /**
-         * 当前价格（优惠价或原价）
-         */
-        private BigDecimal price;
+        /** 门店覆盖后的正常售价。 */
+        private BigDecimal salePrice;
 
-        /**
-         * 原价
-         */
-        private BigDecimal originalPrice;
+        /** 当前活动计算后的价格。 */
+        private BigDecimal currentPrice;
     }
 }

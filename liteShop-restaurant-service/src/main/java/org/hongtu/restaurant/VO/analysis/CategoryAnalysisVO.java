@@ -43,27 +43,18 @@ public class CategoryAnalysisVO {
     private BigDecimal salesQuantityPercent;
 
     /**
-     * 总成本
-     */
-    private BigDecimal totalCost;
-
-    /**
-     * 总利润
-     */
-    private BigDecimal totalProfit;
-
-    /**
-     * 利润率（百分比）
-     */
-    private BigDecimal profitRate;
-
-    /**
      * 订单数量
      */
     private Integer orderCount;
 
+    /** 赠送菜品数量。 */
+    private Integer giftQuantity;
+
+    /** 分类订单项优惠金额。 */
+    private BigDecimal totalDiscount;
+
     /**
-     * 平均客单价
+     * 包含该分类的订单平均消费
      */
     private BigDecimal avgOrderAmount;
 }

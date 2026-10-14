@@ -6,6 +6,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.restaurant.DAO.RestaurantOrderMapper;
+import org.hongtu.restaurant.DAO.PrintJobMapper;
+import org.hongtu.restaurant.DTO.PrintJob;
 import org.hongtu.restaurant.DTO.PrintTemplate;
 import org.hongtu.restaurant.DTO.PrinterInfo;
 import org.hongtu.restaurant.DTO.RestaurantOrder;
@@ -24,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -48,6 +51,9 @@ public class OrderPrintServiceImpl implements OrderPrintService {
     private FeieyunPrinterUtil feieyunPrinterUtil;
 
     @Resource
+    private PrintJobMapper printJobMapper;
+
+    @Resource
     RestaurantOrderConverter restaurantOrderConverter;
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -58,10 +64,10 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
         // 1. 获取订单信息
         RestaurantOrder restaurantOrder = restaurantOrderMapper.selectById(orderId);
-        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
-        if (orderVO == null) {
+        if (restaurantOrder == null) {
             return buildErrorResult("订单不存在");
         }
+        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
 
         // 2. 获取门店默认打印机
         PrinterInfo printer = printerInfoService.getDefaultPrinterByStore(orderVO.getStoreId());
@@ -93,10 +99,10 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
         // 1. 获取订单信息
         RestaurantOrder restaurantOrder = restaurantOrderMapper.selectById(orderId);
-        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
-        if (orderVO == null) {
+        if (restaurantOrder == null) {
             return buildErrorResult("订单不存在");
         }
+        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
 
         // 2. 留空时使用门店默认打印机
         if (printerId == null && orderVO.getStoreId() != null) {
@@ -124,11 +130,15 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     @Override
     public Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId) {
+        PrintJob printJob = null;
         try {
             // 1. 验证打印机
             PrinterInfo printer = printerInfoService.getById(printerId);
             if (printer == null) {
                 return buildErrorResult("打印机不存在");
+            }
+            if (!Objects.equals(printer.getStoreId(), orderVO.getStoreId())) {
+                return buildErrorResult("打印机与订单不属于同一门店");
             }
 
             if (printer.getEnabled() == null || printer.getEnabled() == StatusEnum.getByCode(0)) {
@@ -136,9 +146,10 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             }
 
             // 2. 获取打印模板
-            PrintTemplate template = printTemplateService.getById(templateId);
+            PrintTemplate template = null;
             if (templateId != null) {
                 // 优先使用指定的模板ID
+                template = printTemplateService.getById(templateId);
                 if (template == null) {
                     log.warn("指定的模板不存在，使用打印机配置的模板");
                     // 使用打印机配置的模板
@@ -160,14 +171,93 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                     template = printTemplateService.getTemplateByStore(orderVO.getStoreId());
                 }
             }
+            if (template == null) {
+                return buildErrorResult("门店未配置可用打印模板");
+            }
+            if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), orderVO.getStoreId())) {
+                return buildErrorResult("打印模板与订单不属于同一门店");
+            }
 
             // 3. 构建打印内容
             String printContent = PrintContentBuilder.buildOrderContent(template, orderVO);
-            log.debug("打印内容：\n{}", printContent);
+            log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
 
             // 4. 调用飞鹅打印接口
             Integer printCopies = template.getPrintCopies() != null ? template.getPrintCopies() : 1;
-            String result = feieyunPrinterUtil.print(printer.getSn(), printContent, printCopies);
+            String jobKey = orderVO.getId() + ":" + printer.getId() + ":receipt";
+            PrintJob existing = printJobMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PrintJob>()
+                    .eq(PrintJob::getJobKey, jobKey)
+                    .last("LIMIT 1"));
+            if (existing != null && existing.getStatus() != null && existing.getStatus() != 2 && existing.getStatus() != 3) {
+                return buildSuccessQueued(existing);
+            }
+            printJob = existing == null ? new PrintJob() : existing;
+            printJob.setOrderId(orderVO.getId());
+            printJob.setStoreId(orderVO.getStoreId());
+            printJob.setPrinterId(printer.getId());
+            printJob.setPrinterSn(printer.getSn());
+            printJob.setJobKey(jobKey);
+            printJob.setContent(printContent);
+            printJob.setStatus(5);
+            printJob.setAttempts(existing == null ? 0 : existing.getAttempts());
+            printJob.setCreatedAt(existing == null ? LocalDateTime.now() : existing.getCreatedAt());
+            printJob.setUpdatedAt(LocalDateTime.now());
+            if (existing == null) {
+                printJobMapper.insert(printJob);
+            } else {
+                printJobMapper.updateById(printJob);
+            }
+            return buildSuccessQueued(printJob);
+        } catch (Exception e) {
+            log.error("登记打印任务失败", e);
+            return buildErrorResult("登记打印任务失败");
+        }
+    }
+
+    /**
+     * 发送待打印任务。失败按次数重试，耗尽后保持失败状态供人工补打。
+     */
+    public void dispatchPendingJobs() {
+        List<PrintJob> jobs = org.hongtu.tenant.TenantIgnore.get(() -> printJobMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PrintJob>()
+                        .in(PrintJob::getStatus, 5, 3)
+                        .lt(PrintJob::getAttempts, 5)
+                        .last("LIMIT 50")));
+        for (PrintJob job : jobs) {
+            if (job.getTenantId() == null) {
+                continue;
+            }
+            org.hongtu.tenant.TenantScope.run(job.getTenantId(), () -> sendJob(job));
+        }
+    }
+
+    /**
+     * 人工补打：失败任务重新进入待发送队列。
+     */
+    public boolean reprint(Long printJobId) {
+        PrintJob job = printJobMapper.selectById(printJobId);
+        if (job == null) {
+            return false;
+        }
+        job.setStatus(5);
+        job.setAttempts(0);
+        job.setLastError(null);
+        job.setUpdatedAt(LocalDateTime.now());
+        return printJobMapper.updateById(job) > 0;
+    }
+
+    private void sendJob(PrintJob printJob) {
+        try {
+            PrinterInfo printer = printerInfoService.getById(printJob.getPrinterId());
+            if (printer == null || printJob.getContent() == null) {
+                printJob.setStatus(3);
+                printJob.setLastError("打印机或打印内容不存在");
+                printJob.setAttempts((printJob.getAttempts() == null ? 0 : printJob.getAttempts()) + 1);
+                printJob.setUpdatedAt(LocalDateTime.now());
+                printJobMapper.updateById(printJob);
+                return;
+            }
+            String result = feieyunPrinterUtil.print(printer.getSn(), printJob.getContent(), 1);
 
             // 5. 解析打印结果
             JSONObject resultJson = JSON.parseObject(result);
@@ -175,29 +265,29 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             String msg = resultJson.getString("msg");
             String printOrderId = resultJson.getString("data");
 
-            Map<String, Object> response = new HashMap<>();
-            if (ret == 0) {
-                log.info("✅ 打印成功 - 订单ID: {}, 打印订单ID: {}", orderVO.getId(), printOrderId);
-                response.put("success", true);
-                response.put("msg", "打印成功");
-                response.put("printOrderId", printOrderId);
-                response.put("printerSn", printer.getSn());
-                response.put("printerName", printer.getRemark());
-                response.put("printCopies", printCopies);
-                response.put("printTime", LocalDateTime.now().format(DATE_FORMATTER));
-            } else {
-                log.error("❌ 打印失败 - 订单ID: {}, 错误信息: {}", orderVO.getId(), msg);
-                response.put("success", false);
-                response.put("msg", "打印失败：" + msg);
-                response.put("errorCode", ret);
-            }
-
-            return response;
-
+            printJob.setProviderOrderId(printOrderId);
+            printJob.setStatus(ret == 0 ? 0 : 3);
+            printJob.setLastError(ret == 0 ? null : msg);
+            printJob.setAttempts((printJob.getAttempts() == null ? 0 : printJob.getAttempts()) + 1);
+            printJob.setUpdatedAt(LocalDateTime.now());
+            printJobMapper.updateById(printJob);
         } catch (Exception e) {
-            log.error("打印订单异常", e);
-            return buildErrorResult("打印订单失败：" + e.getMessage());
+            log.error("发送打印任务异常: printJobId={}", printJob.getId(), e);
+            printJob.setStatus(3);
+            printJob.setLastError(e.getMessage());
+            printJob.setAttempts((printJob.getAttempts() == null ? 0 : printJob.getAttempts()) + 1);
+            printJob.setUpdatedAt(LocalDateTime.now());
+            printJobMapper.updateById(printJob);
         }
+    }
+
+    private Map<String, Object> buildSuccessQueued(PrintJob printJob) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("msg", "打印任务已登记");
+        response.put("printJobId", printJob.getId());
+        response.put("printerSn", printJob.getPrinterSn());
+        return response;
     }
 
     @Override
@@ -208,10 +298,10 @@ public class OrderPrintServiceImpl implements OrderPrintService {
         log.info("打印加菜单：orderId={}, orderItemIds={}, printerId={}, templateId={}", orderId, orderItemIds, printerId, templateId);
 
         RestaurantOrder restaurantOrder = restaurantOrderMapper.selectById(orderId);
-        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
-        if (orderVO == null) {
+        if (restaurantOrder == null) {
             return buildErrorResult("订单不存在");
         }
+        RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
         List<RestaurantOrderVO.OrderItemVO> allItems = orderVO.getItems();
         if (allItems != null) {
             List<RestaurantOrderVO.OrderItemVO> addItemsOnly = allItems.stream()
@@ -273,9 +363,34 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             if (printer == null) {
                 return buildErrorResult("打印机不存在");
             }
+            if (printer.getEnabled() == null || printer.getEnabled() == StatusEnum.getByCode(0)) {
+                return buildErrorResult("打印机已禁用");
+            }
+            if (templateId != null) {
+                PrintTemplate template = printTemplateService.getById(templateId);
+                if (template == null) {
+                    return buildErrorResult("打印模板不存在");
+                }
+                if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), printer.getStoreId())) {
+                    return buildErrorResult("打印模板与打印机不属于同一门店");
+                }
+            }
 
-            Map<String, Object> result = this.printOrder(93L, printerId,templateId);
-
+            // 测试打印不得读取或打印任意真实订单，避免泄露订单和会员信息。
+            String content = "<CB>打印机测试</CB><BR>"
+                    + "设备：" + (printer.getRemark() == null ? printer.getSn() : printer.getRemark()) + "<BR>"
+                    + "时间：" + LocalDateTime.now().format(DATE_FORMATTER) + "<BR>"
+                    + "如能看到本小票，说明打印机连接正常。<BR>";
+            String providerResult = feieyunPrinterUtil.print(printer.getSn(), content, 1);
+            JSONObject resultJson = JSON.parseObject(providerResult);
+            int ret = resultJson.getIntValue("ret");
+            if (ret != 0) {
+                return buildErrorResult("测试打印失败：" + resultJson.getString("msg"));
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            result.put("msg", "测试打印已提交");
+            result.put("printOrderId", resultJson.getString("data"));
             return result;
 
         } catch (Exception e) {

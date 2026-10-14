@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.io.Serializable;
 import java.util.List;
 
@@ -47,6 +48,11 @@ public class RestaurantOrder implements Serializable {
      * 订单编号
      */
     private String orderNo;
+
+    /**
+     * 下单请求幂等键，租户内唯一。
+     */
+    private String requestKey;
 
     /**
      * 门店ID
@@ -109,7 +115,12 @@ public class RestaurantOrder implements Serializable {
     private String pickupCode;
 
     /**
-     * 支付状态：0-未支付，1-已支付，2-部分退款，3-全额退款
+     * 取餐码所属营业日期，用于门店内唯一约束。
+     */
+    private LocalDate pickupDate;
+
+    /**
+     * 支付状态：0未支付，1已支付，2部分退款，3全额退款，4支付超时，5取消支付，6支付失败，7对账中，8已收款待处理
      */
     private PaymentStatusEnum paymentStatus;
 
@@ -129,7 +140,19 @@ public class RestaurantOrder implements Serializable {
     private String paymentNo;
 
     /**
-     * 订单状态：1-已下单，2-已接单，3-制作中，4-制作完成，5-已完成，6-已取消
+     * 是否已扣减门店库存：0-未扣减，1-已扣减。
+     * 用于避免支付回调重复扣库存，并在取消/超时时精确释放预占库存。
+     */
+    private Boolean stockReserved;
+
+    /**
+     * 销量是否已计入：0否，1是。未支付只预占库存。
+     */
+    private Boolean salesCommitted;
+
+    /**
+     * 订单履约状态：1-已下单，2-已接单，3-制作中，4-制作完成，5-已完成，6-已取消
+     * 支付结果由 paymentStatus 独立表示。
      */
     private OrderStatusEnum status;
 

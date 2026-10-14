@@ -49,6 +49,11 @@ public interface OrderTimeoutQueueService {
     Set<Long> getTimeoutOrderIds();
 
     /**
+     * 处理失败后放回超时队列，供下一轮原子领取。
+     */
+    void requeue(Long orderId);
+
+    /**
      * 获取队列中的订单数量
      *
      * @return 队列长度

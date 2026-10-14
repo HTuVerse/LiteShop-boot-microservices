@@ -14,7 +14,6 @@ import lombok.Getter;
 @Getter
 public enum OrderStatusEnum {
 
-    NOPAID(0, "未支付"),
     PLACED(1, "已下单"),
     ACCEPTED(2, "已接单"),
     PREPARING(3, "制作中"),
@@ -31,6 +30,27 @@ public enum OrderStatusEnum {
     OrderStatusEnum(Integer code, String desc) {
         this.code = code;
         this.desc = desc;
+    }
+
+    /**
+     * 订单履约状态只能逐步向前推进；取消由专用取消流程处理。
+     * 支付状态不参与这里的流转。
+     */
+    public boolean canTransitionTo(OrderStatusEnum nextStatus) {
+        if (nextStatus == null || nextStatus == this || isTerminal()) {
+            return false;
+        }
+        return switch (this) {
+            case PLACED -> nextStatus == ACCEPTED || nextStatus == CANCELLED;
+            case ACCEPTED -> nextStatus == PREPARING || nextStatus == CANCELLED;
+            case PREPARING -> nextStatus == PREPARED || nextStatus == CANCELLED;
+            case PREPARED -> nextStatus == COMPLETED || nextStatus == CANCELLED;
+            case COMPLETED, CANCELLED -> false;
+        };
+    }
+
+    public boolean isTerminal() {
+        return this == COMPLETED || this == CANCELLED;
     }
 
     /**

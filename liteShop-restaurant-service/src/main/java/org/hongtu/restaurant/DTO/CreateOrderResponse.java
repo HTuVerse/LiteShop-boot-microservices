@@ -65,12 +65,12 @@ public class CreateOrderResponse {
     private BigDecimal actualAmount;
 
     /**
-     * 支付状态：0-未支付，1-已支付，2-部分退款，3-全额退款
+     * 支付状态：0-未支付，1-已支付，2-部分退款，3-全额退款，4-支付超时，5-取消支付，6-支付失败
      */
     private PaymentStatusEnum paymentStatus;
 
     /**
-     * 订单状态：0-已下单，1-已接单，2-制作中，3-制作完成，4-已完成，5-已取消
+     * 订单履约状态：1-已下单，2-已接单，3-制作中，4-制作完成，5-已完成，6-已取消
      */
     private OrderStatusEnum status;
 

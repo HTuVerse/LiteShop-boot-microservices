@@ -117,7 +117,7 @@ public class RestaurantOrderVO implements Serializable {
     private PaymentModeEnum paymentMode;
 
     /**
-     * 支付状态：0-未支付，1-已支付，2-部分退款，3-全额退款
+     * 支付状态：0-未支付，1-已支付，2-部分退款，3-全额退款，4-支付超时，5-取消支付，6-支付失败
      */
     private PaymentStatusEnum paymentStatus;
 
@@ -138,7 +138,8 @@ public class RestaurantOrderVO implements Serializable {
     private String paymentNo;
 
     /**
-     * 订单状态：1-已下单，2-已接单，3-制作中，4-制作完成，5-已完成，6-已取消
+     * 订单履约状态：1-已下单，2-已接单，3-制作中，4-制作完成，5-已完成，6-已取消
+     * 支付结果由 paymentStatus 独立表示。
      */
     private OrderStatusEnum status;
 
@@ -251,25 +252,17 @@ public class RestaurantOrderVO implements Serializable {
          */
         private String mainPic;
 
-        /**
-         * 单价
-         */
-        private BigDecimal price;
+        private BigDecimal unitListPrice;
+        private BigDecimal unitSellingPrice;
 
         /**
          * 数量
          */
         private Integer quantity;
 
-        /**
-         * 优惠金额
-         */
-        private BigDecimal discountPrice;
+        private BigDecimal discountAmount;
 
-        /**
-         * 小计
-         */
-        private BigDecimal totalPrice;
+        private BigDecimal linePayableAmount;
 
         /**
          * 选择的规格

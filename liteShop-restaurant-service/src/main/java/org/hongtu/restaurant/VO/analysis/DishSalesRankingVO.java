@@ -48,19 +48,24 @@ public class DishSalesRankingVO {
     private BigDecimal salesAmount;
 
     /**
-     * 成本价
+     * 包含该菜品的有效订单数
      */
-    private BigDecimal costPrice;
+    private Integer orderCount;
 
     /**
-     * 利润
+     * 订单渗透率（百分比）
      */
-    private BigDecimal profit;
+    private BigDecimal orderPenetrationRate;
 
     /**
-     * 利润率（百分比）
+     * 赠送数量
      */
-    private BigDecimal profitRate;
+    private Integer giftQuantity;
+
+    /**
+     * 付费菜品平均成交单价
+     */
+    private BigDecimal avgSellingPrice;
 
     /**
      * 排名

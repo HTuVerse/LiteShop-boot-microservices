@@ -144,7 +144,7 @@ public class SendController {
         String clientIp = IpUtil.getClientIp(request);
 
         // IP级别限流检查
-        String ipLimitKey = IP_LIMIT_PREFIX + clientIp;
+        String ipLimitKey = RateLimitUtil.globalKey(IP_LIMIT_PREFIX, clientIp);
         if (!rateLimitUtil.isUnderLimit(ipLimitKey, IP_MAX_SEND_LIMIT, IP_WINDOW_SEC)) {
             log.warn("IP限流触发, IP: {}, account: {}", clientIp, DesensitizationUtil.desensitizeAccount(account));
             return Result.error("操作过于频繁，请" + IP_LIMIT_WINDOW_HOURS + "小时后再试");

@@ -14,7 +14,7 @@ import java.math.BigDecimal;
 public class SalesOverviewVO {
 
     /**
-     * 当前周期销售额
+     * 当前周期净实收
      */
     private BigDecimal currentSales;
 
@@ -49,7 +49,7 @@ public class SalesOverviewVO {
     private Integer lastPeriodOrderCount;
 
     /**
-     * 平均客单价
+     * 单均消费
      */
     private BigDecimal avgOrderAmount;
 

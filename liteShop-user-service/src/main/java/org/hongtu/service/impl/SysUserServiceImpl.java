@@ -20,6 +20,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.VO.AdminStoreOptionVO;
 import org.hongtu.VO.AdminTenantOptionVO;
 import org.hongtu.VO.AdminTenantSelectionVO;
+import org.hongtu.VO.AdminTotpChallengeVO;
 import org.hongtu.VO.SysUserVO;
 import org.hongtu.constant.RabbitMQConstants;
 import org.hongtu.enums.*;
@@ -64,8 +65,13 @@ import static org.hongtu.constant.CommonConst.*;
 @Service
 public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> implements SysUserService {
 
+    /** 不存在账号也执行一次 BCrypt，降低通过响应耗时枚举账号的风险。 */
+    private static final String DUMMY_PASSWORD_HASH = BCrypt.hashpw("invalid-login-password");
+
     private static final String ADMIN_LOGIN_TICKET_PREFIX = "admin:login:tenant-selection:";
     private static final int ADMIN_LOGIN_TICKET_TTL_SECONDS = 300;
+    private static final String ADMIN_TOTP_CHALLENGE_PREFIX = "admin:login:totp-challenge:";
+    private static final int ADMIN_TOTP_CHALLENGE_TTL_SECONDS = 300;
 
     @Value("${app.webSite.name}")
     private String webSiteName;
@@ -107,26 +113,33 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Override
     public Result login(String account,String password) {
+        if (StrUtil.isBlank(account) || StrUtil.isBlank(password)) {
+            return Result.error("账号或密码错误");
+        }
         SysTenant tenant;
         try {
             tenant = requireActiveTenant(TenantContext.getTenantIdOrNull());
         } catch (IllegalArgumentException e) {
             return Result.error(e.getMessage());
         }
+        String normalizedAccount = StrUtil.trim(account).toLowerCase(Locale.ROOT);
+        if (!rateLimitUtil.isAllowed("customer-login:" + tenant.getId() + ":" + normalizedAccount + ":" + clientIp(), 10, 300)) {
+            return Result.error("登录尝试过于频繁，请稍后再试");
+        }
         SysUser one = findLoginUser(tenant.getId(), account);
         if(one == null) {
-            //抛出一个自定义异常
-            return Result.error("用户不存在,请重新输入");
+            BCrypt.checkpw(password, DUMMY_PASSWORD_HASH);
+            return Result.error("账号或密码错误");
         }
         if(one.getStatus()== StatusEnum.DISABLED){
             return Result.error("账号被封禁，无法登入");
         }
         boolean BCrtyCheck = BCrypt.checkpw(password,one.getPassword());
-        if(one!=null && BCrtyCheck){
+        if(BCrtyCheck){
             List<String> roleCodes = sysUserRoleMapper.getRoleCodesByUserId(one.getId());
             return finishCustomerLogin(one, roleCodes, tenant.getTenantCode());
         }else {
-            return Result.error("密码输入错误");
+            return Result.error("账号或密码错误");
         }
     }
 
@@ -142,7 +155,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
      */
     private Result prepareAdminTenantSelection(String account, String password) {
         String rateLimitAccount = account.toLowerCase(Locale.ROOT);
-        if (!rateLimitUtil.isAllowed("admin-login:" + rateLimitAccount, 20, 60)) {
+        if (!rateLimitUtil.isAllowed(RateLimitUtil.globalKey("admin-login", rateLimitAccount + ":" + clientIp()), 20, 60)) {
             return Result.error("登录尝试过于频繁，请稍后再试");
         }
         LambdaQueryWrapper<SysUser> accountQuery = new LambdaQueryWrapper<>();
@@ -160,8 +173,74 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (authenticatedUsers.isEmpty()) {
             return Result.error("账号或密码错误");
         }
+        boolean totpRequired = authenticatedUsers.stream().anyMatch(user -> StrUtil.isNotBlank(user.getTotpSecret()));
+        if (totpRequired) {
+            return createAdminTotpChallenge(authenticatedUsers);
+        }
         return createAdminTenantSelection(authenticatedUsers,
                 "账号密码验证成功，请选择商户", "账号或密码错误");
+    }
+
+    /**
+     * 密码验证通过后创建短时二次验证凭证，凭证中只保存候选用户 ID。
+     */
+    private Result createAdminTotpChallenge(List<SysUser> authenticatedUsers) {
+        String challengeTicket = UUID.randomUUID().toString().replace("-", "");
+        List<Long> userIds = authenticatedUsers.stream().map(SysUser::getId).toList();
+        try {
+            redisCache.setCacheObject(
+                    ADMIN_TOTP_CHALLENGE_PREFIX + challengeTicket,
+                    JSON.toJSONString(userIds),
+                    ADMIN_TOTP_CHALLENGE_TTL_SECONDS,
+                    TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.error("创建动态口令二次验证凭证失败", e);
+            return Result.error("暂时无法创建二次验证凭证，请稍后重试");
+        }
+        return Result.success("请输入动态口令",
+                new AdminTotpChallengeVO(true, challengeTicket, ADMIN_TOTP_CHALLENGE_TTL_SECONDS));
+    }
+
+    /**
+     * 校验二次验证凭证与动态口令，通过后继续原有管理端登录流程。
+     */
+    @Override
+    public Result verifyAdminTotp(String challengeTicket, String totpCode) {
+        String normalizedTicket = StrUtil.trim(challengeTicket);
+        if (!rateLimitUtil.isAllowed(
+                RateLimitUtil.globalKey("admin-totp", normalizedTicket + ":" + clientIp()), 10, 300)) {
+            return Result.error("动态口令尝试过于频繁，请重新登录");
+        }
+        String serializedUserIds;
+        try {
+            serializedUserIds = redisCache.getCacheObject(ADMIN_TOTP_CHALLENGE_PREFIX + normalizedTicket);
+        } catch (Exception e) {
+            log.error("读取动态口令二次验证凭证失败", e);
+            return Result.error("二次验证凭证校验失败，请重新登录");
+        }
+        if (StrUtil.isBlank(serializedUserIds)) {
+            return Result.error("二次验证凭证已失效，请重新登录");
+        }
+
+        List<Long> userIds;
+        try {
+            userIds = JSON.parseArray(serializedUserIds, Long.class);
+        } catch (Exception e) {
+            log.warn("动态口令二次验证凭证内容非法", e);
+            return Result.error("二次验证凭证无效，请重新登录");
+        }
+        List<SysUser> authenticatedUsers = TenantIgnore.get(() -> userIds.stream()
+                .map(sysUserMapper::selectById)
+                .filter(Objects::nonNull)
+                .toList());
+        boolean verified = authenticatedUsers.stream().anyMatch(user ->
+                org.hongtu.security.TotpVerifier.matches(user.getTotpSecret(), totpCode));
+        if (!verified) {
+            return Result.error("动态口令错误");
+        }
+        redisCache.deleteObject(ADMIN_TOTP_CHALLENGE_PREFIX + normalizedTicket);
+        return createAdminTenantSelection(authenticatedUsers,
+                "动态口令验证成功，请选择商户", "账号或密码错误");
     }
 
     private Result createAdminTenantSelection(List<SysUser> accountUsers,
@@ -477,10 +556,12 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
         // 密码加密
         if (StrUtil.isNotBlank(sysUser.getPassword())) {
+            if (sysUser.getPassword().length() < 8) {
+                return Result.error("初始密码长度不能少于8位");
+            }
             sysUser.setPassword(BCrypt.hashpw(sysUser.getPassword()));
         } else {
-            // 如果没有设置密码，设置默认密码
-            sysUser.setPassword(BCrypt.hashpw("123456"));
+            return Result.error("新增用户必须设置初始密码");
         }
 
         // 保存用户
@@ -501,7 +582,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             if (!updateById(sysUser)) throw new IllegalStateException("初始化用户等级失败");
         });
 
-        return Result.success("添加用户成功", sysUser);
+        return Result.success("添加用户成功", org.hongtu.utils.BeanCopyUtils.copyBean(sysUser, org.hongtu.VO.SysUserVO.class));
     }
 
     @Override
@@ -956,16 +1037,9 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             return Result.error("无权限重置用户密码");
         }
 
-        // 如果没有传入新密码，使用默认密码123456
-        String passwordToSet = StrUtil.isNotBlank(newPassword) ? newPassword : "123456";
-
-        // 验证密码长度
-        if (passwordToSet.length() < 6) {
-            return Result.error("密码长度不能少于6位");
-        }
-
-        // 加密并更新密码
+        String passwordToSet = randomPassword();
         user.setPassword(BCrypt.hashpw(passwordToSet));
+        user.setMustChangePassword(1);
         user.setUpdateTime(LocalDateTime.now());
 
         boolean success = updateById(user);
@@ -977,10 +1051,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                 log.warn("用户{}当前未登录，无需强制下线", userId);
             }
 
-            String message = StrUtil.isNotBlank(newPassword)
-                    ? "密码重置成功"
-                    : "密码已重置为默认密码：123456";
-            return Result.success(message);
+            return Result.success("已生成一次性密码，用户首次登录后必须修改", passwordToSet);
         } else {
             return Result.error("密码重置失败");
         }
@@ -1044,6 +1115,47 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Override
     public Result addUserPoints(Long userId, Integer points) {
         return addUserPoints(userId, points,PointsSourceEnum.OTHERS,null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result addUserPointsIdempotent(Long userId, Integer points, String idempotencyKey) {
+        if (userId == null || points == null || points <= 0 || StrUtil.isBlank(idempotencyKey)) {
+            return Result.error("参数错误");
+        }
+        UserPointsRecord existing = userPointsRecordMapper.selectOne(new LambdaQueryWrapper<UserPointsRecord>()
+                .eq(UserPointsRecord::getIdempotencyKey, idempotencyKey)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            return Result.success(existing.getAfterPoints());
+        }
+        Result result = addUserPoints(userId, points, PointsSourceEnum.ACTIVITY, idempotencyKey);
+        if (result == null || !Result.CODE_SUCCESS.equals(result.getCode())) {
+            return result == null ? Result.error("积分增加失败") : result;
+        }
+        userPointsRecordMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<UserPointsRecord>()
+                .eq(UserPointsRecord::getRemark, idempotencyKey)
+                .isNull(UserPointsRecord::getIdempotencyKey)
+                .set(UserPointsRecord::getIdempotencyKey, idempotencyKey));
+        return result;
+    }
+
+    private String clientIp() {
+        org.springframework.web.context.request.ServletRequestAttributes attributes =
+                (org.springframework.web.context.request.ServletRequestAttributes)
+                        org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if (attributes == null) {
+            return "unknown";
+        }
+        String forwarded = attributes.getRequest().getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return attributes.getRequest().getRemoteAddr();
+    }
+
+    private String randomPassword() {
+        return java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
 
     @Override

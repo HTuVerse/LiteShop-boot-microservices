@@ -10,6 +10,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.StatusEnum;
 
@@ -49,7 +50,7 @@ public class PrintTemplate implements Serializable {
     /**
      * 纸张宽度类型：58mm、80mm
      */
-    private String paperWidth;
+    private PaperWidthEnum paperWidth;
 
     /**
      * 是否显示店铺Logo：0-不显示，1-显示

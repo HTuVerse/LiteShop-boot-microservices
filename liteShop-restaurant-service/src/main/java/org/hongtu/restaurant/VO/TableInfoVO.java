@@ -69,6 +69,9 @@ public class TableInfoVO implements Serializable {
      */
     private String qrCodeImage;
 
+    /** 匿名扫码加入桌台时必须回传的服务端签名票据。 */
+    private String scanToken;
+
     /**
      * 座位数
      */

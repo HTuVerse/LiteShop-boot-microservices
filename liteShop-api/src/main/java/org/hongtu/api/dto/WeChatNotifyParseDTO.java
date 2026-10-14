@@ -20,6 +20,11 @@ public class WeChatNotifyParseDTO implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 回调地址中的租户，用于选择验签密钥。
+     */
+    private Long tenantId;
+
+    /**
      * 回调请求体原文
      */
     private String requestBody;

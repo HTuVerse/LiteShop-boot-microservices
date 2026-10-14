@@ -27,6 +27,9 @@ public class SysUserVO {
     private String nickname;
     private GenderEnum gender;
     private String phone;
+
+    /** 1 表示当前密码是一次性凭证，登录后必须修改。 */
+    private Integer mustChangePassword;
     private String email;
     private String introduction;
     private Integer exp;

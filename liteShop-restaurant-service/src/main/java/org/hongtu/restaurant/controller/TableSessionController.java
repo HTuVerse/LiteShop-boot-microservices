@@ -5,6 +5,7 @@ import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.annotation.SaMode;
+import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
@@ -12,6 +13,8 @@ import org.hongtu.restaurant.DTO.AdminOpenTableRequest;
 import org.hongtu.restaurant.VO.ScanTableRequest;
 import org.hongtu.restaurant.VO.TableSessionVO;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.security.TableSessionTokenService;
+import org.hongtu.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -32,6 +35,12 @@ public class TableSessionController {
     @Resource
     private TableSessionService tableSessionService;
 
+    @Resource
+    private TableSessionTokenService tableSessionTokenService;
+
+    @Resource
+    private org.hongtu.restaurant.service.TableInfoService tableInfoService;
+
     /**
      * 扫码加入餐桌（推荐使用）
      * 自动判断是开桌还是加入现有会话
@@ -42,12 +51,21 @@ public class TableSessionController {
     @PostMapping("/scan")
     @SaIgnore
     public Result<TableSessionVO> scanAndJoin(@RequestBody ScanTableRequest request) {
-        try {
+        
+            if (request.getTableId() == null) {
+                return Result.error("桌位ID不能为空");
+            }
+            org.hongtu.restaurant.DTO.TableInfo table = tableInfoService.getById(request.getTableId());
+            if (table == null) {
+                return Result.error("桌位不存在");
+            }
+            tableSessionTokenService.verifyForTable(
+                    request.getScanToken(), request.getTableId(), TenantContext.getTenantId(),
+                    table.getStoreId(), table.getScanTokenId());
             TableSessionVO session = tableSessionService.scanAndJoinTable(request);
+            session.setSessionToken(tableSessionTokenService.issue(TenantContext.getTenantId(), session.getSessionNo()));
             return Result.success("加入成功", session);
-        } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -61,7 +79,7 @@ public class TableSessionController {
     @PostMapping("/admin/open")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:table:open", "operations:table-cashier:open", "operations:console:open"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<TableSessionVO> adminOpenTable(@RequestBody AdminOpenTableRequest request) {
-        try {
+        
             // 参数校验
             if (request.getTableId() == null) {
                 return Result.error("桌位ID不能为空");
@@ -81,11 +99,10 @@ public class TableSessionController {
             scanRequest.setRemark(request.getRemark());
 
             TableSessionVO session = tableSessionService.scanAndJoinTable(scanRequest);
+            session.setSessionToken(tableSessionTokenService.issue(TenantContext.getTenantId(), session.getSessionNo()));
 
             return Result.success("操作成功", session);
-        } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
-        }
+        
     }
 
     /**
@@ -98,9 +115,13 @@ public class TableSessionController {
     @SaIgnore
     public Result<TableSessionVO> updatePeopleCount(
             @RequestParam String sessionNo,
-            @RequestParam Integer peopleCount
+            @RequestParam Integer peopleCount,
+            @RequestHeader(TableSessionTokenService.HEADER_NAME) String sessionToken
     ) {
-        try {
+        
+            if (!isTableOperator()) {
+                tableSessionTokenService.verifyForSession(sessionToken, sessionNo, TenantContext.getTenantId());
+            }
             if (peopleCount == null || peopleCount < 1) {
                 return Result.error("就餐人数必须大于0");
             }
@@ -110,9 +131,7 @@ public class TableSessionController {
 
             TableSessionVO session = tableSessionService.updatePeopleCount(sessionNo, peopleCount);
             return Result.success("更新成功", session);
-        } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
-        }
+        
     }
 
 
@@ -122,7 +141,13 @@ public class TableSessionController {
      * @return 会话详情
      */
     @GetMapping("/detail/{sessionNo}")
-    public Result<TableSessionVO> getSessionDetail(@PathVariable String sessionNo) {
+    @SaIgnore
+    public Result<TableSessionVO> getSessionDetail(
+            @PathVariable String sessionNo,
+            @RequestHeader(value = TableSessionTokenService.HEADER_NAME, required = false) String sessionToken) {
+        if (!isTableOperator()) {
+            tableSessionTokenService.verifyForSession(sessionToken, sessionNo, TenantContext.getTenantId());
+        }
         TableSessionVO session = tableSessionService.getSessionDetailByNo(sessionNo);
         if (session != null) {
             return Result.success("查询成功", session);
@@ -137,7 +162,7 @@ public class TableSessionController {
      * @return 会话信息
      */
     @GetMapping("/checkActive")
-    @SaIgnore
+    @SaCheckPermission(value = {"restaurant:table", "operations:table-cashier", "operations:console"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<TableSessionVO> getActiveSession(@RequestParam Long tableId) {
         var session = tableSessionService.getActiveSessionByTableId(tableId);
         if (session != null) {
@@ -149,23 +174,19 @@ public class TableSessionController {
     }
 
     /**
-     * 结束会话（结账）
+     * 旧版结束会话接口已停用。该接口无法验证订单应付金额，结算必须走统一收银接口。
      * @param sessionNo 会话编号
-     * @param paidAmount 实付金额
-     * @return 结果
+     * @param paidAmount 客户端提交金额（不再接受）
+     * @return 停用提示
      */
+    @Deprecated
     @PutMapping("/end")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:table:settle", "operations:table-cashier:settle", "operations:console:settle"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> endSession(
             @RequestParam String sessionNo,
             @RequestParam BigDecimal paidAmount
     ) {
-        try {
-            boolean result = tableSessionService.endSession(sessionNo, paidAmount);
-            return Result.success("结账成功", result);
-        } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
-        }
+        return Result.error("该结账接口已停用，请使用统一桌位收银接口");
     }
 
     /**
@@ -214,7 +235,7 @@ public class TableSessionController {
     public Result<Map<String, Object>> clearAllSessions(
             @RequestParam(required = false) Long storeId
     ) {
-        try {
+        
             int clearedCount = tableSessionService.clearAllSessions(storeId);
             Map<String, Object> data = new HashMap<>();
             data.put("clearedSessionCount", clearedCount);
@@ -225,9 +246,7 @@ public class TableSessionController {
                     : String.format("所有会话清除完成，共清除%d个会话", clearedCount);
             
             return Result.success(message, data);
-        } catch (RuntimeException e) {
-            return Result.error("清除会话失败：" + e.getMessage());
-        }
+        
     }
 
     /**
@@ -240,7 +259,7 @@ public class TableSessionController {
     public Result<Map<String, Object>> clearSessionsByTables(
             @RequestBody List<Long> tableIds
     ) {
-        try {
+        
             if (tableIds == null || tableIds.isEmpty()) {
                 return Result.error("餐桌ID列表不能为空");
             }
@@ -254,8 +273,16 @@ public class TableSessionController {
                     String.format("指定餐桌会话清除完成，共清除%d个会话", clearedCount), 
                     data
             );
-        } catch (RuntimeException e) {
-            return Result.error("清除会话失败：" + e.getMessage());
+        
+    }
+
+    private boolean isTableOperator() {
+        try {
+            return StpUtil.isLogin() && (StpUtil.hasRole("SUPER_ADMIN") || List.of(
+                    "restaurant:table", "operations:table-cashier", "operations:console")
+                    .stream().anyMatch(StpUtil::hasPermission));
+        } catch (Exception ignored) {
+            return false;
         }
     }
 

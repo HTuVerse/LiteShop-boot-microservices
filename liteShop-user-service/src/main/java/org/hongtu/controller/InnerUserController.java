@@ -11,6 +11,8 @@ import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.SysTenant;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.MemberPricingDTO;
+import org.hongtu.api.dto.UserBasicDTO;
 import org.hongtu.service.SysUserService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
@@ -74,6 +76,36 @@ public class InnerUserController {
         return Result.success(sysUserService.getById(id));
     }
 
+    /** 仅返回会员价计算所需字段，避免无关用户字段造成跨服务反序列化失败。 */
+    @GetMapping("/{id}/pricing")
+    public Result<MemberPricingDTO> getMemberPricing(@PathVariable("id") Long id) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId, SysUser::getLevel)
+                .eq(SysUser::getId, id)
+                .last("LIMIT 1"));
+        if (user == null) {
+            return Result.error("会员不存在");
+        }
+        return Result.success(new MemberPricingDTO().setId(user.getId()).setLevel(user.getLevel()));
+    }
+
+    /** 仅返回业务列表展示所需字段，不向其他服务暴露密码、余额等用户信息。 */
+    @PostMapping("/batch-basic")
+    public Result<List<UserBasicDTO>> getUserBasics(@RequestBody List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return Result.success(List.of());
+        List<Long> distinctIds = ids.stream().filter(java.util.Objects::nonNull).distinct().limit(200).toList();
+        if (distinctIds.isEmpty()) return Result.success(List.of());
+        List<UserBasicDTO> users = sysUserMapper.selectList(
+                        new LambdaQueryWrapper<SysUser>()
+                                .select(SysUser::getId, SysUser::getUsername, SysUser::getNickname)
+                                .in(SysUser::getId, distinctIds))
+                .stream()
+                .map(user -> new UserBasicDTO().setId(user.getId())
+                        .setUsername(user.getUsername()).setNickname(user.getNickname()))
+                .toList();
+        return Result.success(users);
+    }
+
     /**
      * 查询全部用户ID（替代原 lottery 模块全表查询取ID）
      */
@@ -89,6 +121,17 @@ public class InnerUserController {
     /**
      * 增加用户积分（替代原 lottery 模块直接调 SysUserService.addUserPoints）
      */
+    @PostMapping("/points/add-idempotent")
+    public Result<Integer> addUserPointsIdempotent(@RequestParam("userId") Long userId,
+                                                   @RequestParam("points") Integer points,
+                                                   @RequestParam("idempotencyKey") String idempotencyKey) {
+        Result result = sysUserService.addUserPointsIdempotent(userId, points, idempotencyKey);
+        if (!Result.CODE_SUCCESS.equals(result.getCode())) {
+            return Result.error(result.getMsg());
+        }
+        return Result.success(points);
+    }
+
     @PostMapping("/points/add")
     public Result<Integer> addUserPoints(@RequestParam("userId") Long userId,
                                          @RequestParam("points") Integer points) {

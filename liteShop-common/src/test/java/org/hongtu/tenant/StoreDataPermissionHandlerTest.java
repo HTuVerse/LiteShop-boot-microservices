@@ -28,7 +28,7 @@ class StoreDataPermissionHandlerTest {
     @Test
     void shouldFilterStoreOwnedTableWithAlias() {
         StoreContext.setRestricted(true, List.of(11L, 22L));
-        Table table = new Table("dish");
+        Table table = new Table("store_dish");
         table.setAlias(new Alias("d"));
 
         Expression expression = handler.getSqlSegment(table, null, "test.select");
@@ -37,10 +37,23 @@ class StoreDataPermissionHandlerTest {
     }
 
     @Test
+    void shouldNotFilterTenantLevelDishMaster() {
+        StoreContext.setRestricted(true, List.of(11L));
+        assertNull(handler.getSqlSegment(new Table("dish"), null, "test.select"));
+    }
+
+    @Test
     void shouldUseIdForStoreInfo() {
         StoreContext.setRestricted(true, List.of(11L));
         Expression expression = handler.getSqlSegment(new Table("store_info"), null, "test.select");
         assertEquals("store_info.id IN (11)", expression.toString());
+    }
+
+    @Test
+    void shouldFilterMenuWorkflowByStore() {
+        StoreContext.setRestricted(true, List.of(11L));
+        Expression expression = handler.getSqlSegment(new Table("menu_change_record"), null, "test.select");
+        assertEquals("menu_change_record.store_id IN (11)", expression.toString());
     }
 
     @Test

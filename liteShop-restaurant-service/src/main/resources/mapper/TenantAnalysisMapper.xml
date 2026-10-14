@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.hongtu.restaurant.DAO.TenantAnalysisMapper">
+
+    <sql id="storeScope">
+        1 = 1
+        <if test="groupId != null">
+            AND EXISTS (
+                SELECT 1 FROM store_group_member sgm
+                INNER JOIN store_group sg ON sg.id = sgm.group_id
+                WHERE sgm.store_id = s.id
+                  AND sgm.group_id = #{groupId}
+                  AND sg.status = 1
+                  AND sg.deleted = 0
+            )
+        </if>
+    </sql>
+
+    <!-- 两个等长周期一次读取，门店平均值的分母包含零销售门店。 -->
+    <select id="selectOverview" resultType="java.util.HashMap">
+        SELECT COUNT(DISTINCT s.id) AS selectedStoreCount,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.gross_sales_amount ELSE 0 END), 0) AS currentGrossSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.gross_sales_amount ELSE 0 END), 0) AS previousGrossSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.net_sales_amount ELSE 0 END), 0) AS currentNetSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.net_sales_amount ELSE 0 END), 0) AS previousNetSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.valid_order_count ELSE 0 END), 0) AS currentOrderCount,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.valid_order_count ELSE 0 END), 0) AS previousOrderCount,
+               MAX(ad.updated_at) AS dataUpdatedAt
+        FROM store_info s
+        LEFT JOIN analysis_store_daily ad ON ad.store_id = s.id
+          AND ad.biz_date BETWEEN #{previousStartDate} AND #{endDate}
+        WHERE <include refid="storeScope"/>
+    </select>
+
+    <select id="selectStoreMetrics" resultType="java.util.HashMap">
+        SELECT s.id AS storeId, s.store_name AS storeName,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.gross_sales_amount ELSE 0 END), 0) AS currentGrossSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.gross_sales_amount ELSE 0 END), 0) AS previousGrossSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.net_sales_amount ELSE 0 END), 0) AS currentNetSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.net_sales_amount ELSE 0 END), 0) AS previousNetSales,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{startDate} AND #{endDate}
+                                 THEN ad.valid_order_count ELSE 0 END), 0) AS currentOrderCount,
+               COALESCE(SUM(CASE WHEN ad.biz_date BETWEEN #{previousStartDate} AND #{previousEndDate}
+                                 THEN ad.valid_order_count ELSE 0 END), 0) AS previousOrderCount
+        FROM store_info s
+        LEFT JOIN analysis_store_daily ad ON ad.store_id = s.id
+          AND ad.biz_date BETWEEN #{previousStartDate} AND #{endDate}
+        WHERE <include refid="storeScope"/>
+        GROUP BY s.id, s.store_name
+    </select>
+
+    <select id="selectDishMetrics" resultType="java.util.HashMap">
+        SELECT dd.dish_id AS dishId,
+               COALESCE(d.dish_name, CONCAT('菜品#', dd.dish_id)) AS dishName,
+               COALESCE(MAX(dc.category_name), '未分类') AS categoryName,
+               COALESCE(SUM(dd.sales_quantity), 0) AS salesQuantity,
+               COALESCE(SUM(dd.gross_sales_amount), 0) AS grossSales,
+               COALESCE(SUM(dd.net_sales_amount), 0) AS netSales,
+               CASE WHEN SUM(dd.unknown_cost_quantity) = 0 THEN COALESCE(SUM(dd.cost_amount), 0) ELSE NULL END AS costAmount,
+               CASE WHEN SUM(dd.unknown_cost_quantity) = 0 THEN COALESCE(SUM(dd.gross_profit_amount), 0) ELSE NULL END AS grossProfit,
+               COALESCE(SUM(dd.order_count), 0) AS orderCount,
+               COALESCE(SUM(dd.gift_quantity), 0) AS giftQuantity,
+               COALESCE(SUM(dd.unknown_cost_quantity), 0) AS unknownCostQuantity,
+               MAX(CASE WHEN dd.sales_quantity > 0 THEN dd.biz_date END) AS lastSaleDate
+        FROM analysis_store_dish_daily dd
+        INNER JOIN store_info s ON s.id = dd.store_id
+        LEFT JOIN dish d ON d.id = dd.dish_id
+        LEFT JOIN dish_category dc ON dc.id = dd.category_id
+        WHERE dd.biz_date BETWEEN #{startDate} AND #{endDate}
+          AND <include refid="storeScope"/>
+        GROUP BY dd.dish_id, d.dish_name
+    </select>
+
+    <!-- 当前在售菜品左连接周期销量，零销量菜品也能进入滞销榜。 -->
+    <select id="selectSlowMovingDishMetrics" resultType="java.util.HashMap">
+        SELECT sd.dish_id AS dishId,
+               d.dish_name AS dishName,
+               COALESCE(MAX(dc.category_name), '未分类') AS categoryName,
+               COALESCE(SUM(dd.sales_quantity), 0) AS salesQuantity,
+               COALESCE(SUM(dd.net_sales_amount), 0) AS netSales,
+               MAX(CASE WHEN dd.sales_quantity > 0 THEN dd.biz_date END) AS lastSaleDate
+        FROM store_dish sd
+        INNER JOIN store_info s ON s.id = sd.store_id
+        INNER JOIN dish d ON d.id = sd.dish_id AND d.deleted = 0 AND d.master_status = 1
+        LEFT JOIN dish_category dc ON dc.id = COALESCE(sd.category_override_id, d.category_id)
+        LEFT JOIN analysis_store_dish_daily dd ON dd.store_id = sd.store_id
+          AND dd.dish_id = sd.dish_id
+          AND dd.biz_date BETWEEN #{startDate} AND #{endDate}
+        WHERE sd.deleted = 0 AND sd.listing_status = 1
+          AND <include refid="storeScope"/>
+        GROUP BY sd.dish_id, d.dish_name
+        ORDER BY salesQuantity ASC, netSales ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectMatrixStores" resultType="java.util.HashMap">
+        SELECT s.id AS storeId, s.store_name AS storeName
+        FROM store_info s
+        WHERE <include refid="storeScope"/>
+        ORDER BY s.store_name, s.id
+        LIMIT #{limit}
+    </select>
+
+    <select id="countMatrixStores" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM store_info s
+        WHERE <include refid="storeScope"/>
+    </select>
+
+    <select id="selectMatrixCells" resultType="java.util.HashMap">
+        SELECT sd.dish_id AS dishId, sd.store_id AS storeId,
+               MAX(CASE WHEN sd.deleted = 0 AND sd.listing_status = 1 THEN 1 ELSE 0 END) AS listed,
+               COALESCE(SUM(dd.sales_quantity), 0) AS salesQuantity,
+               COALESCE(SUM(dd.net_sales_amount), 0) AS netSales,
+               CASE WHEN COALESCE(SUM(dd.unknown_cost_quantity), 0) = 0
+                    THEN COALESCE(SUM(dd.gross_profit_amount), 0) ELSE NULL END AS grossProfit,
+               COALESCE(SUM(dd.order_count), 0) AS dishOrderCount,
+               COALESCE(MAX(store_orders.storeOrderCount), 0) AS storeOrderCount
+        FROM store_dish sd
+        INNER JOIN store_info s ON s.id = sd.store_id
+        LEFT JOIN analysis_store_dish_daily dd ON dd.store_id = sd.store_id
+          AND dd.dish_id = sd.dish_id
+          AND dd.biz_date BETWEEN #{startDate} AND #{endDate}
+        LEFT JOIN (
+            SELECT store_id, SUM(valid_order_count) AS storeOrderCount
+            FROM analysis_store_daily
+            WHERE biz_date BETWEEN #{startDate} AND #{endDate}
+            GROUP BY store_id
+        ) store_orders ON store_orders.store_id = sd.store_id
+        WHERE <include refid="storeScope"/>
+          AND sd.dish_id IN
+          <foreach collection="dishIds" item="dishId" open="(" separator="," close=")">#{dishId}</foreach>
+        GROUP BY sd.dish_id, sd.store_id
+        ORDER BY sd.dish_id, sd.store_id
+    </select>
+
+    <!-- 当前范围内可参与门店横向比较的在售菜品。 -->
+    <select id="selectComparisonDishes" resultType="java.util.HashMap">
+        SELECT sd.dish_id AS dishId,
+               d.dish_name AS dishName,
+               COALESCE(MAX(dc.category_name), '未分类') AS categoryName
+        FROM store_dish sd
+        INNER JOIN store_info s ON s.id = sd.store_id
+        INNER JOIN dish d ON d.id = sd.dish_id AND d.deleted = 0 AND d.master_status = 1
+        LEFT JOIN dish_category dc ON dc.id = COALESCE(sd.category_override_id, d.category_id)
+        WHERE sd.deleted = 0 AND sd.listing_status = 1
+          AND <include refid="storeScope"/>
+        GROUP BY sd.dish_id, d.dish_name
+        ORDER BY d.dish_name, sd.dish_id
+    </select>
+
+    <!-- 选定菜品按门店展开；门店总实收作为菜品销售占比的分母。 -->
+    <select id="selectDishStoreComparison" resultType="java.util.HashMap">
+        SELECT s.id AS storeId,
+               s.store_name AS storeName,
+               MAX(CASE WHEN sd.deleted = 0 AND sd.listing_status = 1 THEN 1 ELSE 0 END) AS listed,
+               COALESCE(SUM(dd.sales_quantity), 0) AS salesQuantity,
+               COALESCE(SUM(dd.net_sales_amount), 0) AS netSales,
+               COALESCE(MAX(store_sales.storeNetSales), 0) AS storeNetSales
+        FROM store_info s
+        LEFT JOIN store_dish sd ON sd.store_id = s.id AND sd.dish_id = #{dishId}
+        LEFT JOIN analysis_store_dish_daily dd ON dd.store_id = s.id
+          AND dd.dish_id = #{dishId}
+          AND dd.biz_date BETWEEN #{startDate} AND #{endDate}
+        LEFT JOIN (
+            SELECT store_id, SUM(net_sales_amount) AS storeNetSales
+            FROM analysis_store_daily
+            WHERE biz_date BETWEEN #{startDate} AND #{endDate}
+            GROUP BY store_id
+        ) store_sales ON store_sales.store_id = s.id
+        WHERE <include refid="storeScope"/>
+        GROUP BY s.id, s.store_name
+        ORDER BY netSales DESC, salesQuantity DESC, s.store_name, s.id
+    </select>
+</mapper>

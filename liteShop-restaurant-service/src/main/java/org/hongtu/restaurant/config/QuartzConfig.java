@@ -1,6 +1,10 @@
 package org.hongtu.restaurant.config;
 
+import org.hongtu.restaurant.job.LocalOutboxReconcileJob;
 import org.hongtu.restaurant.job.OrderTimeoutJob;
+import org.hongtu.restaurant.job.PrintJobDispatchJob;
+import org.hongtu.restaurant.job.MenuChangeEffectiveJob;
+import org.hongtu.restaurant.job.TenantAnalysisRefreshJob;
 import org.quartz.*;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,6 +18,48 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration("restaurantQuartzConfig")
 public class QuartzConfig {
+
+    /** 租户经营分析日汇总任务定义。 */
+    @Bean
+    public JobDetail tenantAnalysisRefreshJobDetail() {
+        return JobBuilder.newJob(TenantAnalysisRefreshJob.class)
+                .withIdentity("tenantAnalysisRefreshJob", "restaurantAnalysisGroup")
+                .withDescription("租户经营分析脏数据队列刷新任务")
+                .storeDurably()
+                .build();
+    }
+
+    /** 高频轮询轻量脏数据队列；没有业务变更时不会扫描订单表。 */
+    @Bean
+    public Trigger tenantAnalysisRefreshJobTrigger(JobDetail tenantAnalysisRefreshJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(tenantAnalysisRefreshJobDetail)
+                .withIdentity("tenantAnalysisRefreshTrigger", "restaurantAnalysisGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInSeconds(5).repeatForever())
+                .build();
+    }
+
+    /** 菜单变更定时生效任务定义。 */
+    @Bean
+    public JobDetail menuChangeEffectiveJobDetail() {
+        return JobBuilder.newJob(MenuChangeEffectiveJob.class)
+                .withIdentity("menuChangeEffectiveJob", "restaurantMenuGroup")
+                .withDescription("菜单变更定时生效任务")
+                .storeDurably()
+                .build();
+    }
+
+    /** 每30秒扫描一次待生效菜单变更。 */
+    @Bean
+    public Trigger menuChangeEffectiveJobTrigger(JobDetail menuChangeEffectiveJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(menuChangeEffectiveJobDetail)
+                .withIdentity("menuChangeEffectiveTrigger", "restaurantMenuGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInSeconds(30).repeatForever())
+                .build();
+    }
 
     /**
      * 订单超时检查任务 - JobDetail
@@ -49,6 +95,40 @@ public class QuartzConfig {
                 .withIdentity("orderTimeoutTrigger", "orderGroup")
                 .withDescription("订单超时检查触发器 - 每5秒执行")
                 .withSchedule(scheduleBuilder)
+                .build();
+    }
+
+    @Bean
+    public JobDetail localOutboxReconcileJobDetail() {
+        return JobBuilder.newJob(LocalOutboxReconcileJob.class)
+                .withIdentity("localOutboxReconcileJob", "orderGroup")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger localOutboxReconcileTrigger(JobDetail localOutboxReconcileJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(localOutboxReconcileJobDetail)
+                .withIdentity("localOutboxReconcileTrigger", "orderGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule().withIntervalInSeconds(30).repeatForever())
+                .build();
+    }
+
+    @Bean
+    public JobDetail printJobDispatchJobDetail() {
+        return JobBuilder.newJob(PrintJobDispatchJob.class)
+                .withIdentity("printJobDispatchJob", "orderGroup")
+                .storeDurably()
+                .build();
+    }
+
+    @Bean
+    public Trigger printJobDispatchTrigger(JobDetail printJobDispatchJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(printJobDispatchJobDetail)
+                .withIdentity("printJobDispatchTrigger", "orderGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule().withIntervalInSeconds(5).repeatForever())
                 .build();
     }
 

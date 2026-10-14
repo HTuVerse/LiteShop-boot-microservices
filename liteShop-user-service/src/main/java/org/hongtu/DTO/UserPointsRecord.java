@@ -76,6 +76,11 @@ public class UserPointsRecord implements Serializable {
     private String remark;
 
     /**
+     * 积分入账幂等键。同一个键只允许成功一次。
+     */
+    private String idempotencyKey;
+
+    /**
      * 操作时间
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")

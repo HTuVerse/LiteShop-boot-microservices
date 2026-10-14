@@ -45,12 +45,12 @@ public class SlowMovingDishVO {
     private BigDecimal salesAmount;
 
     /**
-     * 近30天销量
+     * 统计期付费销量（兼容旧字段名）
      */
     private Integer salesLast30Days;
 
     /**
-     * 近30天销售额
+     * 统计期净销售额（兼容旧字段名）
      */
     private BigDecimal salesAmountLast30Days;
 
@@ -77,7 +77,7 @@ public class SlowMovingDishVO {
     private LocalDateTime lastSaleTime;
 
     /**
-     * 滞销天数
+     * 距最后一次付费销售天数；从未售出时按上架时间计算
      */
     private Integer slowMovingDays;
 

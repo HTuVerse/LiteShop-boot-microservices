@@ -390,6 +390,11 @@ public class SaasCatalogService {
                         && (!positiveInteger(row.getQuotaValue()))) {
                     throw new BusinessException(400, "门店数量必须是大于 0 的整数，或设置为不限量");
                 }
+            } else if (SaasFeatureKeys.AI_MANAGER_CALLS.equals(feature.getFeatureCode())) {
+                row.setUnlimited(0).setResetPeriod("BILLING_CYCLE").setEnforcement("HARD");
+                if (row.getEnabled() == 1 && !positiveInteger(row.getQuotaValue())) {
+                    throw new BusinessException(400, "AI 店长生成次数必须是大于 0 的整数");
+                }
             }
         } else {
             row.setQuotaValue(null).setUnlimited(0).setResetPeriod("NONE");
@@ -411,6 +416,18 @@ public class SaasCatalogService {
             if ("SET".equals(operation) && (numberValue == null || numberValue.signum() < 0
                     || numberValue.stripTrailingZeros().scale() > 0)) {
                 throw new BusinessException(400, label + "：门店数量必须是非负整数");
+            }
+        }
+        if (SaasFeatureKeys.AI_MANAGER_CALLS.equals(feature.getFeatureCode())) {
+            if ("加购权益".equals(label) && (!"ADD".equals(operation) || !positiveInteger(numberValue))) {
+                throw new BusinessException(400, "AI 店长次数包只能增加大于 0 的整数次数");
+            }
+            if ("ADD".equals(operation) && !positiveInteger(numberValue)) {
+                throw new BusinessException(400, label + "：增加次数必须是大于 0 的整数");
+            }
+            if ("SET".equals(operation) && (numberValue == null || numberValue.signum() < 0
+                    || numberValue.stripTrailingZeros().scale() > 0)) {
+                throw new BusinessException(400, label + "：设置次数必须是非负整数");
             }
         }
         if ("ADD".equals(operation) && !SaasFeatureType.numeric(feature.getFeatureType())) throw new BusinessException(400, label + "：非数值功能不能 ADD");
@@ -444,6 +461,16 @@ public class SaasCatalogService {
         if (SaasFeatureKeys.STORE_COUNT.equals(featureCode)) {
             row.setFeatureType("NUMBER").setUnit("STORE").setQuotaMode("RESOURCE")
                     .setUsageSource("REALTIME").setUsageMetric(SaasFeatureKeys.STORE_COUNT)
+                    .setDefaultValue(null).setDefaultTextValue(null).setAllowedValues(null);
+        } else if (SaasFeatureKeys.AI_MANAGER.equals(featureCode)) {
+            // AI 店长只控制租户是否开通；模型 Key 和额度仍由平台统一管理。
+            row.setFeatureType("BOOLEAN").setUnit(null).setQuotaMode(null)
+                    .setUsageSource("NONE").setUsageMetric(null)
+                    .setDefaultValue(BigDecimal.ZERO).setDefaultTextValue(null).setAllowedValues(null);
+        } else if (SaasFeatureKeys.AI_MANAGER_CALLS.equals(featureCode)) {
+            // 调用次数按订阅周期原子累计，套餐和加购可统一叠加。
+            row.setFeatureType("NUMBER").setUnit("REQUEST").setQuotaMode("PERIODIC")
+                    .setUsageSource("COUNTER").setUsageMetric(null)
                     .setDefaultValue(null).setDefaultTextValue(null).setAllowedValues(null);
         }
     }
