@@ -23,7 +23,7 @@ public class MinioStorageService implements StorageService {
     @Override public void upload(PlatformServiceRuntimeDTO config, String bucket, String key,
                                  InputStream stream, long size, String mimeType) throws Exception {
         client(config, false).putObject(PutObjectArgs.builder().bucket(bucket).object(key)
-                .stream(stream, size, -1).contentType(mimeType).build());
+                .stream(stream, size, -1L).contentType(mimeType).build());
     }
     @Override public void delete(PlatformServiceRuntimeDTO config, String bucket, String key) throws Exception {
         client(config, false).removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
@@ -51,7 +51,7 @@ public class MinioStorageService implements StorageService {
     }
     @Override public void copy(PlatformServiceRuntimeDTO config, String sourceBucket, String targetBucket, String key) throws Exception {
         client(config, false).copyObject(CopyObjectArgs.builder().bucket(targetBucket).object(key)
-                .source(CopySource.builder().bucket(sourceBucket).object(key).build()).build());
+                .source(SourceObject.builder().bucket(sourceBucket).object(key).build()).build());
     }
     @Override public void checkConnection(PlatformServiceRuntimeDTO config, String bucket) throws Exception {
         if (!client(config, false).bucketExists(BucketExistsArgs.builder().bucket(bucket).build()))
