@@ -13,6 +13,7 @@ import org.hongtu.restaurant.DTO.AdminOpenTableRequest;
 import org.hongtu.restaurant.VO.ScanTableRequest;
 import org.hongtu.restaurant.VO.TableSessionVO;
 import org.hongtu.restaurant.service.TableSessionService;
+import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.security.TableSessionTokenService;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
@@ -39,6 +40,9 @@ public class TableSessionController {
     private TableSessionTokenService tableSessionTokenService;
 
     @Resource
+    private StoreDataScopeService storeDataScopeService;
+
+    @Resource
     private org.hongtu.restaurant.service.TableInfoService tableInfoService;
 
     /**
@@ -63,6 +67,9 @@ public class TableSessionController {
                     request.getScanToken(), request.getTableId(), TenantContext.getTenantId(),
                     table.getStoreId(), table.getScanTokenId());
             TableSessionVO session = tableSessionService.scanAndJoinTable(request);
+            if (session == null) {
+                return Result.success("该桌尚未选择人数", null);
+            }
             session.setSessionToken(tableSessionTokenService.issue(TenantContext.getTenantId(), session.getSessionNo()));
             return Result.success("加入成功", session);
         
@@ -150,6 +157,11 @@ public class TableSessionController {
         }
         TableSessionVO session = tableSessionService.getSessionDetailByNo(sessionNo);
         if (session != null) {
+            // 管理端进入桌台即加入该会话，签发与扫码用户相同的短期 WebSocket 票据。
+            if (isTableOperator()) {
+                storeDataScopeService.checkStoreAccess(session.getStoreId());
+                session.setSessionToken(tableSessionTokenService.issue(TenantContext.getTenantId(), sessionNo));
+            }
             return Result.success("查询成功", session);
         } else {
             return Result.error("会话不存在");

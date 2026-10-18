@@ -41,6 +41,9 @@ public class RestaurantOrderConverter {
     private DishMapper dishMapper;
 
     @Resource
+    private OrderDishChangeLogMapper orderDishChangeLogMapper;
+
+    @Resource
     private TableSessionMapper tableSessionMapper;
 
     /**
@@ -65,6 +68,9 @@ public class RestaurantOrderConverter {
 
         // 4. 填充订单明细
         fillOrderItems(vo, order.getId());
+        vo.setDishChanges(orderDishChangeLogMapper.selectList(new LambdaQueryWrapper<OrderDishChangeLog>()
+                .eq(OrderDishChangeLog::getOrderId, order.getId())
+                .orderByDesc(OrderDishChangeLog::getOccurredAt)));
 
         // 5. 填充会话状态
         fillSessionRelatedInfo(vo, order.getSessionNo());

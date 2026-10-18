@@ -16,6 +16,7 @@ import org.hongtu.restaurant.VO.PaymentStatusVO;
 import org.hongtu.restaurant.VO.RefundDishVO;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
 import org.hongtu.restaurant.enums.OrderStatusEnum;
+import org.hongtu.restaurant.enums.PaymentModeEnum;
 import org.hongtu.restaurant.enums.PaymentTypeEnum;
 import org.hongtu.restaurant.service.RestaurantOrderService;
 import org.hongtu.restaurant.service.TableSessionService;
@@ -24,8 +25,10 @@ import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +57,27 @@ public class RestaurantOrderController {
     private UserFeignClient userFeignClient;
     @Resource
     private HttpServletRequest currentRequest;
+    @Resource private org.hongtu.restaurant.config.TenantRestaurantConfig tenantRestaurantConfig;
+
+    /** 顾客端读取当前支付模式，用于显示正确的支付入口。 */
+    @GetMapping("/paymentMode")
+    public Result<Map<String, Boolean>> paymentMode() {
+        return Result.success("获取支付模式成功", Map.of("sandbox", tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId())));
+    }
+
+    /** 沙箱确认仅在服务端明确开启时可用，并复用真实支付的订单入账规则。 */
+    @PostMapping("/sandboxPay")
+    public Result<Boolean> sandboxPay(@RequestParam Long orderId,
+                                      @RequestParam(defaultValue = "1") Integer paymentType) {
+        if (!tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId())) throw new org.hongtu.exception.BusinessException(403, "沙箱支付未启用");
+        PaymentTypeEnum channel = PaymentTypeEnum.getByCode(paymentType);
+        if (channel != PaymentTypeEnum.WECHAT && channel != PaymentTypeEnum.ALIPAY) {
+            return Result.error("沙箱仅支持微信或支付宝支付");
+        }
+        requireOrderAccess(orderId, null, "settle");
+        boolean paid = restaurantOrderService.confirmSandboxPayment(orderId, channel);
+        return paid ? Result.success("沙箱支付成功", true) : Result.error("订单当前无法支付");
+    }
 
     /**
      * 创建订单（从购物车生成订单）
@@ -78,7 +102,9 @@ public class RestaurantOrderController {
                 return Result.error("订单金额不正确");
             }
             boolean cashierOperator = isCashierOperator();
-            request.setUserId(StpUtil.getLoginIdAsLong());
+            if (cashierOperator) org.hongtu.security.OperationPermission.order("add-items");
+            // 收银员未指定会员时订单不归属操作员；操作员另存审计字段。
+            request.setUserId(cashierOperator ? null : StpUtil.getLoginIdAsLong());
             if (!StrUtil.isBlank(request.getSessionNo())) {
                 if (!cashierOperator) {
                     tableSessionTokenService.verifyForSession(
@@ -112,6 +138,7 @@ public class RestaurantOrderController {
             if (request.getUserId() == null) {
                 return Result.error("代客下单必须指定会员");
             }
+            org.hongtu.security.OperationPermission.order("add-items");
             if (request.getCartItems() == null || request.getCartItems().isEmpty()) {
                 return Result.error("购物车不能为空");
             }
@@ -378,22 +405,62 @@ public class RestaurantOrderController {
                 }
             }
 
+            // 同一次支付请求只读取一次租户开关，避免配置修改时两个分支判断不一致。
+            boolean sandboxPaymentEnabled = tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId());
+
             // 微信支付需要openid
             if (request.getPaymentType() == PaymentTypeEnum.WECHAT &&
-                    (request.getOpenId() == null || request.getOpenId().isEmpty())) {
+                    !sandboxPaymentEnabled && (request.getOpenId() == null || request.getOpenId().isEmpty())) {
                 return Result.error("微信支付需要提供openid");
+            }
+
+            if (sandboxPaymentEnabled && (request.getPaymentType() == PaymentTypeEnum.WECHAT
+                    || request.getPaymentType() == PaymentTypeEnum.ALIPAY)) {
+                RestaurantOrder order = restaurantOrderService.getById(request.getOrderId());
+                if (order == null) return Result.error("订单不存在");
+                if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
+                    return Result.error("该订单采用线下支付，请到收银台结算");
+                }
+                return Result.success("沙箱支付待确认", PaymentResponse.builder()
+                        .orderId(order.getId()).orderNo(order.getOrderNo())
+                        .payAmount(order.getActualAmount()).paymentType(request.getPaymentType().getCode())
+                        .sandbox(true).build());
             }
 
             // 调用业务层处理（第三方支付）
             PaymentResponse response = restaurantOrderService.createPayment(
                     request.getOrderId(),
                     request.getPaymentType().getCode(),
-                    request.getOpenId()
+                    request.getOpenId(),
+                    request.getPaymentType() == PaymentTypeEnum.ALIPAY
+                            ? validatedPaymentReturnUrl(request.getReturnUrl()) : null
             );
 
             return Result.success("发起支付成功", response);
 
         
+    }
+
+    private String validatedPaymentReturnUrl(String returnUrl) {
+        if (returnUrl == null || returnUrl.isBlank()) return null;
+        try {
+            URI target = URI.create(returnUrl);
+            String requestOrigin = currentRequest.getHeader("Origin");
+            URI origin = requestOrigin == null ? null : URI.create(requestOrigin);
+            if (origin == null || target.getHost() == null || target.getUserInfo() != null
+                    || !target.getScheme().equalsIgnoreCase(origin.getScheme())
+                    || !target.getHost().equalsIgnoreCase(origin.getHost())
+                    || target.getPort() != origin.getPort()
+                    || (!"https".equalsIgnoreCase(target.getScheme())
+                        && !("http".equalsIgnoreCase(target.getScheme())
+                            && ("localhost".equalsIgnoreCase(target.getHost())
+                                || "127.0.0.1".equals(target.getHost()))))) {
+                throw new IllegalArgumentException("支付返回地址无效");
+            }
+            return target.toString();
+        } catch (RuntimeException exception) {
+            throw new org.hongtu.exception.BusinessException("支付返回地址无效");
+        }
     }
 
     /**
@@ -404,13 +471,14 @@ public class RestaurantOrderController {
      * @return 支付状态信息
      */
     @GetMapping("/queryPayStatus")
-    public Result<PaymentStatusVO> getPaymentStatus(@RequestParam Long orderId) {
+    public Result<PaymentStatusVO> getPaymentStatus(@RequestParam Long orderId,
+                                                    @RequestParam(required = false) String sessionNo) {
         
             // 参数校验
             if (orderId == null) {
                 return Result.error("订单ID不能为空");
             }
-            requireOrderAccess(orderId, null, "");
+            requireOrderAccess(orderId, sessionNo, "");
 
             // 调用业务层处理
             PaymentStatusVO statusInfo = restaurantOrderService.getPaymentStatus(orderId);
@@ -732,12 +800,13 @@ public class RestaurantOrderController {
      * @return 订单详情
      */
     @GetMapping("/getOrderDetail")
-    public Result<RestaurantOrderVO> getOrderDetail(@RequestParam Long orderId) {
+    public Result<RestaurantOrderVO> getOrderDetail(@RequestParam Long orderId,
+                                                     @RequestParam(required = false) String sessionNo) {
         if (orderId == null){
             return Result.error("订单ID不能为空");
         }
         
-            requireOrderAccess(orderId, null, "");
+            requireOrderAccess(orderId, sessionNo, "");
             RestaurantOrderVO orderDetail = restaurantOrderService.getOrderDetail(orderId);
             return Result.success("查询订单详情成功", orderDetail);
         

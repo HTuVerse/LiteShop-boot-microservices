@@ -36,6 +36,9 @@ public class OrderRefund {
     /** 渠道退款单号。 */
     private String channelRefundId;
     private String reason;
+    /** 发起退菜的操作人，供异步渠道回调审计。 */
+    private Long operatorId;
+    private String operatorName;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

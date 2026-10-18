@@ -9,6 +9,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.hongtu.restaurant.DTO.OrderDishChangeLog;
 
 /**
  * 餐厅订单VO（包含订单明细）
@@ -80,6 +81,13 @@ public class RestaurantOrderVO implements Serializable {
      * 用户ID（可选）
      */
     private Long userId;
+
+    /** 下单操作人，与会员归属分离。 */
+    private Long operatorId;
+    private String operatorName;
+
+    /** 加菜与退菜的不可变操作记录。 */
+    private List<OrderDishChangeLog> dishChanges;
 
     /**
      * 会话编号

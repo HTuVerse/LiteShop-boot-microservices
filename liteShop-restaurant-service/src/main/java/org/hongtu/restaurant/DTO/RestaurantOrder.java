@@ -69,6 +69,10 @@ public class RestaurantOrder implements Serializable {
      */
     private Long userId;
 
+    /** 下单操作人，与会员归属分离。 */
+    private Long operatorId;
+    private String operatorName;
+
     /**
      * 会话编号
      */

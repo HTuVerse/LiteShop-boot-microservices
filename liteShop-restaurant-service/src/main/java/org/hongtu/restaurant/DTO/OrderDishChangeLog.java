@@ -27,6 +27,7 @@ public class OrderDishChangeLog {
     private Long orderItemId;
     private Long storeId;
     private Long dishId;
+    private String dishName;
     private Long categoryId;
 
     /** 1-加菜，2-退菜。 */
@@ -35,5 +36,7 @@ public class OrderDishChangeLog {
     private Integer quantity;
     private BigDecimal amount;
     private String reason;
+    private Long operatorId;
+    private String operatorName;
     private LocalDateTime occurredAt;
 }
