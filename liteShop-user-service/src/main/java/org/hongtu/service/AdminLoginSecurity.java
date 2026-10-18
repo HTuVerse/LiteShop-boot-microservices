@@ -93,6 +93,15 @@ public class AdminLoginSecurity {
         }
     }
 
+    /** 普通用户密码登录沿用管理端图形验证码开关和一次性校验，不共用管理账号锁定计数。 */
+    public void verifyCustomerCaptcha(String captchaId, String captchaCode) {
+        try {
+            if (Boolean.TRUE.equals(policy().getCaptchaEnabled())) verifyCaptcha(captchaId, captchaCode);
+        } catch (org.springframework.data.redis.RedisConnectionFailureException ex) {
+            throw new BusinessException(503, "登录安全校验暂不可用，请稍后重试");
+        }
+    }
+
     public Map<String, Object> captcha(String remoteAddress) {
         if (!Boolean.TRUE.equals(policy().getCaptchaEnabled())) return Map.of("enabled", false);
         if (!rateLimit.isAllowed(RateLimitUtil.globalKey("admin-captcha", remoteAddress), 20, 60))

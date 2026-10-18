@@ -41,12 +41,14 @@ public class SysUserController {
     @Resource
     IpUtil ipUtil;
     /**
-     * 用户登入。商户由客户端统一携带的 X-Public-Tenant-Id 请求头确定，用户无需输入。
+     * 用户登录。商户由 X-Public-Tenant-Id 请求头确定；开启图片验证码时先完成一次性校验。
      */
     @PostMapping("/Login")
     @SaIgnore
     public Result login(@RequestParam("account") String account,
-                        @RequestParam("password") String password){
+                        @RequestParam("password") String password,
+                        @RequestParam(required = false) String captchaId,
+                        @RequestParam(required = false) String captchaCode){
         if(StrUtil.isBlank(account) ||StrUtil.isBlank(password)){
             return Result.error("用户名/邮箱/手机号不能为空");
         }
@@ -56,6 +58,7 @@ public class SysUserController {
         if(StrUtil.isBlank(password)){
             return Result.error("密码不能为空");
         }
+        adminLoginSecurity.verifyCustomerCaptcha(captchaId, captchaCode);
         return sysUserService.login(account,password);
     }
 

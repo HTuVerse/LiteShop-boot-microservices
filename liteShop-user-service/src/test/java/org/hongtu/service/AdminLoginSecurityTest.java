@@ -34,6 +34,26 @@ class AdminLoginSecurityTest {
         verifyNoInteractions(authenticate);
     }
 
+    @Test void customerLoginRequiresCaptchaWhenEnabledAndConsumesItOnce() {
+        config.setCaptchaEnabled(true);
+        ValueOperations values = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.getAndDelete(anyString())).thenReturn("ABCD", (String) null);
+        String id = "0123456789abcdef0123456789abcdef";
+
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> security.verifyCustomerCaptcha(null, null)).getCode());
+        assertDoesNotThrow(() -> security.verifyCustomerCaptcha(id, "abcd"));
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> security.verifyCustomerCaptcha(id, "abcd")).getCode());
+        verify(values, times(2)).getAndDelete(anyString());
+    }
+
+    @Test void customerLoginSkipsCaptchaWhenDisabled() {
+        assertDoesNotThrow(() -> security.verifyCustomerCaptcha(null, null));
+        verifyNoInteractions(redis);
+    }
+
     @Test void captchaIsConsumedBeforeComparisonAndCannotBeReplayed() {
         config.setCaptchaEnabled(true);
         ValueOperations values = mock(ValueOperations.class);
