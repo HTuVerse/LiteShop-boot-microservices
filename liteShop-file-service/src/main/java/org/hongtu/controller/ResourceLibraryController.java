@@ -198,7 +198,7 @@ public class ResourceLibraryController {
     @GetMapping("/{id}/download")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws Exception {
         FileUpload record = files.getById(id);
-        if (record == null) return ResponseEntity.notFound().build();
+        if (record == null || !"ACTIVE".equals(record.getDeletionState())) return ResponseEntity.notFound().build();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
                         .filename(record.getOriginalFileName(), StandardCharsets.UTF_8).build().toString())
@@ -217,7 +217,8 @@ public class ResourceLibraryController {
     @GetMapping("/{id}/access")
     public Result<String> access(@PathVariable Long id) throws Exception {
         FileUpload record = files.getById(id);
-        return record == null ? Result.error("资源不存在") : Result.success(storage.accessUrl(record));
+        return record == null || !"ACTIVE".equals(record.getDeletionState())
+                ? Result.error("资源不存在") : Result.success(storage.accessUrl(record));
     }
 
     /** 变更权限会将文件移到隔离 Bucket 或目录，再更新数据库访问策略。 */

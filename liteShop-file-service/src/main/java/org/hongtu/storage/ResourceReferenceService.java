@@ -104,7 +104,8 @@ public class ResourceReferenceService {
                         + "ORDER BY field_name,sort_order,updated_at DESC,id DESC",
                 row -> {
                     FileUpload file = files.findAcrossTenants(row.getLong("resource_id"));
-                    if (file != null && "PUBLIC".equals(storage.visibility(file))) {
+                    if (file != null && "ACTIVE".equals(file.getDeletionState())
+                            && "PUBLIC".equals(storage.visibility(file))) {
                         String publicUrl = storage.publicUrl(file);
                         if (publicUrl != null && !publicUrl.isBlank())
                             result.add(new ResourceBinding(row.getString("field_name"), row.getInt("sort_order"),
