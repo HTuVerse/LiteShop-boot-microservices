@@ -7,6 +7,8 @@ import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.annotation.SaMode;
 import lombok.RequiredArgsConstructor;
 import org.hongtu.Result.Result;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.config.DTO.Banner;
 import org.hongtu.config.VO.BannerVO;
 import org.hongtu.config.enums.BannerPositionEnum;
@@ -30,6 +32,7 @@ import java.util.stream.Collectors;
 public class BannerController {
 
     private final BannerService bannerService;
+    private final ResourceBindingCoordinator resourceBindings;
 
     // ==================== 小程序端接口（公开） ====================
 
@@ -77,13 +80,13 @@ public class BannerController {
     public Result<List<Banner>> getAllBanners(
             @RequestParam(required = false) Integer position,
             @RequestParam(required = false) Integer status) {
-
         List<Banner> banners = bannerService.lambdaQuery()
                 .eq(position != null, Banner::getPosition, BannerPositionEnum.fromCode(position))
                 .eq(status != null, Banner::getStatus, BooleanEnum.fromCode(status))
                 .orderByAsc(Banner::getPosition)
                 .orderByAsc(Banner::getSortOrder)
                 .list();
+        banners.forEach(this::resolveImage);
         return Result.success(banners);
     }
 
@@ -97,7 +100,7 @@ public class BannerController {
         if (banner == null) {
             return Result.error("轮播图不存在");
         }
-        return Result.success(banner);
+        return Result.success(resolveImage(banner));
     }
 
     /**
@@ -106,6 +109,10 @@ public class BannerController {
     @PostMapping("/admin/add")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"config:banner:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> addBanner(@RequestBody Banner banner) {
+        if (banner.getId() == null) banner.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan imagePlan = resourceBindings.prepareSingle("BANNER", banner.getId(), "imageUrl",
+                banner.getImageResourceId(), banner.getImageUrl());
+        banner.setImageUrl(resourceBindings.resolvedSingle(imagePlan, banner.getImageUrl()));
         banner.setCreatedAt(LocalDateTime.now());
         banner.setUpdatedAt(LocalDateTime.now());
         if (banner.getSortOrder() == null) {
@@ -118,6 +125,7 @@ public class BannerController {
             banner.setLinkType(3); // 默认不跳转
         }
         boolean success = bannerService.save(banner);
+        if (success) resourceBindings.completeAfterCommit(imagePlan);
         return success ? Result.success(true) : Result.error("新增失败");
     }
 
@@ -132,9 +140,16 @@ public class BannerController {
         }
         Banner existing = bannerService.getById(banner.getId());
         if (existing == null) return Result.error("轮播图不存在或无权访问");
+        if (banner.getImageUrl() == null) banner.setImageUrl(existing.getImageUrl());
+        if (banner.getImageResourceId() == null && java.util.Objects.equals(banner.getImageUrl(), existing.getImageUrl()))
+            banner.setImageResourceId(resourceBindings.currentSingleId("BANNER", banner.getId(), "imageUrl"));
+        ResourceBindingPlan imagePlan = resourceBindings.prepareSingle("BANNER", banner.getId(), "imageUrl",
+                banner.getImageResourceId(), banner.getImageUrl());
+        banner.setImageUrl(resourceBindings.resolvedSingle(imagePlan, banner.getImageUrl()));
         org.hongtu.security.OperationPermission.requireChange("config:banner:status", existing.getStatus(), banner.getStatus());
         banner.setUpdatedAt(LocalDateTime.now());
         boolean success = bannerService.updateById(banner);
+        if (success) resourceBindings.completeAfterCommit(imagePlan);
         return success ? Result.success(true) : Result.error("更新失败");
     }
 
@@ -145,6 +160,7 @@ public class BannerController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"config:banner:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> deleteBanner(@PathVariable Long id) {
         boolean success = bannerService.removeById(id);
+        if (success) resourceBindings.clearAfterCommit("BANNER", id, "imageUrl");
         return success ? Result.success(true) : Result.error("删除失败");
     }
 
@@ -175,6 +191,7 @@ public class BannerController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"config:banner:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> batchDelete(@RequestBody List<Long> ids) {
         boolean success = bannerService.removeByIds(ids);
+        if (success) ids.forEach(id -> resourceBindings.clearAfterCommit("BANNER", id, "imageUrl"));
         return success ? Result.success(true) : Result.error("批量删除失败");
     }
 
@@ -185,7 +202,17 @@ public class BannerController {
         return banners.stream().map(banner -> {
             BannerVO vo = new BannerVO();
             BeanUtils.copyProperties(banner, vo);
+            vo.setImageUrl(resourceBindings.currentSingle("BANNER", banner.getId(), "imageUrl", banner.getImageUrl()));
+            vo.setImageResourceId(resourceBindings.currentSingleId("BANNER", banner.getId(), "imageUrl"));
             return vo;
         }).collect(Collectors.toList());
     }
+
+    /** 兼容旧 imageUrl 响应，实际地址优先按资源 ID 实时派生。 */
+    private Banner resolveImage(Banner banner) {
+        banner.setImageUrl(resourceBindings.currentSingle("BANNER", banner.getId(), "imageUrl", banner.getImageUrl()));
+        banner.setImageResourceId(resourceBindings.currentSingleId("BANNER", banner.getId(), "imageUrl"));
+        return banner;
+    }
+
 }
