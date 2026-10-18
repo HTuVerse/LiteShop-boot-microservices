@@ -4,8 +4,9 @@
 
 1. 备份 `liteshop_file`、`liteshop_config`、`liteshop_user` 数据库及原本地上传目录。
 2. 按顺序执行 `sql/vertical-split/75_resource_library.sql` 和 `sql/vertical-split/76_storage_drivers.sql`。前者补齐资源库字段、文件夹和超级管理员菜单；后者添加存储字段与配置快照，并把历史记录绑定到升级前的配置。
-3. 部署 config、file、restaurant、user 服务及管理端。文件服务的 HTTP multipart 上限须与后台的单文件上限相容；同时核对 Nacos `liteShop-file-service` 配置，避免其旧的 20 MB 限制覆盖应用配置。
-4. 超级管理员在网站配置的“文件配置”中选择 Local、MinIO、阿里云 OSS 或七牛云，保存后使用“测试已保存的连接”。该检查验证当前驱动的存储位置；还应从实际浏览器打开一张公开图片并验证一个私有签名链接。
+3. 为 `liteShop-config-service` 进程设置固定且足够随机的 `CONFIG_CREDENTIAL_ENCRYPTION_KEY`，然后启动或重启该服务。该值用于加密 MinIO、阿里云 OSS、七牛云等存储凭据；本地 IDE 启动时需加在该服务的运行配置“环境变量”中，已经运行的进程不会自动读取新设置。Nacos 配置中的 `liteshop.credentials.encryption-key` 若显式配置为空，也需一并修正。所有 config-service 实例必须使用同一个值，并妥善备份；更换后旧密文可能无法解密。
+4. 部署 config、file、restaurant、user 服务及管理端。文件服务的 HTTP multipart 上限须与后台的单文件上限相容；同时核对 Nacos `liteShop-file-service` 配置，避免其旧的 20 MB 限制覆盖应用配置。
+5. 超级管理员在网站配置的“文件配置”中选择 Local、MinIO、阿里云 OSS 或七牛云，保存后使用“测试已保存的连接”。该检查验证当前驱动的存储位置；还应从实际浏览器打开一张公开图片并验证一个私有签名链接。
 
 文件记录保存驱动编号、对象 Key、Bucket、可见性及上传时的配置快照 ID。切换默认驱动仅影响新文件；旧文件仍使用原驱动和原配置快照。不要删除历史 Bucket、域名、凭据或本地目录。切换配置不会迁移文件，更不能批量改写 `storage_type` 冒充迁移。若以后迁移，应逐件复制、核对内容及业务引用，最后以可回滚的方式更新记录和域名映射。
 
