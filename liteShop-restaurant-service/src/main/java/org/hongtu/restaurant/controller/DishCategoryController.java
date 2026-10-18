@@ -8,6 +8,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.DTO.DishCategory;
 import org.hongtu.restaurant.service.DishCategoryService;
@@ -46,6 +48,8 @@ public class DishCategoryController {
 
     @Resource
     StoreMenuPolicyService storeMenuPolicyService;
+    @Resource
+    ResourceBindingCoordinator resourceBindings;
 
     /**
      * 添加分类
@@ -79,7 +83,18 @@ public class DishCategoryController {
         category.setOwnerStoreId(ownerStoreId);
         category.setStoreId(ownerStoreId);
         category.setDeleted(0);
+        if (category.getId() == null) category.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan picPlan = resourceBindings.prepareSingle("CATEGORY", category.getId(), "categoryPic",
+                category.getCategoryImageResourceId(), category.getCategoryPic());
+        ResourceBindingPlan iconPlan = resourceBindings.prepareSingle("CATEGORY", category.getId(), "categoryIcon",
+                null, category.getCategoryIcon());
+        category.setCategoryPic(resourceBindings.resolvedSingle(picPlan, category.getCategoryPic()));
+        category.setCategoryIcon(resourceBindings.resolvedSingle(iconPlan, category.getCategoryIcon()));
         boolean result = dishCategoryService.save(category);
+        if (result) {
+            resourceBindings.completeAfterCommit(picPlan);
+            resourceBindings.completeAfterCommit(iconPlan);
+        }
         if (result) {
             return Result.success("添加分类成功", result);
         } else {
@@ -117,8 +132,25 @@ public class DishCategoryController {
         category.setOwnerStoreId(sourceType == 0 ? null : ownerStoreId);
         category.setStoreId(sourceType == 0 ? null : ownerStoreId);
         category.setDeleted(existing.getDeleted());
+        if (category.getCategoryPic() == null) category.setCategoryPic(existing.getCategoryPic());
+        if (category.getCategoryIcon() == null) category.setCategoryIcon(existing.getCategoryIcon());
+        if (category.getCategoryImageResourceId() == null
+                && java.util.Objects.equals(category.getCategoryPic(), existing.getCategoryPic()))
+            category.setCategoryImageResourceId(resourceBindings.currentSingleId("CATEGORY", category.getId(), "categoryPic"));
+        ResourceBindingPlan picPlan = resourceBindings.prepareSingle("CATEGORY", category.getId(), "categoryPic",
+                category.getCategoryImageResourceId(), category.getCategoryPic());
+        ResourceBindingPlan iconPlan = resourceBindings.prepareSingle("CATEGORY", category.getId(), "categoryIcon",
+                java.util.Objects.equals(category.getCategoryIcon(), existing.getCategoryIcon())
+                        ? resourceBindings.currentSingleId("CATEGORY", category.getId(), "categoryIcon") : null,
+                category.getCategoryIcon());
+        category.setCategoryPic(resourceBindings.resolvedSingle(picPlan, category.getCategoryPic()));
+        category.setCategoryIcon(resourceBindings.resolvedSingle(iconPlan, category.getCategoryIcon()));
         category.setUpdatedAt(LocalDateTime.now());
         boolean result = dishCategoryService.updateById(category);
+        if (result) {
+            resourceBindings.completeAfterCommit(picPlan);
+            resourceBindings.completeAfterCommit(iconPlan);
+        }
         if (result) {
             return Result.success("更新分类成功", result);
         } else {
@@ -157,6 +189,10 @@ public class DishCategoryController {
         category.setIsShow(org.hongtu.enums.BooleanEnum.NO);
         category.setUpdatedAt(LocalDateTime.now());
         boolean result = dishCategoryService.updateById(category);
+        if (result) {
+            resourceBindings.clearAfterCommit("CATEGORY", id, "categoryPic");
+            resourceBindings.clearAfterCommit("CATEGORY", id, "categoryIcon");
+        }
         if (result) {
             return Result.success("删除分类成功", result);
         } else {

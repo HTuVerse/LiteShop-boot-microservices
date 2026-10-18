@@ -62,6 +62,10 @@ public class PrintTemplate implements Serializable {
      */
     private String logoUrl;
 
+    /** Logo 对应的资源库 ID。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Long logoResourceId;
+
     /**
      * 店铺名称显示样式：0-普通，1-加粗，2-加粗+居中，3-加粗+居中+放大
      */

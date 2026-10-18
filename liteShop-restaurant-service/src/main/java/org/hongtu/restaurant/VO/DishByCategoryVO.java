@@ -34,5 +34,15 @@ public class DishByCategoryVO {
      * 该分类下的菜品列表
      */
     private List<DishVO> dishes;
+
+    /** 分类ID，用于按资源引用派生分类图标；旧客户端可忽略。 */
+    private Long categoryId;
+
+    public DishByCategoryVO(String categoryName, String categoryDesc, String categoryIcon, List<DishVO> dishes) {
+        this.categoryName = categoryName;
+        this.categoryDesc = categoryDesc;
+        this.categoryIcon = categoryIcon;
+        this.dishes = dishes;
+    }
 }
 

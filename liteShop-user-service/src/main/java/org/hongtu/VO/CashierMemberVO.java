@@ -12,6 +12,8 @@ public class CashierMemberVO {
     private String nickname;
     private String phone;
     private String avatar;
+    /** 头像资源库 ID。 */
+    private Long avatarResourceId;
     private Integer level;
     /** 当前生效的会员等级名称。 */
     private String levelName;

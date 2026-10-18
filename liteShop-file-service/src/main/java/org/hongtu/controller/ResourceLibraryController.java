@@ -16,6 +16,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.service.FileUploadService;
 import org.hongtu.storage.StorageManager;
 import org.hongtu.storage.ResourceReferenceGuard;
+import org.hongtu.storage.ResourceReferenceService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.core.io.InputStreamResource;
@@ -37,6 +38,7 @@ public class ResourceLibraryController {
     private final ResourceFolderMapper folders;
     private final StorageManager storage;
     private final ResourceReferenceGuard references;
+    private final ResourceReferenceService referenceService;
 
     /** 分页查询资源，可按名称、类型、商户、上传者与文件夹筛选。 */
     @GetMapping
@@ -168,10 +170,28 @@ public class ResourceLibraryController {
             FileUpload record = files.getById(id);
             if (record == null) continue;
             requireUnused(record);
-            storage.delete(record);
-            files.removeById(id);
+            referenceService.beginDelete(id);
+            try {
+                storage.delete(record);
+                referenceService.finishDelete(id);
+            } catch (Exception error) {
+                referenceService.markDeleteFailed(id);
+                throw error;
+            }
         }
         return Result.success();
+    }
+
+    /** 分页查看该资源被哪些业务、字段和图片位置引用。 */
+    @GetMapping("/{id}/references")
+    public Result<java.util.Map<String, Object>> usages(@PathVariable Long id,
+            @RequestParam(defaultValue = "1") int currentPage,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        if (files.getById(id) == null) return Result.error("资源不存在");
+        if (currentPage < 1 || pageSize < 1 || pageSize > 100) return Result.error("分页参数不合法");
+        return Result.success(java.util.Map.of("total", referenceService.count(id),
+                "records", referenceService.usages(id, (currentPage - 1) * pageSize, pageSize),
+                "current", currentPage, "size", pageSize));
     }
 
     /** 以附件形式下载资源，文件名取当前显示名称。 */
@@ -211,35 +231,42 @@ public class ResourceLibraryController {
         String oldUrl = record.getUrl();
         if (oldVisibility.equals(body.visibility())) return Result.success(storage.forResponse(record));
         if ("PUBLIC".equals(oldVisibility)) requireUnused(record);
-        storage.changeVisibility(record, body.visibility());
-        String key = storage.key(record);
+        referenceService.beginVisibilityChange(id);
         try {
-            // 先撤销旧位置的访问能力，尤其不能让公开对象在切为私有后残留。
-            storage.driver(record).delete(settings, oldBucket, key);
-        } catch (Exception error) {
-            try { storage.driver(record).delete(settings, record.getBucket(), key); }
-            catch (Exception cleanup) { error.addSuppressed(cleanup); }
-            throw error;
-        }
-        try {
-            // MyBatis 默认跳过 null，必须显式清空私有文件的旧公开 URL。
-            boolean updated = files.lambdaUpdate().eq(FileUpload::getId, id)
-                    .set(FileUpload::getBucket, record.getBucket())
-                    .set(FileUpload::getStorageKey, key)
-                    .set(FileUpload::getVisibility, record.getVisibility())
-                    .set(FileUpload::getUrl, record.getUrl()).update();
-            if (!updated) throw new IllegalStateException("资源记录已被删除");
-        } catch (RuntimeException error) {
+            storage.changeVisibility(record, body.visibility());
+            String key = storage.key(record);
             try {
-                storage.driver(record).copy(settings, record.getBucket(), oldBucket, key);
-                storage.driver(record).delete(settings, record.getBucket(), key);
-            } catch (Exception cleanup) { error.addSuppressed(cleanup); }
-            record.setBucket(oldBucket);
-            record.setVisibility(oldVisibility);
-            record.setUrl(oldUrl);
+                // 先撤销旧位置的访问能力，尤其不能让公开对象在切为私有后残留。
+                storage.driver(record).delete(settings, oldBucket, key);
+            } catch (Exception error) {
+                try { storage.driver(record).delete(settings, record.getBucket(), key); }
+                catch (Exception cleanup) { error.addSuppressed(cleanup); }
+                throw error;
+            }
+            try {
+                // MyBatis 默认跳过 null，必须显式清空私有文件的旧公开 URL。
+                boolean updated = files.lambdaUpdate().eq(FileUpload::getId, id)
+                        .set(FileUpload::getBucket, record.getBucket())
+                        .set(FileUpload::getStorageKey, key)
+                        .set(FileUpload::getVisibility, record.getVisibility())
+                        .set(FileUpload::getUrl, record.getUrl()).update();
+                if (!updated) throw new IllegalStateException("资源记录已被删除");
+            } catch (RuntimeException error) {
+                try {
+                    storage.driver(record).copy(settings, record.getBucket(), oldBucket, key);
+                    storage.driver(record).delete(settings, record.getBucket(), key);
+                } catch (Exception cleanup) { error.addSuppressed(cleanup); }
+                record.setBucket(oldBucket);
+                record.setVisibility(oldVisibility);
+                record.setUrl(oldUrl);
+                throw error;
+            }
+            referenceService.finishVisibilityChange(id);
+            return Result.success(storage.forResponse(record));
+        } catch (Exception error) {
+            referenceService.markVisibilityFailed(id);
             throw error;
         }
-        return Result.success(storage.forResponse(record));
     }
 
     /** 检查当前默认驱动的公开、私有存储位置是否可连接。 */
@@ -264,6 +291,9 @@ public class ResourceLibraryController {
 
     /** 同时核对历史业务 URL 和当前派生 URL，防止切换入口后误删仍被引用的文件。 */
     private void requireUnused(FileUpload record) {
+        referenceService.requireMigrationReady();
+        if (referenceService.count(record.getId()) > 0)
+            throw new IllegalStateException("该资源仍被业务引用，请先移除关联");
         references.requireUnused(record.getUrl());
         String derived = storage.publicUrl(record);
         if (derived != null && !derived.equals(record.getUrl())) references.requireUnused(derived);

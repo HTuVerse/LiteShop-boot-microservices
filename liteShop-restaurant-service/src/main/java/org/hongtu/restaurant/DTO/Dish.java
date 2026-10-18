@@ -92,6 +92,10 @@ public class Dish implements Serializable {
      */
     private String dishPics;
 
+    /** 与菜品图片按顺序对应的资源 ID，空项表示外部或未迁移图片。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String dishPicResourceIds;
+
     /**
      * 总部正常售价。活动价、会员价均由统一定价服务计算，不落在菜品主表。
      */

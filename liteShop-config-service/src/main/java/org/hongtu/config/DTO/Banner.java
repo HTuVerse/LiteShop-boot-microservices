@@ -42,6 +42,10 @@ public class Banner implements Serializable {
      */
     private String imageUrl;
 
+    /** 资源库图片 ID；存在时优先由文件服务派生展示地址。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Long imageResourceId;
+
     /**
      * 跳转链接（可选）
      */

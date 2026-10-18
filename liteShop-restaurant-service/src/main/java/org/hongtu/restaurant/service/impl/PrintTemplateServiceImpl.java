@@ -8,6 +8,8 @@ import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.restaurant.DAO.PrintTemplateMapper;
 import org.hongtu.restaurant.DTO.PrintTemplate;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.service.PrintTemplateService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
@@ -31,6 +33,8 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
 
     @Resource
     private StoreDataScopeService storeDataScopeService;
+    @Resource
+    private ResourceBindingCoordinator resourceBindings;
 
     @Override
     public Page<PrintTemplate> getTemplatePage(Integer currentPage, Integer pageSize,
@@ -95,6 +99,10 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean createTemplate(PrintTemplate template) {
+        if (template.getId() == null) template.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan logoPlan = resourceBindings.prepareSingle("TEMPLATE", template.getId(), "logoUrl",
+                template.getLogoResourceId(), template.getLogoUrl());
+        template.setLogoUrl(resourceBindings.resolvedSingle(logoPlan, template.getLogoUrl()));
         storeDataScopeService.checkStoreAccess(template.getStoreId());
         if (storeDataScopeService.requiresStoreRestriction() && template.getStoreId() == null) {
             throw new SecurityException("门店管理员无权创建全局打印模板");
@@ -107,7 +115,9 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
             cancelOtherDefaultTemplates(template.getStoreId());
         }
 
-        return this.save(template);
+        boolean saved = this.save(template);
+        if (saved) resourceBindings.completeAfterCommit(logoPlan);
+        return saved;
     }
 
     @Override
@@ -117,6 +127,13 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         if (existing == null) {
             return false;
         }
+        if (template.getLogoUrl() == null) template.setLogoUrl(existing.getLogoUrl());
+        if (template.getLogoResourceId() == null
+                && java.util.Objects.equals(template.getLogoUrl(), existing.getLogoUrl()))
+            template.setLogoResourceId(resourceBindings.currentSingleId("TEMPLATE", template.getId(), "logoUrl"));
+        ResourceBindingPlan logoPlan = resourceBindings.prepareSingle("TEMPLATE", template.getId(), "logoUrl",
+                template.getLogoResourceId(), template.getLogoUrl());
+        template.setLogoUrl(resourceBindings.resolvedSingle(logoPlan, template.getLogoUrl()));
         org.hongtu.security.OperationPermission.requireChange("operations:templates:status", existing.getEnabled(), template.getEnabled());
         org.hongtu.security.OperationPermission.requireChange("operations:templates:default", existing.getIsDefault(), template.getIsDefault());
         Long targetStoreId = template.getStoreId() == null ? existing.getStoreId() : template.getStoreId();
@@ -131,7 +148,9 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
             cancelOtherDefaultTemplates(template.getStoreId());
         }
 
-        return this.updateById(template);
+        boolean updated = this.updateById(template);
+        if (updated) resourceBindings.completeAfterCommit(logoPlan);
+        return updated;
     }
 
     @Override
@@ -146,7 +165,9 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
             throw new RuntimeException("不能删除默认模板");
         }
 
-        return this.removeById(id);
+        boolean removed = this.removeById(id);
+        if (removed) resourceBindings.clearAfterCommit("TEMPLATE", id, "logoUrl");
+        return removed;
     }
 
     @Override
@@ -217,7 +238,11 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         newTemplate.setCreatedAt(LocalDateTime.now());
         newTemplate.setUpdatedAt(LocalDateTime.now());
 
-        this.save(newTemplate);
+        newTemplate.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan logoPlan = resourceBindings.prepareSingle("TEMPLATE", newTemplate.getId(), "logoUrl",
+                resourceBindings.currentSingleId("TEMPLATE", sourceTemplate.getId(), "logoUrl"), newTemplate.getLogoUrl());
+        newTemplate.setLogoUrl(resourceBindings.resolvedSingle(logoPlan, newTemplate.getLogoUrl()));
+        if (this.save(newTemplate)) resourceBindings.completeAfterCommit(logoPlan);
         return newTemplate;
     }
 

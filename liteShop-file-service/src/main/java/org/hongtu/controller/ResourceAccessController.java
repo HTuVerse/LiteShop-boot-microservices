@@ -28,11 +28,21 @@ public class ResourceAccessController {
     private final FileUploadMapper files;
     private final StorageManager storage;
 
+    /** 内部业务服务按资源 ID 派生 URL，仅允许读取公开资源。 */
+    @GetMapping("/inner/file-upload/resources/{id}/public-url")
+    public Result<String> internalPublicUrl(@PathVariable Long id) {
+        FileUpload file = files.findAcrossTenants(id);
+        if (file == null || !"ACTIVE".equals(file.getDeletionState())
+                || !"PUBLIC".equals(storage.visibility(file))) return Result.error("公开资源不存在");
+        return Result.success(storage.publicUrl(file));
+    }
+
     /** 公开资源只跳转到源站，文件内容由对象存储或静态服务器直接提供。 */
     @GetMapping("/images/resource/{id}")
     public ResponseEntity<Void> publicResource(@PathVariable Long id) {
         FileUpload file = files.findAcrossTenants(id);
-        if (file == null || !"PUBLIC".equals(storage.visibility(file))) return ResponseEntity.notFound().build();
+        if (file == null || !"ACTIVE".equals(file.getDeletionState())
+                || !"PUBLIC".equals(storage.visibility(file))) return ResponseEntity.notFound().build();
         String origin = storage.originPublicUrl(file);
         if (origin == null || origin.isBlank()) return ResponseEntity.notFound().build();
         // 禁止缓存权限决策，公开转私有后不会继续签发旧入口跳转。
@@ -44,7 +54,7 @@ public class ResourceAccessController {
     @GetMapping("/file-upload/resources/{id}/access")
     public Result<AccessAddress> access(@PathVariable Long id) throws Exception {
         FileUpload file = files.findAcrossTenants(id);
-        if (file == null) return Result.error("资源不存在");
+        if (file == null || !"ACTIVE".equals(file.getDeletionState())) return Result.error("资源不存在");
         if ("PUBLIC".equals(storage.visibility(file)))
             return Result.success(new AccessAddress("PUBLIC", storage.publicUrl(file), null));
         if (!canReadPrivate(file)) return Result.error("无权访问私有资源");
@@ -58,7 +68,7 @@ public class ResourceAccessController {
     @GetMapping("/file-upload/resources/{id}/download")
     public ResponseEntity<?> download(@PathVariable Long id) throws Exception {
         FileUpload file = files.findAcrossTenants(id);
-        if (file == null) return ResponseEntity.notFound().build();
+        if (file == null || !"ACTIVE".equals(file.getDeletionState())) return ResponseEntity.notFound().build();
         if ("PUBLIC".equals(storage.visibility(file))) {
             String origin = storage.originPublicUrl(file);
             return origin == null ? ResponseEntity.notFound().build()

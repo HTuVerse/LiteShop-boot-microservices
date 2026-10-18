@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.constant.SaasErrorCode;
 import org.hongtu.api.dto.EntitlementDecisionDTO;
@@ -47,6 +49,8 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
 
     @Resource
     private UserFeignClient userFeignClient;
+    @Resource
+    private ResourceBindingCoordinator resourceBindings;
 
     /**
      * 分页查询门店列表
@@ -92,6 +96,9 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
 
         // 服务端生成业务 ID，并用该 ID 作为本次占额的稳定标识。
         storeInfo.setId(IdWorker.getId());
+        ResourceBindingPlan imagePlan = resourceBindings.prepareMulti("STORE", storeInfo.getId(), "storeImages",
+                storeInfo.getStoreImageResourceIds(), storeInfo.getStoreImages());
+        storeInfo.setStoreImages(resourceBindings.resolvedMulti(imagePlan, storeInfo.getStoreImages()));
         String reservationKey = "store:create:" + storeInfo.getId();
         reserveQuota(reservationKey, BigDecimal.ONE);
 
@@ -108,6 +115,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
             if (!this.save(storeInfo)) {
                 throw new BusinessException(500, "新增门店失败");
             }
+            resourceBindings.completeAfterCommit(imagePlan);
             return true;
         } catch (RuntimeException error) {
             compensateQuota("store:create:" + storeInfo.getId(), "store:create:rollback:" + storeInfo.getId(), error);
@@ -126,6 +134,13 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         if (existingStore == null) {
             throw new RuntimeException("门店不存在");
         }
+        if (storeInfo.getStoreImages() == null) storeInfo.setStoreImages(existingStore.getStoreImages());
+        if (storeInfo.getStoreImageResourceIds() == null)
+            storeInfo.setStoreImageResourceIds(java.util.Objects.equals(storeInfo.getStoreImages(), existingStore.getStoreImages())
+                    ? resourceBindings.currentMultiIds("STORE", storeInfo.getId(), "storeImages", existingStore.getStoreImages()) : "");
+        ResourceBindingPlan imagePlan = resourceBindings.prepareMulti("STORE", storeInfo.getId(), "storeImages",
+                storeInfo.getStoreImageResourceIds(), storeInfo.getStoreImages());
+        storeInfo.setStoreImages(resourceBindings.resolvedMulti(imagePlan, storeInfo.getStoreImages()));
 
         org.hongtu.security.OperationPermission.requireChange("restaurant:store:status", existingStore.getStatus(), storeInfo.getStatus());
         // 如果修改了门店编码，需要校验新编码是否已存在
@@ -143,7 +158,9 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         // 设置更新时间
         storeInfo.setUpdatedAt(LocalDateTime.now());
 
-        return this.updateById(storeInfo);
+        boolean updated = this.updateById(storeInfo);
+        if (updated) resourceBindings.completeAfterCommit(imagePlan);
+        return updated;
     }
 
     /**
@@ -164,6 +181,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         // 例如：检查是否有未完成的订单等
 
         boolean removed = this.removeById(id);
+        if (removed) resourceBindings.clearAfterCommit("STORE", id, "storeImages");
         if (removed) releaseQuota("store:create:" + id, "store:delete:" + id);
         return removed;
     }
@@ -189,6 +207,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         boolean removed = this.removeByIds(normalizedIds);
         if (removed) {
             for (Long id : normalizedIds) {
+                resourceBindings.clearAfterCommit("STORE", id, "storeImages");
                 releaseQuota("store:create:" + id, "store:delete:" + id);
             }
         }

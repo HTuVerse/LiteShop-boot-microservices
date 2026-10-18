@@ -74,6 +74,9 @@ public class DishVO {
      */
     private String dishPics;
 
+    /** 与菜品图片按顺序对应的资源 ID。 */
+    private String dishPicResourceIds;
+
     /**
      * 主图
      */

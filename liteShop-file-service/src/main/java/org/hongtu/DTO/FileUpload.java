@@ -73,6 +73,9 @@ public class FileUpload implements Serializable {
     /** PUBLIC 可匿名访问；PRIVATE 必须授权。 */
     private String visibility;
 
+    /** 资源操作状态：ACTIVE、DELETING、UPDATING 或失败待恢复。 */
+    private String deletionState;
+
     /** 文件扩展名。 */
     private String fileExtension;
 

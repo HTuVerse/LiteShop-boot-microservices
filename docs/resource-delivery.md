@@ -27,4 +27,4 @@
 
 在后台保存并测试 OSS 配置后，把默认驱动切到阿里云 OSS 或七牛云。旧 MinIO 文件的 `storage_type`、`storage_profile_id`、`bucket`、`storage_key` 均保持原值，新上传文件才绑定新驱动与快照。统一入口用文件 ID 定位历史记录，再按其原快照跳转，不依赖当前默认驱动。切换默认驱动不表示迁移文件；正式迁移须另做对象复制、校验、更新文件存储定位字段及回滚方案。
 
-当前菜品、Banner 等既有业务表仍有 URL 字段。新上传会得到稳定的资源 ID 入口，但历史业务数据需要逐步增补 `resource_id` 并按文件 ID 关联；不能靠改 `file_upload.url` 自动迁移这些业务表。资源域名若更换，须保留旧域名别名，直至业务引用迁移完成。
+当前菜品、Banner 等业务表仍保留 URL 字段。资源与业务的关联统一记录在 `file_resource_reference`，业务接口按资源 ID 派生响应 URL；历史 URL 的回填和删除保护见 [资源引用迁移说明](resource-reference-migration.md)。资源域名若更换，须保留旧域名别名，直至历史引用完成核对。

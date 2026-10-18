@@ -107,6 +107,10 @@ public class StoreInfo implements Serializable {
      */
     private String storeImages;
 
+    /** 与门店图片按顺序对应的资源 ID，空项表示未迁移的外部图片。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private String storeImageResourceIds;
+
     /**
      * 门店简介
      */

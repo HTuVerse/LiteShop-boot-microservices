@@ -20,9 +20,11 @@ public class ResourceReferenceController {
                 .replace("_", "\\_") + "%";
         Integer count = jdbc.queryForObject("SELECT (SELECT COUNT(*) FROM store_info WHERE store_images LIKE ?) + "
                 + "(SELECT COUNT(*) FROM dish WHERE dish_pics LIKE ? AND deleted = 0) + "
-                + "(SELECT COUNT(*) FROM dish_category WHERE category_icon = ?) + "
-                + "(SELECT COUNT(*) FROM print_template WHERE logo_url = ?)",
-                Integer.class, pattern, pattern, url, url);
+                + "(SELECT COUNT(*) FROM dish_category WHERE category_icon = ? OR category_pic = ?) + "
+                + "(SELECT COUNT(*) FROM print_template WHERE logo_url = ?) + "
+                + "(SELECT COUNT(*) FROM dish_spec_option WHERE spec_values LIKE ?)",
+                Integer.class, pattern, pattern, url, url, url, pattern);
         return Result.success(count != null && count > 0);
     }
+
 }

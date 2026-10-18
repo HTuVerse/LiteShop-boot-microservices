@@ -13,6 +13,9 @@ import org.hongtu.restaurant.service.DishSpecOptionService;
 import org.hongtu.restaurant.service.DishService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.utils.SpecValueConverter;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBinding;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.enums.StatusEnum;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,6 +39,9 @@ public class DishSpecOptionController {
     DishService dishService;
 
     @Resource
+    ResourceBindingCoordinator resourceBindings;
+
+    @Resource
     StoreDataScopeService storeDataScopeService;
 
     /**
@@ -52,11 +58,14 @@ public class DishSpecOptionController {
         // 转换为实体对象
         DishSpecOption specOption = request.toDishSpecOption();
         ensureDishAccessible(specOption.getDishId());
+        specOption.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan imagePlan = prepareImages(specOption.getId(), request.getSpecValueList(), null);
         specOption.setCreatedAt(LocalDateTime.now());
         specOption.setUpdatedAt(LocalDateTime.now());
         //将规格值列表转换为字符串
         specOption.setSpecValues(SpecValueConverter.convertToString(request.getSpecValueList()));
         boolean result = dishSpecOptionService.save(specOption);
+        if (result) resourceBindings.completeAfterCommit(imagePlan);
         if (result) {
             return Result.success("添加规格选项成功", result);
         } else {
@@ -86,9 +95,12 @@ public class DishSpecOptionController {
         }
 
         dishSpecOption.setUpdatedAt(LocalDateTime.now());
+        ResourceBindingPlan imagePlan = prepareImages(dishSpecOption.getId(), dishSpecOption.getSpecValueList(),
+                existing.getSpecValueList());
         dishSpecOption.setSpecValues(SpecValueConverter.convertToString(dishSpecOption.getSpecValueList()));
 
         boolean result = dishSpecOptionService.updateById(dishSpecOption);
+        if (result) resourceBindings.completeAfterCommit(imagePlan);
         if (result) {
             return Result.success("更新规格选项成功", result);
         } else {
@@ -110,11 +122,36 @@ public class DishSpecOptionController {
         }
         ensureDishAccessible(existing.getDishId());
         boolean result = dishSpecOptionService.removeById(id);
+        if (result) resourceBindings.clearAfterCommit("SPEC", id, "specValues");
         if (result) {
             return Result.success("删除规格选项成功");
         } else {
             return Result.error("删除规格选项失败");
         }
+    }
+
+    /** 规格图片按值列表位置绑定，JSON 中仍只保留旧客户端认识的 URL。 */
+    private ResourceBindingPlan prepareImages(Long optionId, List<SpecValue> values, List<SpecValue> existing) {
+        List<ResourceBinding> slots = new java.util.ArrayList<>();
+        List<ResourceBinding> previous = existing == null ? List.of()
+                : resourceBindings.fieldReferences("SPEC", optionId, "specValues");
+        if (values != null) {
+            for (int index = 0; index < values.size(); index++) {
+                String url = values.get(index).getImageUrl();
+                if (url != null && !url.isBlank()) {
+                    int position = index;
+                    Long resourceId = existing != null && index < existing.size()
+                            && java.util.Objects.equals(url, existing.get(index).getImageUrl())
+                            ? previous.stream().filter(item -> item.sortOrder() == position).findFirst()
+                                .map(ResourceBinding::resourceId).orElse(null) : null;
+                    slots.add(new ResourceBinding("specValues", index, resourceId, url));
+                }
+            }
+        }
+        ResourceBindingPlan plan = resourceBindings.prepare(resourceBindings.request("SPEC", optionId, "specValues", slots));
+        if (values != null) for (ResourceBinding slot : plan.bindings())
+            values.get(slot.sortOrder()).setImageUrl(slot.url());
+        return plan;
     }
 
 /*    *//**

@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.DAO.DishMapper;
 import org.hongtu.restaurant.DAO.DishSpecOptionMapper;
@@ -65,6 +67,8 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
     StoreMenuPolicyService storeMenuPolicyService;
     @Resource
     PricingService pricingService;
+    @Resource
+    ResourceBindingCoordinator resourceBindings;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -99,6 +103,9 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
 
         validateCategoryScope(dish.getCategoryId(), sourceType, ownerStoreId);
         dish.setId(dish.getId() == null ? IdWorker.getId() : dish.getId());
+        ResourceBindingPlan imagePlan = resourceBindings.prepareMulti("DISH", dish.getId(), "dishPics",
+                dish.getDishPicResourceIds(), dish.getDishPics());
+        dish.setDishPics(resourceBindings.resolvedMulti(imagePlan, dish.getDishPics()));
         dish.setDishCode(StringUtils.hasText(dish.getDishCode())
                 ? dish.getDishCode().trim() : "D" + dish.getId());
         dish.setSourceType(sourceType);
@@ -116,6 +123,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
         if (baseMapper.insert(dish) <= 0) {
             return false;
         }
+        resourceBindings.completeAfterCommit(imagePlan);
 
         // 第一阶段的总部菜品默认统一发布到当前租户全部门店；门店可按策略下架或清退。
         List<Long> targetStoreIds = sourceType == 0
@@ -154,6 +162,13 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
             throw new BusinessException("总部未允许该门店调整菜品分类");
         }
         validateCategoryScope(targetCategoryId, sourceType, ownerStoreId);
+        if (dish.getDishPics() == null) dish.setDishPics(existing.getDishPics());
+        if (dish.getDishPicResourceIds() == null)
+            dish.setDishPicResourceIds(Objects.equals(dish.getDishPics(), existing.getDishPics())
+                    ? resourceBindings.currentMultiIds("DISH", dish.getId(), "dishPics", existing.getDishPics()) : "");
+        ResourceBindingPlan imagePlan = resourceBindings.prepareMulti("DISH", dish.getId(), "dishPics",
+                dish.getDishPicResourceIds(), dish.getDishPics());
+        dish.setDishPics(resourceBindings.resolvedMulti(imagePlan, dish.getDishPics()));
         dish.setSourceType(sourceType);
         dish.setOwnerStoreId(ownerStoreId);
         dish.setStoreId(ownerStoreId);
@@ -171,6 +186,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
         updateWrapper.set(Dish::getUpdatedAt, dish.getUpdatedAt());
         updateWrapper.set(Dish::getSalePrice, dish.getSalePrice());
         int updated = baseMapper.update(dish, updateWrapper);
+        if (updated > 0) resourceBindings.completeAfterCommit(imagePlan);
         if (updated > 0 && sourceType == 0) {
             // 总部主数据动态继承，门店个性化覆盖不受影响，只推进继承版本。
             storeDishMapper.update(null, new LambdaUpdateWrapper<StoreDish>()
@@ -199,6 +215,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
                 .set(Dish::getDeleted, 1)
                 .set(Dish::getMasterStatus, 2)
                 .set(Dish::getUpdatedAt, LocalDateTime.now()));
+        if (updated > 0) resourceBindings.clearAfterCommit("DISH", id, "dishPics");
         if (updated > 0) {
             storeDishMapper.update(null, new LambdaUpdateWrapper<StoreDish>()
                     .eq(StoreDish::getDishId, id)
@@ -303,7 +320,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
                                 category == null ? "未分类" : category.getCategoryName(),
                                 category == null || category.getCategoryDesc() == null ? "" : category.getCategoryDesc(),
                                 category == null || category.getCategoryIcon() == null ? "" : category.getCategoryIcon(),
-                                entry.getValue());
+                                entry.getValue(), entry.getKey());
                     }).collect(Collectors.toList());
 
             // 处理 categoryId 为 null 的菜品（未分类），追加到结果末尾

@@ -32,11 +32,16 @@ public class SysUserVO {
     private Integer mustChangePassword;
     private String email;
     private String introduction;
+    /** 用户所在地区。 */
+    private String region;
     private Integer exp;
     private Integer level;
     private BigDecimal surplusMoney;
     private Integer points;
     private String avatar;
+
+    /** 头像资源 ID，旧客户端继续读取 avatar。 */
+    private Long avatarResourceId;
     private StatusEnum status;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")

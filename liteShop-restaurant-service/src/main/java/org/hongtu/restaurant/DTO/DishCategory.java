@@ -69,6 +69,10 @@ public class DishCategory implements Serializable {
      */
     private String categoryPic;
 
+    /** 分类图片对应的资源库 ID。 */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Long categoryImageResourceId;
+
     /**
      * 父分类ID，0表示顶级分类
      */

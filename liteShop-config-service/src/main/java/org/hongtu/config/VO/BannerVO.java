@@ -25,6 +25,9 @@ public class BannerVO {
      */
     private String imageUrl;
 
+    /** 资源库图片 ID，旧客户端仍使用 imageUrl。 */
+    private Long imageResourceId;
+
     /**
      * 跳转链接
      */
