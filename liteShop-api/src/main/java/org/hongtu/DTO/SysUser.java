@@ -149,6 +149,10 @@ public class SysUser implements Serializable {
     @TableField("avatar")
     private String avatar;
 
+    /** 头像对应的资源库 ID；历史外部头像仍使用 avatar。 */
+    @TableField(exist = false)
+    private Long avatarResourceId;
+
     /**
      * 状态（1-正常 0-禁用）
      */

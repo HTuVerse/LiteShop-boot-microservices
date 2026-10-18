@@ -17,6 +17,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.*;
 import org.hongtu.DTO.*;
 import org.hongtu.Result.Result;
+import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.ResourceBindingPlan;
+import org.hongtu.api.dto.ResourceBinding;
 import org.hongtu.VO.AdminStoreOptionVO;
 import org.hongtu.VO.AdminTenantOptionVO;
 import org.hongtu.VO.AdminTenantSelectionVO;
@@ -78,6 +81,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Resource
     SysUserMapper sysUserMapper;
+    @Resource
+    ResourceBindingCoordinator resourceBindings;
     @Resource
     wxUtils wxUtilS;
     @Resource
@@ -564,6 +569,12 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             return Result.error("新增用户必须设置初始密码");
         }
 
+        // 提前生成主键，确保业务提交前能占用头像资源。
+        if (sysUser.getId() == null) sysUser.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        ResourceBindingPlan avatarPlan = resourceBindings.prepare(new org.hongtu.api.dto.ResourceBindingRequest(
+                targetTenantId, "USER", sysUser.getId(), List.of("avatar"),
+                List.of(new ResourceBinding("avatar", 0, sysUser.getAvatarResourceId(), sysUser.getAvatar()))));
+        sysUser.setAvatar(resourceBindings.resolvedSingle(avatarPlan, sysUser.getAvatar()));
         // 保存用户
         boolean saved = save(sysUser);
         if (!saved) {
@@ -581,6 +592,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             sysUser.setLevel(initial.getLevelCode());sysUser.setExp(initial.getRequiredExp());
             if (!updateById(sysUser)) throw new IllegalStateException("初始化用户等级失败");
         });
+        resourceBindings.completeAfterCommit(avatarPlan);
 
         return Result.success("添加用户成功", org.hongtu.utils.BeanCopyUtils.copyBean(sysUser, org.hongtu.VO.SysUserVO.class));
     }
@@ -612,6 +624,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         // 删除用户
         boolean removed = removeById(id);
         if (removed) {
+            resourceBindings.clearAfterCommit(user.getTenantId() == null ? 0L : user.getTenantId(),
+                    "USER", id, "avatar");
             return Result.success("删除用户成功");
         } else {
             return Result.error("删除用户失败");
@@ -744,8 +758,10 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         //加密用户密码
         sysUser.setPassword(currentUser.getPassword());
         // 更新用户信息
+        ResourceBindingPlan avatarPlan = normalizeAvatar(sysUser, currentUser);
         boolean updated = updateById(sysUser);
         if (updated) {
+            resourceBindings.completeAfterCommit(avatarPlan);
             // 查询更新后的用户信息
             SysUser updatedUser = sysUserMapper.selectById(userId);
             SysUserVO sysUserVO = BeanCopyUtils.copyBean(updatedUser, SysUserVO.class);
@@ -940,8 +956,10 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         }
 
         // 更新用户信息
+        ResourceBindingPlan avatarPlan = normalizeAvatar(sysUser, existingUser);
         boolean success = updateById(sysUser);
         if (success) {
+            resourceBindings.completeAfterCommit(avatarPlan);
             return Result.success("更新用户信息成功");
         } else {
             throw new org.hongtu.exception.BusinessException(500,"更新用户信息失败");
@@ -1578,5 +1596,19 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             redisCache.expire(errorCountKey, 12 * 3600, TimeUnit.SECONDS);
         }
         return errorCount != null ? errorCount.intValue() : 1;
+    }
+
+    /** 头像关联存在时用资源 ID 派生地址；旧客户端未修改头像则保留原关联。 */
+    private ResourceBindingPlan normalizeAvatar(SysUser target, SysUser existing) {
+        if (target.getAvatar() == null) target.setAvatar(existing.getAvatar());
+        if (target.getAvatarResourceId() == null && Objects.equals(target.getAvatar(), existing.getAvatar()))
+            target.setAvatarResourceId(resourceBindings.references(existing.getTenantId() == null ? 0L : existing.getTenantId(),
+                    "USER", existing.getId()).stream().findFirst().map(ResourceBinding::resourceId).orElse(null));
+        Long tenantId = existing.getTenantId() == null ? 0L : existing.getTenantId();
+        ResourceBindingPlan plan = resourceBindings.prepare(new org.hongtu.api.dto.ResourceBindingRequest(
+                tenantId, "USER", existing.getId(), List.of("avatar"),
+                List.of(new ResourceBinding("avatar", 0, target.getAvatarResourceId(), target.getAvatar()))));
+        target.setAvatar(resourceBindings.resolvedSingle(plan, target.getAvatar()));
+        return plan;
     }
 }
