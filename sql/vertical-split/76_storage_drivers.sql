@@ -10,10 +10,11 @@ CREATE TABLE IF NOT EXISTS `file_storage_profile` (
 
 -- 先固定升级前的 Local/七牛配置，历史文件全部指向快照 1。
 INSERT INTO `file_storage_profile` (`id`, `config_json`)
-SELECT 1, JSON_SET(`config_value`, '$.profileId', 1,
-                   '$.storageMode', IF(JSON_UNQUOTE(JSON_EXTRACT(`config_value`, '$.ossEnabled')) = 'true', 'QINIU', 'LOCAL'))
-FROM `sys_website_config` WHERE `id` = 3
-ON DUPLICATE KEY UPDATE `id` = `id`;
+SELECT 1, JSON_SET(`config`.`config_value`, '$.profileId', 1,
+                   '$.storageMode', IF(JSON_UNQUOTE(JSON_EXTRACT(`config`.`config_value`, '$.ossEnabled')) = 'true', 'QINIU', 'LOCAL'))
+FROM `sys_website_config` AS `config`
+WHERE `config`.`id` = 3
+  AND NOT EXISTS (SELECT 1 FROM `file_storage_profile` AS `existing` WHERE `existing`.`id` = 1);
 
 UPDATE `sys_website_config`
 SET `config_value` = JSON_SET(`config_value`, '$.profileId', 1,
