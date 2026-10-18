@@ -46,9 +46,7 @@ public class FileUpload implements Serializable {
      */
     private String contentType;
 
-    /**
-     * 文件访问URL
-     */
+    /** 历史访问 URL；新文件不持久化该字段，接口响应时派生。 */
     private String url;
 
     /** 存储驱动：0 Local、1 七牛、2 MinIO、3 阿里云 OSS。 */

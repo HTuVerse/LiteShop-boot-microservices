@@ -17,6 +17,11 @@ import org.apache.ibatis.annotations.Param;
  */
 @Mapper
 public interface FileUploadMapper extends BaseMapper<FileUpload> {
+    /** 公开入口和私有授权均需跨租户读取元数据，权限由 Controller 单独校验。 */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("SELECT * FROM file_upload WHERE id = #{id} LIMIT 1")
+    FileUpload findAcrossTenants(@Param("id") Long id);
+
     /** 公开静态访问按随机 Key 定位历史本地配置，禁止返回私有资源。 */
     @InterceptorIgnore(tenantLine = "true")
     @Select("SELECT * FROM file_upload WHERE storage_type = 0 AND visibility = 'PUBLIC' " +

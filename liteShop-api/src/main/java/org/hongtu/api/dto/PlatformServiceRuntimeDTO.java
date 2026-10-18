@@ -25,6 +25,8 @@ public class PlatformServiceRuntimeDTO {
     private Long profileId;
     private String uploadPath;
     private String baseUrl;
+    /** 统一公开资源入口，例如 https://static.example.com/images/resource。留空沿用存储源站地址。 */
+    private String publicDeliveryBaseUrl;
     private String allowedTypes;
     private Integer maxSize;
     @ToString.Exclude private String qiniuAccessKey;

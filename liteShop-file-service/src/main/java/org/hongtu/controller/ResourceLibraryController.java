@@ -60,7 +60,11 @@ public class ResourceLibraryController {
                 .and("file".equals(type), part -> part.isNull(FileUpload::getContentType)
                         .or().notLikeRight(FileUpload::getContentType, "image/"))
                 .orderByDesc(FileUpload::getCreatedAt, FileUpload::getId);
-        return Result.success(files.page(new Page<>(currentPage, pageSize), query));
+        Page<FileUpload> page = new Page<>(currentPage, pageSize);
+        files.page(page, query);
+        String deliveryBase = storage.currentSettings().getPublicDeliveryBaseUrl();
+        page.getRecords().forEach(record -> storage.forResponse(record, deliveryBase));
+        return Result.success(page);
     }
 
     /** 列出平台共享的分类文件夹。 */
@@ -129,7 +133,7 @@ public class ResourceLibraryController {
             record.setFolderId(folderId);
             try { files.save(record); }
             catch (RuntimeException error) { storage.delete(record); throw error; }
-            result.add(record);
+            result.add(storage.forResponse(record));
         }
         return Result.success(result);
     }
@@ -141,7 +145,7 @@ public class ResourceLibraryController {
         if (record == null) return Result.error("资源不存在");
         record.setOriginalFileName(cleanName(body.name()));
         files.updateById(record);
-        return Result.success(record);
+        return Result.success(storage.forResponse(record));
     }
 
     /** 将资源批量移动到指定分类，null 表示未分类。 */
@@ -163,7 +167,7 @@ public class ResourceLibraryController {
         for (Long id : body.ids()) {
             FileUpload record = files.getById(id);
             if (record == null) continue;
-            references.requireUnused(record.getUrl());
+            requireUnused(record);
             storage.delete(record);
             files.removeById(id);
         }
@@ -186,7 +190,7 @@ public class ResourceLibraryController {
     @GetMapping("/{id}")
     public Result<FileUpload> detail(@PathVariable Long id) {
         FileUpload record = files.getById(id);
-        return record == null ? Result.error("资源不存在") : Result.success(record);
+        return record == null ? Result.error("资源不存在") : Result.success(storage.forResponse(record));
     }
 
     /** 私有资源经角色鉴权后获取五分钟有效的直接访问地址。 */
@@ -205,8 +209,8 @@ public class ResourceLibraryController {
         String oldBucket = storage.bucket(record, settings);
         String oldVisibility = storage.visibility(record);
         String oldUrl = record.getUrl();
-        if (oldVisibility.equals(body.visibility())) return Result.success(record);
-        if ("PUBLIC".equals(oldVisibility)) references.requireUnused(record.getUrl());
+        if (oldVisibility.equals(body.visibility())) return Result.success(storage.forResponse(record));
+        if ("PUBLIC".equals(oldVisibility)) requireUnused(record);
         storage.changeVisibility(record, body.visibility());
         String key = storage.key(record);
         try {
@@ -235,7 +239,7 @@ public class ResourceLibraryController {
             record.setUrl(oldUrl);
             throw error;
         }
-        return Result.success(record);
+        return Result.success(storage.forResponse(record));
     }
 
     /** 检查当前默认驱动的公开、私有存储位置是否可连接。 */
@@ -256,6 +260,15 @@ public class ResourceLibraryController {
         if (name.isEmpty() || name.length() > 255 || name.contains("/") || name.contains("\\"))
             throw new IllegalArgumentException("名称须为 1 至 255 字符，且不能包含路径分隔符");
         return name;
+    }
+
+    /** 同时核对历史业务 URL 和当前派生 URL，防止切换入口后误删仍被引用的文件。 */
+    private void requireUnused(FileUpload record) {
+        references.requireUnused(record.getUrl());
+        String derived = storage.publicUrl(record);
+        if (derived != null && !derived.equals(record.getUrl())) references.requireUnused(derived);
+        String origin = storage.originPublicUrl(record);
+        if (origin != null && !origin.equals(record.getUrl()) && !origin.equals(derived)) references.requireUnused(origin);
     }
 
     /** 创建或重命名时提交的名称。 */

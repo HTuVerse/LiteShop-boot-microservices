@@ -63,6 +63,6 @@ public class FileController {
             storage.delete(record);
             throw error;
         }
-        return record;
+        return storage.forResponse(record);
     }
 }

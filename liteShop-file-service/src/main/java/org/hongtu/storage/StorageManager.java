@@ -61,12 +61,11 @@ public class StorageManager {
         try (InputStream stream = file.getInputStream()) {
             service.upload(settings, bucket, key, stream, file.getSize(), mime);
         }
-        String url = "PUBLIC".equals(access) ? service.publicUrl(settings, key) : null;
-        return new UploadResult(type, settings.getProfileId(), bucket, key, access, mime, extension, url);
+        return new UploadResult(type, settings.getProfileId(), bucket, key, access, mime, extension);
     }
 
     public record UploadResult(StorageTypeEnum type, Long profileId, String bucket, String key,
-                               String visibility, String mime, String extension, String url) { }
+                               String visibility, String mime, String extension) { }
 
     public void apply(FileUpload record, UploadResult result) {
         record.setStorageType(result.type());
@@ -76,11 +75,14 @@ public class StorageManager {
         record.setVisibility(result.visibility());
         record.setFileExtension(result.extension());
         record.setContentType(result.mime());
-        record.setUrl(result.url());
+        // URL 是访问结果，不再作为新文件的持久化定位数据。
+        record.setUrl(null);
     }
 
     public PlatformServiceRuntimeDTO settings(FileUpload file) { return config.profile(file.getStorageProfileId()); }
-    public StorageService driver(FileUpload file) { return driver(file.getStorageType()); }
+    public StorageService driver(FileUpload file) {
+        return driver(file.getStorageType() == null ? activeType(settings(file)) : file.getStorageType());
+    }
     public String key(FileUpload file) {
         if (file.getStorageKey() != null && !file.getStorageKey().isBlank()) return file.getStorageKey();
         // 兼容升级前仅保存 URL 的历史记录。
@@ -92,7 +94,8 @@ public class StorageManager {
         return url.substring(previous + 1);
     }
     public String bucket(FileUpload file, PlatformServiceRuntimeDTO settings) {
-        return file.getBucket() != null ? file.getBucket() : bucket(settings, file.getStorageType(), visibility(file));
+        StorageTypeEnum type = file.getStorageType() == null ? activeType(settings) : file.getStorageType();
+        return file.getBucket() != null ? file.getBucket() : bucket(settings, type, visibility(file));
     }
     public String bucket(PlatformServiceRuntimeDTO settings, StorageTypeEnum type, String visibility) {
         boolean privateFile = "PRIVATE".equals(visibility);
@@ -106,12 +109,40 @@ public class StorageManager {
     public String visibility(FileUpload file) {
         return "PRIVATE".equals(file.getVisibility()) ? "PRIVATE" : "PUBLIC";
     }
+    /** 公开地址由统一入口和资源 ID 派生；未启用入口时由文件绑定的历史驱动配置生成。 */
+    public String publicUrl(FileUpload file) {
+        return publicUrl(file, currentSettings().getPublicDeliveryBaseUrl());
+    }
+    public String publicUrl(FileUpload file, String deliveryBase) {
+        if (!"PUBLIC".equals(visibility(file))) return null;
+        if (deliveryBase != null && !deliveryBase.isBlank() && file.getId() != null)
+            return deliveryBase.replaceAll("/+$", "") + "/" + file.getId();
+        return originPublicUrl(file);
+    }
+    /** 公开入口重定向到真实源站；读取文件绑定的快照，默认驱动切换不会改变目标。 */
+    public String originPublicUrl(FileUpload file) {
+        if (!"PUBLIC".equals(visibility(file))) return null;
+        try {
+            return driver(file).publicUrl(settings(file), key(file));
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            // 升级前无法识别 Key 的外部文件仅保留其原访问地址。
+            return file.getUrl();
+        }
+    }
+    /** API 响应兼容旧 url 字段，但不会将派生地址写回数据库。 */
+    public FileUpload forResponse(FileUpload file) {
+        return forResponse(file, currentSettings().getPublicDeliveryBaseUrl());
+    }
+    public FileUpload forResponse(FileUpload file, String deliveryBase) {
+        file.setUrl(publicUrl(file, deliveryBase));
+        return file;
+    }
     public void delete(FileUpload file) throws Exception {
         PlatformServiceRuntimeDTO settings = settings(file);
         driver(file).delete(settings, bucket(file, settings), key(file));
     }
     public String accessUrl(FileUpload file) throws Exception {
-        if ("PUBLIC".equals(visibility(file))) return file.getUrl();
+        if ("PUBLIC".equals(visibility(file))) return publicUrl(file);
         PlatformServiceRuntimeDTO settings = settings(file);
         return driver(file).signedUrl(settings, bucket(file, settings), key(file), Duration.ofMinutes(5));
     }
@@ -121,18 +152,19 @@ public class StorageManager {
     }
     public String changeVisibility(FileUpload file, String target) throws Exception {
         if (!"PUBLIC".equals(target) && !"PRIVATE".equals(target)) throw new IllegalArgumentException("资源权限不合法");
-        if (visibility(file).equals(target)) return file.getUrl();
+        if (visibility(file).equals(target)) return publicUrl(file);
         PlatformServiceRuntimeDTO settings = settings(file);
         StorageService service = driver(file);
         String key = key(file);
-        String from = bucket(file, settings), to = bucket(settings, file.getStorageType(), target);
+        StorageTypeEnum type = file.getStorageType() == null ? activeType(settings) : file.getStorageType();
+        String from = bucket(file, settings), to = bucket(settings, type, target);
         if (to == null || to.isBlank()) throw new IllegalStateException("目标私有或公开 Bucket 尚未配置");
         if (from.equals(to)) throw new IllegalStateException("公开和私有文件必须使用隔离的存储位置");
         service.copy(settings, from, to, key);
         file.setStorageKey(key);
         file.setBucket(to);
         file.setVisibility(target);
-        file.setUrl("PUBLIC".equals(target) ? service.publicUrl(settings, key) : null);
+        file.setUrl(null);
         return from;
     }
 }

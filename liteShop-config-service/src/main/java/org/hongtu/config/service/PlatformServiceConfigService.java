@@ -24,7 +24,7 @@ public class PlatformServiceConfigService {
     private static final Set<String> MESSAGE_FIELDS = Set.of("revision", "mailHost", "mailPort", "mailUsername",
             "mailFrom", "mailProtocol", "encryptedMailPassword", "smsAppKey", "smsTemplateId", "smsHost",
             "encryptedSmsAppSecret", "encryptedSmsAppcode");
-    private static final Set<String> FILE_FIELDS = Set.of("revision", "ossEnabled", "uploadPath", "baseUrl",
+    private static final Set<String> FILE_FIELDS = Set.of("revision", "ossEnabled", "uploadPath", "baseUrl", "publicDeliveryBaseUrl",
             "allowedTypes", "maxSize", "encryptedQiniuAccessKey", "encryptedQiniuSecretKey", "qiniuBucket", "qiniuDomain",
             "qiniuPrivateBucket", "qiniuPrivateDomain",
             "storageMode", "profileId", "minioEndpoint", "minioBrowserEndpoint", "minioPublicBucket",
@@ -192,6 +192,7 @@ public class PlatformServiceConfigService {
         if ("LOCAL".equals(mode) && (!hasText(config.getUploadPath()) || !hasText(config.getBaseUrl())))
             throw new BusinessException(400, "本地上传目录和访问地址不能为空");
         if (hasText(config.getBaseUrl())) requireHttpUrl(config.getBaseUrl(), "文件访问地址");
+        if (hasText(config.getPublicDeliveryBaseUrl())) requireHttpUrl(config.getPublicDeliveryBaseUrl(), "统一公开资源入口");
         if ("MINIO".equals(mode)) {
             requireStorageFields(config.getMinioEndpoint(), config.getMinioPublicBucket(), config.getMinioPrivateBucket(),
                     config.getMinioPublicBaseUrl(), config.getEncryptedMinioAccessKey(), config.getEncryptedMinioSecretKey(), "MinIO");
