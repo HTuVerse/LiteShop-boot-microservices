@@ -533,6 +533,8 @@ CREATE TABLE `restaurant_order_item` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `batch_no` int NULL DEFAULT 1 COMMENT '批次号(第几次下单，1表示首次，2表示第二次加菜)',
+  `submitted_by_user_id` bigint NULL COMMENT '本批确认提交订单的用户ID',
+  `submitted_by_name` varchar(100) NULL COMMENT '本批确认提交订单的用户名称快照',
   `add_time` datetime NULL DEFAULT CURRENT_TIMESTAMP COMMENT '加菜时间',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),

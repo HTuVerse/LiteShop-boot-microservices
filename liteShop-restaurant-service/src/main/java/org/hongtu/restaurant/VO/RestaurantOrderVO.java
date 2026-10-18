@@ -281,6 +281,8 @@ public class RestaurantOrderVO implements Serializable {
          * 批次号（第几次下单，1表示首次，2表示第二次加菜）
          */
         private Integer batchNo;
+        private Long submittedByUserId;
+        private String submittedByName;
 
         /**
          * 加菜时间

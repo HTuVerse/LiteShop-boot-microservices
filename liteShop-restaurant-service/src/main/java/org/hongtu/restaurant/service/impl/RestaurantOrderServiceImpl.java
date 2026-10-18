@@ -389,6 +389,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 orderItem.setUpdatedAt(LocalDateTime.now());
                 // 设置批次号和加菜时间
                 orderItem.setBatchNo(1); // 首次下单，批次号为1
+                orderItem.setSubmittedByUserId(order.getOperatorId());
+                orderItem.setSubmittedByName(order.getOperatorName());
                 orderItem.setAddTime(LocalDateTime.now());
                 orderItems.add(orderItem);
             }
@@ -636,6 +638,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (order.getStatus() == OrderStatusEnum.CANCELLED) {
             throw new IllegalStateException("订单已取消，无法支付");
         }
+        if (isOnlinePaymentExpired(order)) {
+            throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
+        }
 
         BigDecimal serverPayable = CashierAmountGuard.requireServerPayable(
                 order.getActualAmount(), order.getTotalAmount());
@@ -725,7 +730,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         Boolean isExpired = false;
         if (order.getCreatedAt() != null) {
             waitingSeconds = java.time.Duration.between(order.getCreatedAt(), LocalDateTime.now()).getSeconds();
-            isExpired = waitingSeconds > 1800;
+            isExpired = waitingSeconds >= OrderTimeoutQueueService.DEFAULT_TIMEOUT_SECONDS;
         }
 
         // 使用 Builder 构建 VO
@@ -773,7 +778,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 .canPay(order.getPaymentMode() == PaymentModeEnum.ONLINE
                         && order.getPaymentStatus() == PaymentStatusEnum.UNPAID &&
                         order.getStatus() != OrderStatusEnum.CANCELLED &&
-                        order.getStatus() != OrderStatusEnum.COMPLETED)
+                        order.getStatus() != OrderStatusEnum.COMPLETED && !isExpired)
                 .canCancel(PaymentTransitionPolicy.canCancel(order.getStatus(), order.getPaymentStatus(),
                         order.getPaymentMode()))
 
@@ -860,6 +865,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
         if (order.getStatus() == OrderStatusEnum.CANCELLED) {
             throw new IllegalStateException("订单已取消，无法支付");
+        }
+        if (isOnlinePaymentExpired(order)) {
+            throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
         }
 
         if (order.getPaymentType() == PaymentTypeEnum.WECHAT
@@ -977,6 +985,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Override
     public boolean handlePaymentTimeout(Long orderId, String reason) {
         return closeUnpaidOrder(orderId, reason != null ? reason : "支付超时", true);
+    }
+
+    /** 线上订单到达支付期限后，拒绝新建支付交易和余额扣款。 */
+    private boolean isOnlinePaymentExpired(RestaurantOrder order) {
+        return order.getPaymentMode() == PaymentModeEnum.ONLINE
+                && order.getPaymentStatus() == PaymentStatusEnum.UNPAID
+                && order.getCreatedAt() != null
+                && !order.getCreatedAt().plusSeconds(OrderTimeoutQueueService.DEFAULT_TIMEOUT_SECONDS)
+                        .isAfter(LocalDateTime.now());
     }
 
     /**
@@ -1419,6 +1436,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
                 // 【核心】设置批次号和加菜时间
                 orderItem.setBatchNo(newBatchNo);
+                Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
+                orderItem.setSubmittedByUserId(submitterId);
+                orderItem.setSubmittedByName(resolveOperatorName(submitterId));
                 orderItem.setAddTime(addTime);
 
                 newItems.add(orderItem);
@@ -1708,6 +1728,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             orderItem.setCreatedAt(LocalDateTime.now());
             orderItem.setUpdatedAt(LocalDateTime.now());
             orderItem.setBatchNo(1);
+            Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
+            orderItem.setSubmittedByUserId(submitterId);
+            orderItem.setSubmittedByName(resolveOperatorName(submitterId));
             orderItem.setAddTime(LocalDateTime.now());
             orderItems.add(orderItem);
         }
@@ -1881,6 +1904,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 orderItem.setCreatedAt(LocalDateTime.now());
                 orderItem.setUpdatedAt(LocalDateTime.now());
                 orderItem.setBatchNo(1); // 首次下单，批次号为1
+                Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
+                orderItem.setSubmittedByUserId(submitterId);
+                orderItem.setSubmittedByName(resolveOperatorName(submitterId));
                 orderItem.setAddTime(LocalDateTime.now());
 
                 orderItems.add(orderItem);
@@ -3073,6 +3099,14 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         } catch (RuntimeException exception) {
             log.error("从超时队列移除订单失败: orderId={}", orderId, exception);
         }
+        if (StrUtil.isNotBlank(closed.getSessionNo())) {
+            try {
+                webSocketPushService.pushOrderUpdated(closed.getSessionNo(),
+                        restaurantOrderConverter.toVO(this.getById(orderId)));
+            } catch (RuntimeException exception) {
+                log.warn("推送桌台订单取消状态失败: orderId={}", orderId, exception);
+            }
+        }
         return true;
     }
 
@@ -3094,6 +3128,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 : baseMapper.markCustomerClosedIfUnpaid(orderId, reason, LocalDateTime.now());
         if (updated != 1) {
             throw new BusinessException("订单状态已变化，请刷新后重试");
+        }
+        if (StrUtil.isNotBlank(order.getSessionNo())) {
+            // 只解绑当前订单；保留桌台会话，顾客可在该桌重新下单。
+            tableSessionService.update(new LambdaUpdateWrapper<TableSession>()
+                    .eq(TableSession::getSessionNo, order.getSessionNo())
+                    .eq(TableSession::getCurrentOrderId, orderId)
+                    .set(TableSession::getCurrentOrderId, null)
+                    .set(TableSession::getUpdatedAt, LocalDateTime.now()));
+            tableSessionService.updateSessionStatistics(order.getSessionNo());
         }
         return order;
     }
@@ -3156,6 +3199,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (order == null) throw new BusinessException("订单不存在");
         if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
             throw new BusinessException("该订单采用线下支付，请到收银台结算");
+        }
+        if (isOnlinePaymentExpired(order)) {
+            throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
         }
         CaptureOutcome outcome = independentTx.execute(status -> captureInTransaction(
                 status, orderId, "SANDBOX-" + order.getOrderNo(), paymentType, null, true));

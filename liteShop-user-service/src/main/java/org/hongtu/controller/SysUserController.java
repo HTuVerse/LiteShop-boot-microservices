@@ -236,6 +236,21 @@ public class SysUserController {
         if (user.getStatus() == StatusEnum.DISABLED) {
             return Result.error("该会员已停用，无法用于收银");
         }
+        return Result.success(toCashierMember(user));
+    }
+
+    /** 按首笔订单的会员ID恢复桌位收银会员信息。 */
+    @GetMapping("/cashier/memberById")
+    @SaCheckPermission(value = {"operations:direct-cashier", "operations:table-cashier", "restaurant:order:settle"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<CashierMemberVO> cashierMemberById(@RequestParam Long userId) {
+        SysUser user = recipientMapper.selectById(userId);
+        if (user == null || user.getStatus() == StatusEnum.DISABLED) {
+            return Result.error("首笔订单会员不存在或已停用");
+        }
+        return Result.success(toCashierMember(user));
+    }
+
+    private CashierMemberVO toCashierMember(SysUser user) {
         CashierMemberVO result = new CashierMemberVO();
         result.setId(user.getId());
         result.setUsername(user.getUsername());
@@ -248,7 +263,7 @@ public class SysUserController {
         result.setLevelName(level == null ? null : level.getLevelName());
         result.setPoints(user.getPoints());
         result.setSurplusMoney(user.getSurplusMoney());
-        return Result.success(result);
+        return result;
     }
 
     @GetMapping("/recipients")
