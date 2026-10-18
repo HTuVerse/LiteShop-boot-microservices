@@ -95,10 +95,9 @@ public class FileUploadUtil {
         String datePath = new SimpleDateFormat("yyyyMMdd").format(new Date());
         String relativePath = datePath + "/" + fileName;
         // 确保目录存在
-        Path uploadDir = Paths.get(fileUploadConfig.getUploadPath(), datePath);
-        if (!Files.exists(uploadDir)) {
-            Files.createDirectories(uploadDir);
-        }
+        // Servlet MultipartFile 对相对目标可能按临时目录解析，必须传入绝对路径。
+        Path uploadDir = Paths.get(fileUploadConfig.getUploadPath(), datePath).toAbsolutePath().normalize();
+        Files.createDirectories(uploadDir);
         // 保存文件
         Path filePath = uploadDir.resolve(fileName);
         file.transferTo(filePath.toFile());
