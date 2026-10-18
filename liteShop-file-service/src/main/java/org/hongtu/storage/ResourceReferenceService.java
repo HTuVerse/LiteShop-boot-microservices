@@ -181,8 +181,8 @@ public class ResourceReferenceService {
     /** 只接受数据库中的旧完整 URL 或当前受信任域名生成的完整 URL。 */
     public Long matchExactPublicUrl(String url) {
         if (url == null || url.isBlank()) return null;
-        List<Long> exact = jdbc.queryForList("SELECT id FROM file_upload WHERE url=? AND visibility='PUBLIC' LIMIT 2",
-                Long.class, url);
+        List<Long> exact = jdbc.queryForList("SELECT id FROM file_upload WHERE url=? AND BINARY url=BINARY ? "
+                + "AND visibility='PUBLIC' LIMIT 2", Long.class, url, url);
         if (exact.size() > 1) return null;
         if (exact.size() == 1) return exact.get(0);
         String base = storage.currentSettings().getPublicDeliveryBaseUrl();
