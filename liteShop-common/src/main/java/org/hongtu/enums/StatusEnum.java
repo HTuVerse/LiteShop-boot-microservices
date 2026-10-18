@@ -54,19 +54,18 @@ public enum StatusEnum {
     }
 
 
-    /**
-     * 告诉 Jackson 根据 code 字段反序列化
-     * */
-    @JsonCreator
-    public static StatusEnum fromCode(Integer code) {
-        if (code == null) {
+    /** 兼容接口返回的中文描述和请求传入的数字编码。 */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static StatusEnum fromJson(Object value) {
+        if (value == null) {
             return null;
         }
         for (StatusEnum status : StatusEnum.values()) {
-            if (status.getCode().equals(code)) {
+            if (status.getDesc().equals(value.toString())
+                    || status.getCode().toString().equals(value.toString())) {
                 return status;
             }
         }
-        throw new IllegalArgumentException("无效的权限类型码: " + code);
+        throw new IllegalArgumentException("无效的用户状态值: " + value);
     }
-} 
+}

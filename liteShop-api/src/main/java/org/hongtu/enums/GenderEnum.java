@@ -57,19 +57,18 @@ public enum GenderEnum {
         return null;
     }
 
-    /**
-     * 告诉 Jackson 根据 code 字段反序列化
-     * */
-    @JsonCreator
-    public static GenderEnum fromCode(Integer code) {
-        if (code == null) {
+    /** 兼容接口返回的中文描述和请求传入的数字编码。 */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static GenderEnum fromJson(Object value) {
+        if (value == null) {
             return null;
         }
         for (GenderEnum gender : GenderEnum.values()) {
-            if (gender.getCode().equals(code)) {
+            if (gender.getDesc().equals(value.toString())
+                    || gender.getCode().toString().equals(value.toString())) {
                 return gender;
             }
         }
-        throw new IllegalArgumentException("无效的权限类型码: " + code);
+        throw new IllegalArgumentException("无效的性别值: " + value);
     }
-} 
+}
