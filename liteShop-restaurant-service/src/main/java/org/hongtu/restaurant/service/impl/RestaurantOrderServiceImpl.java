@@ -3130,13 +3130,24 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             throw new BusinessException("订单状态已变化，请刷新后重试");
         }
         if (StrUtil.isNotBlank(order.getSessionNo())) {
-            // 只解绑当前订单；保留桌台会话，顾客可在该桌重新下单。
-            tableSessionService.update(new LambdaUpdateWrapper<TableSession>()
-                    .eq(TableSession::getSessionNo, order.getSessionNo())
-                    .eq(TableSession::getCurrentOrderId, orderId)
-                    .set(TableSession::getCurrentOrderId, null)
-                    .set(TableSession::getUpdatedAt, LocalDateTime.now()));
-            tableSessionService.updateSessionStatistics(order.getSessionNo());
+            if (order.getPaymentMode() == PaymentModeEnum.ONLINE) {
+                // 线上支付一桌一单：未付款订单取消后结束本次会话并释放桌位。
+                TableSession session = tableSessionService.getOne(new LambdaQueryWrapper<TableSession>()
+                        .eq(TableSession::getSessionNo, order.getSessionNo()));
+                if (session != null && session.getStatus() == SessionStatusEnum.IN_PROGRESS) {
+                    tableSessionService.updateSessionStatistics(order.getSessionNo());
+                    tableSessionService.endSession(order.getSessionNo(), BigDecimal.ZERO);
+                    pushSessionEndedAfterCommit(order.getSessionNo(), BigDecimal.ZERO);
+                }
+            } else {
+                // 线下支付会话可在取消当前订单后继续点餐。
+                tableSessionService.update(new LambdaUpdateWrapper<TableSession>()
+                        .eq(TableSession::getSessionNo, order.getSessionNo())
+                        .eq(TableSession::getCurrentOrderId, orderId)
+                        .set(TableSession::getCurrentOrderId, null)
+                        .set(TableSession::getUpdatedAt, LocalDateTime.now()));
+                tableSessionService.updateSessionStatistics(order.getSessionNo());
+            }
         }
         return order;
     }
