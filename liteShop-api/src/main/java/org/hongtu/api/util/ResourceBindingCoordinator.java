@@ -10,8 +10,7 @@ import org.hongtu.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.alibaba.fastjson.JSON;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -22,7 +21,6 @@ import java.util.LinkedHashMap;
 @Component
 @RequiredArgsConstructor
 public class ResourceBindingCoordinator {
-    private static final ObjectMapper JSON = new ObjectMapper();
     private final FileResourceClient files;
 
     /** 使用显式租户上下文绑定业务，平台资源允许被任一租户引用。 */
@@ -134,7 +132,7 @@ public class ResourceBindingCoordinator {
     private List<String> splitUrls(String value) {
         if (value == null || value.isBlank()) return new ArrayList<>();
         if (value.trim().startsWith("[")) {
-            try { return new ArrayList<>(JSON.readValue(value, new TypeReference<List<String>>() { })); }
+            try { return new ArrayList<>(JSON.parseArray(value, String.class)); }
             catch (Exception error) { return new ArrayList<>(List.of(value)); }
         }
         return new ArrayList<>(List.of(value.split(",", -1)));
@@ -142,7 +140,7 @@ public class ResourceBindingCoordinator {
 
     private String joinUrls(List<String> urls, String original) {
         if (original != null && original.trim().startsWith("[")) {
-            try { return JSON.writeValueAsString(urls); }
+            try { return JSON.toJSONString(urls); }
             catch (Exception error) { throw new IllegalStateException("多图 URL 序列化失败", error); }
         }
         return String.join(",", urls);

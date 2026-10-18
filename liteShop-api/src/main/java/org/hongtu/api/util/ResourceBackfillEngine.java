@@ -1,7 +1,6 @@
 package org.hongtu.api.util;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.alibaba.fastjson.JSON;
 import lombok.RequiredArgsConstructor;
 import org.hongtu.api.dto.ResourceBinding;
 import org.hongtu.api.dto.ResourceBindingPlan;
@@ -17,7 +16,6 @@ import java.util.stream.Collectors;
 /** 逐页扫描本服务业务表，精确匹配历史 URL 并幂等回填文件库引用。 */
 @RequiredArgsConstructor
 public class ResourceBackfillEngine {
-    private static final ObjectMapper JSON = new ObjectMapper();
     private final JdbcTemplate jdbc;
     private final ResourceBindingCoordinator references;
 
@@ -87,10 +85,9 @@ public class ResourceBackfillEngine {
         if (format == Format.SINGLE) return List.of(value);
         if (format == Format.MULTI) return references.urlItems(value);
         try {
-            List<Map<String, Object>> values = JSON.readValue(value, new TypeReference<>() { });
             List<String> urls = new ArrayList<>();
-            for (Map<String, Object> item : values)
-                urls.add(item.get("imageUrl") instanceof String url ? url : "");
+            for (Object item : JSON.parseArray(value))
+                urls.add(item instanceof Map<?, ?> entry && entry.get("imageUrl") instanceof String url ? url : "");
             return urls;
         } catch (Exception error) {
             // 格式不确定的 JSON 不做推断，原业务数据保持不变。
