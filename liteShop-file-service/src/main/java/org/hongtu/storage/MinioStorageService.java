@@ -1,7 +1,7 @@
 package org.hongtu.storage;
 
 import io.minio.*;
-import io.minio.http.Method;
+import io.minio.Http;
 import org.hongtu.api.dto.PlatformServiceRuntimeDTO;
 import org.hongtu.enums.StorageTypeEnum;
 import org.springframework.stereotype.Component;
@@ -44,7 +44,7 @@ public class MinioStorageService implements StorageService {
     }
     @Override public String signedUrl(PlatformServiceRuntimeDTO config, String bucket, String key, Duration ttl) throws Exception {
         return client(config, true).getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
-                .method(Method.GET).bucket(bucket).object(key).expiry((int) ttl.toSeconds()).build());
+                .method(Http.Method.GET).bucket(bucket).object(key).expiry((int) ttl.toSeconds()).build());
     }
     @Override public InputStream open(PlatformServiceRuntimeDTO config, String bucket, String key) throws Exception {
         return client(config, false).getObject(GetObjectArgs.builder().bucket(bucket).object(key).build());
