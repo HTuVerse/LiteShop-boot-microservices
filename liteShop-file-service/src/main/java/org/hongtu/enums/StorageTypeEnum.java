@@ -11,7 +11,9 @@ import lombok.Getter;
 @Getter
 public enum StorageTypeEnum {
     LOCAL(0, "本地存储"),
-    OSS(1, "对象存储");
+    QINIU(1, "七牛云历史存储"),
+    MINIO(2, "MinIO"),
+    OSS(3, "阿里云OSS");
 
     @EnumValue
     @JsonValue

@@ -2,6 +2,10 @@ server:
   port: 9007
 
 spring:
+  servlet:
+    multipart:
+      max-file-size: 2048MB
+      max-request-size: 2048MB
   application:
     name: liteShop-file-service
   config:
