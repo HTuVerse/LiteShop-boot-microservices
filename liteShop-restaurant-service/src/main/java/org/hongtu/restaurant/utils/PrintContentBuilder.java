@@ -11,10 +11,11 @@ import org.hongtu.restaurant.enums.pickupModeEnum;
 import org.hongtu.restaurant.enums.PaymentModeEnum;
 import org.hongtu.restaurant.enums.PaymentStatusEnum;
 import org.hongtu.restaurant.enums.SceneTypeEnum;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 
-import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.Charset;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
@@ -29,6 +30,7 @@ import java.util.List;
 public class PrintContentBuilder {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final Charset PRINT_CHARSET = Charset.forName("GBK");
 
     /**
      * 根据模板和订单数据构建打印内容
@@ -39,11 +41,30 @@ public class PrintContentBuilder {
      * @return 格式化的打印内容
      */
     public static String buildOrderContent(PrintTemplate template, RestaurantOrderVO orderVO) {
+        return buildOrderContent(template, orderVO, template.getPrintScene(), template.getPaperWidth());
+    }
+
+    /** 正式打印按设备实际纸宽排版，避免把 80mm 模板的行宽发给 58mm 打印机。 */
+    public static String buildOrderContent(PrintTemplate template, RestaurantOrderVO orderVO,
+                                           PaperWidthEnum actualPaperWidth) {
+        return buildOrderContent(template, orderVO, template.getPrintScene(), actualPaperWidth);
+    }
+
+    /** 加菜单只展示本批菜品与本批金额。 */
+    public static String buildOrderContent(PrintTemplate template, RestaurantOrderVO orderVO,
+                                           String printScene, PaperWidthEnum actualPaperWidth) {
+        return buildOrderContent(template, orderVO, printScene, actualPaperWidth, null);
+    }
+
+    /** 正式小票可覆盖模板二维码，供设备扫码完成出餐。 */
+    public static String buildOrderContent(PrintTemplate template, RestaurantOrderVO orderVO,
+                                           String printScene, PaperWidthEnum actualPaperWidth, String scanCode) {
         // 判断是否启用取餐码突出显示模式
         boolean isPickupCodeFocused = template.getShowPickupCode() != null &&
                 template.getShowPickupCode() == BooleanEnum.YES && orderVO.getPickupMode()== pickupModeEnum.NUMBERCALLING;
 
-        return buildNormalContent(template, orderVO, isPickupCodeFocused);
+        return buildNormalContent(template, orderVO, isPickupCodeFocused, actualPaperWidth,
+                "ADD_ITEMS".equals(printScene), scanCode);
     }
 
     /** 使用演示订单生成与真实订单相同格式的小票指令，供在线预览和测试打印。 */
@@ -53,6 +74,12 @@ public class PrintContentBuilder {
 
     /** 试打全局模板时使用所选打印机的门店 ID 替换演示订单变量。 */
     public static String buildSampleContent(PrintTemplate template, Long storeId) {
+        return buildSampleContent(template, storeId, template.getPaperWidth());
+    }
+
+    /** 试打按所选打印机纸宽生成，订单数据仍使用演示值。 */
+    public static String buildSampleContent(PrintTemplate template, Long storeId,
+                                            PaperWidthEnum actualPaperWidth) {
         RestaurantOrderVO order = new RestaurantOrderVO();
         order.setOrderNo("DEMO-001");
         order.setStoreId(storeId == null ? 1L : storeId);
@@ -83,7 +110,7 @@ public class PrintContentBuilder {
         item.setSpecOptionsText("微辣");
         item.setNote("不要花生");
         order.setItems(List.of(item));
-        return buildOrderContent(template, order);
+        return buildOrderContent(template, order, template.getPrintScene(), actualPaperWidth);
     }
 
     /**
@@ -95,11 +122,13 @@ public class PrintContentBuilder {
      * @return 格式化的打印内容
      */
     private static String buildNormalContent(PrintTemplate template, RestaurantOrderVO orderVO,
-                                             boolean pickupCodeFocused) {
+                                             boolean pickupCodeFocused, PaperWidthEnum actualPaperWidth,
+                                             boolean addItems, String scanCode) {
         StringBuilder content = new StringBuilder();
 
         // 纸张宽度（用于计算列宽）
-        int paperWidth = template.getPaperWidth() == null ? 32 : template.getPaperWidth().getCharactersPerLine();
+        int paperWidth = actualPaperWidth == null ? PaperWidthEnum.MM_58.getCharactersPerLine()
+                : actualPaperWidth.getCharactersPerLine();
 
         // ============ 顶部Logo ============
         if (template.getShowLogo() != null && template.getShowLogo() == StatusEnum.getByCode(1) &&
@@ -112,19 +141,23 @@ public class PrintContentBuilder {
         // ============ 店铺名称 ============
         String storeName = orderVO.getStoreName();
         Integer storeNameStyle = template.getStoreNameStyle() != null ? template.getStoreNameStyle() : 2;
+        // 飞鹅 <CB> 是双倍宽居中，长店名在窄纸上改为普通居中加粗。
+        if (storeNameStyle == 3 && textWidth(storeName) * 2 > paperWidth) {
+            storeNameStyle = 2;
+        }
 
         switch (storeNameStyle) {
             case 0: // 普通
-                content.append(storeName).append("<BR>");
+                content.append(storeName);
                 break;
             case 1: // 加粗
-                content.append("<B>").append(storeName).append("</B>");
+                content.append("<BOLD>").append(storeName).append("</BOLD>");
                 break;
             case 2: // 加粗+居中
-                content.append("<CB>").append(storeName).append("</CB>");
+                content.append("<C><BOLD>").append(storeName).append("</BOLD></C>");
                 break;
             case 3: // 加粗+居中+放大
-                content.append("<CB><L>").append(storeName).append("</L></CB>");
+                content.append("<CB>").append(storeName).append("</CB>");
                 break;
         }
         content.append("<BR>");
@@ -132,11 +165,11 @@ public class PrintContentBuilder {
         // 取餐码仅增加突出区块，其余板块仍按同一模板规则打印。
         if (pickupCodeFocused) {
             content.append(buildDividerLine(paperWidth));
-            content.append("<CB><L>您的取餐码</L></CB><BR>");
+            content.append("<C><BOLD>您的取餐码</BOLD></C><BR>");
             String pickupCode = orderVO.getPickupCode();
-            content.append("<CB><L><L><B>")
+            content.append("<CB>")
                     .append(pickupCode == null || pickupCode.isBlank() ? "暂无" : pickupCode)
-                    .append("</B></L></L></CB><BR>");
+                    .append("</CB><BR>");
             content.append("<C>(等餐期间请注意听取叫号)</C><BR>");
         }
 
@@ -147,6 +180,9 @@ public class PrintContentBuilder {
             content.append("<BR>");
         }
 
+        // 厨房可直接区分追加菜品与首次下单。
+        if (addItems) content.append("<CB>加菜单</CB><BR>");
+
         // ============ 订单信息 ============
         content.append(buildDividerLine(paperWidth));
 
@@ -155,67 +191,67 @@ public class PrintContentBuilder {
         for (String field : orderFields) {
             switch (field) {
                 case "orderNo":
-                    content.append("订单号：").append(orderVO.getOrderNo()).append("<BR>");
+                    appendField(content, "订单号：", orderVO.getOrderNo(), paperWidth);
                     break;
                 case "tableName":
                     if (orderVO.getTableName() != null) {
-                        content.append("桌　号：").append(orderVO.getTableName()).append("<BR>");
+                        appendField(content, "桌　号：", orderVO.getTableName(), paperWidth);
                     }
                     break;
                 case "orderType":
                     if (orderVO.getOrderType() != null) {
-                        content.append("类　型：").append(orderVO.getOrderType().getDesc()).append("<BR>");
+                        appendField(content, "类　型：", orderVO.getOrderType().getDesc(), paperWidth);
                     }
                     break;
                 case "diningCount":
                     if (orderVO.getDiningCount() != null) {
-                        content.append("就餐人数：").append(orderVO.getDiningCount()).append("人<BR>");
+                        appendField(content, "就餐人数：", orderVO.getDiningCount() + "人", paperWidth);
                     }
                     break;
                 case "pickupMode":
                     if (orderVO.getPickupMode() != null) {
-                        content.append("取餐方式：").append(orderVO.getPickupMode().getDesc()).append("<BR>");
+                        appendField(content, "取餐方式：", orderVO.getPickupMode().getDesc(), paperWidth);
                     }
                     break;
                 case "pickupCode":
                     if (orderVO.getPickupCode() != null && !orderVO.getPickupCode().isEmpty()) {
-                        content.append("取餐码：").append(orderVO.getPickupCode()).append("<BR>");
+                        appendField(content, "取餐码：", orderVO.getPickupCode(), paperWidth);
                     }
                     break;
                 case "createdAt":
                     if (orderVO.getCreatedAt() != null) {
-                        content.append("下单时间：").append(orderVO.getCreatedAt().format(DATE_FORMATTER)).append("<BR>");
+                        appendField(content, "下单时间：", orderVO.getCreatedAt().format(DATE_FORMATTER), paperWidth);
                     }
                     break;
             }
         }
         // ============ 顶部地址和电话 ============
         if (template.getShowAddress() != null && template.getShowAddress() == StatusEnum.getByCode(1)) {
-            content.append("商家地址：").append(orderVO.getAddress()).append("<BR>");
+            appendField(content, "商家地址：", orderVO.getAddress(), paperWidth);
         }
         if (template.getShowPhone() != null && template.getShowPhone() == StatusEnum.getByCode(1)) {
-            content.append("商家电话：").append(orderVO.getPhone()).append("<BR>");
+            appendField(content, "商家电话：", orderVO.getPhone(), paperWidth);
         }
         content.append(buildDividerLine(paperWidth));
 
         // ============ 菜品列表 ============
         Integer dishListStyle = template.getDishListStyle() != null ? template.getDishListStyle() : 0;
 
-        // 表头
-        if (paperWidth == 48) { // 80mm
-            content.append("菜品名称          单价   数量        金额<BR>");
-        } else { // 58mm
-            content.append("菜品       单价  数量     金额<BR>");
-        }
+        // 表头与明细共用同一组字节列宽，金额始终落在首行。
+        int priceWidth = paperWidth > 30 ? 8 : 6;
+        int quantityWidth = paperWidth > 30 ? 5 : 4;
+        int amountWidth = paperWidth > 30 ? 9 : 8;
+        int nameWidth = paperWidth - priceWidth - quantityWidth - amountWidth;
+        content.append(formatText("菜品", nameWidth))
+                .append(formatRightAlign("单价", priceWidth))
+                .append(formatCenter("数量", quantityWidth))
+                .append(formatRightAlign("金额", amountWidth)).append("<BR>");
         content.append(buildDashLine(paperWidth));
 
         // 菜品明细
         List<RestaurantOrderVO.OrderItemVO> items = orderVO.getItems();
 
         for (RestaurantOrderVO.OrderItemVO item : items) {
-            // 菜品名称长度
-            int dishNameWidth = paperWidth == 48 ? 18 : 11;
-
             String dishName = item.getDishName();
             BigDecimal price = item.getUnitSellingPrice();
             Integer quantity = item.getQuantity();
@@ -223,24 +259,27 @@ public class PrintContentBuilder {
             BigDecimal discountPrice = item.getDiscountAmount();
             Integer isGift = item.getIsGift();
 
-            // 菜名：赠菜在名称右侧加「赠」
-            String formattedDishName = formatDishNameWithGift(dishName, dishNameWidth, isGift);
             String priceStr = formatPrice(price);
             String quantityStr = String.valueOf(quantity);
             String totalStr = formatPrice(itemTotal);
-            int amountColWidth = 9;
-
-            // 第一行固定列宽；优惠明细单独占行，避免 58mm 小票金额列溢出。
-            content.append(formattedDishName);
-            if (paperWidth == 48) {
-                content.append(formatRightAlign(priceStr, 6));
-                content.append(formatCenter(quantityStr, 6));
-                content.append(formatRightAlign(totalStr, amountColWidth));
+            int rowPriceWidth = Math.max(priceWidth, textWidth(priceStr));
+            int rowQuantityWidth = Math.max(quantityWidth, textWidth(quantityStr));
+            int rowAmountWidth = Math.max(amountWidth, textWidth(totalStr));
+            int rowNameWidth = paperWidth - rowPriceWidth - rowQuantityWidth - rowAmountWidth;
+            String itemLabel = (dishName == null ? "" : dishName)
+                    + (isGift != null && isGift == 1 ? "(赠)" : "");
+            // 长菜名先完整打印，价格、数量、金额仍在同一行且金额位于右侧。
+            String formattedDishName;
+            if (rowNameWidth < 4 || textWidth(itemLabel) > rowNameWidth) {
+                appendWrappedLine(content, itemLabel, paperWidth);
+                formattedDishName = " ".repeat(Math.max(0, rowNameWidth));
             } else {
-                content.append(formatRightAlign(priceStr, 5));
-                content.append(formatCenter(quantityStr, 5));
-                content.append(" ").append(formatRightAlign(totalStr, amountColWidth));
+                formattedDishName = formatText(itemLabel, rowNameWidth);
             }
+            content.append(formattedDishName)
+                    .append(formatRightAlign(priceStr, rowPriceWidth))
+                    .append(formatCenter(quantityStr, rowQuantityWidth))
+                    .append(formatRightAlign(totalStr, rowAmountWidth));
             content.append("<BR>");
             if (discountPrice != null && discountPrice.compareTo(BigDecimal.ZERO) > 0) {
                 BigDecimal originalTotal = (itemTotal == null ? BigDecimal.ZERO : itemTotal).add(discountPrice);
@@ -271,17 +310,22 @@ public class PrintContentBuilder {
         content.append(buildDashLine(paperWidth));
 
         // 服务费
-        if (orderVO.getServiceFee() != null && orderVO.getServiceFee().compareTo(BigDecimal.ZERO) > 0) {
+        if (!addItems && orderVO.getServiceFee() != null && orderVO.getServiceFee().compareTo(BigDecimal.ZERO) > 0) {
             content.append("<RIGHT>服务费：").append(formatPrice(orderVO.getServiceFee())).append("元</RIGHT><BR>");
         }
 
         // 优惠金额
-        if (orderVO.getDiscountAmount() != null && orderVO.getDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
+        if (!addItems && orderVO.getDiscountAmount() != null && orderVO.getDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
             content.append("<RIGHT>优惠：-").append(formatPrice(orderVO.getDiscountAmount())).append("元</RIGHT><BR>");
         }
 
         // 总计
-        content.append("<RIGHT><B>总计：").append(formatPrice(orderVO.getTotalAmount())).append("元</B></RIGHT><BR>");
+        BigDecimal total = addItems ? items.stream()
+                .map(RestaurantOrderVO.OrderItemVO::getLinePayableAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add) : orderVO.getTotalAmount();
+        content.append("<RIGHT><BOLD>").append(addItems ? "本次加菜：" : "总计：")
+                .append(formatPrice(total)).append("元</BOLD></RIGHT><BR>");
         content.append(buildDividerLine(paperWidth));
 
         // ============ 订单备注 ============
@@ -310,7 +354,9 @@ public class PrintContentBuilder {
         }
 
         // ============ 二维码 ============
-        if (template.getShowQrcode() != null && template.getShowQrcode() == StatusEnum.getByCode(1) &&
+        if (scanCode != null && !scanCode.isBlank()) {
+            content.append("<C>扫码完成出餐</C><BR><QR>").append(scanCode).append("</QR><BR>");
+        } else if (template.getShowQrcode() != null && template.getShowQrcode() == StatusEnum.getByCode(1) &&
                 template.getQrcodeTemplate() != null && !template.getQrcodeTemplate().isEmpty()) {
             String qrcodeContent = template.getQrcodeTemplate()
                     .replace("{orderNo}", orderVO.getOrderNo())
@@ -373,34 +419,58 @@ public class PrintContentBuilder {
      * 汉字占2个字节，英文占1个字节
      */
     private static String formatText(String text, int maxBytes) {
-        try {
-            int bytes = text.getBytes("GBK").length;
-
-            // 如果超长，截取
-            if (bytes > maxBytes) {
-                int len = 0;
-                int count = 0;
-                for (char c : text.toCharArray()) {
-                    len += String.valueOf(c).getBytes("GBK").length;
-                    if (len > maxBytes - 2) {  // 预留2个字节显示".."
-                        break;
-                    }
-                    count++;
-                }
-                text = text.substring(0, count) + "..";
-                bytes = text.getBytes("GBK").length;
+        String value = text == null ? "" : text;
+        int bytes = textWidth(value);
+        if (bytes > maxBytes) {
+            StringBuilder cut = new StringBuilder();
+            int used = 0;
+            for (int offset = 0; offset < value.length();) {
+                int codePoint = value.codePointAt(offset);
+                String glyph = new String(Character.toChars(codePoint));
+                int glyphWidth = textWidth(glyph);
+                if (used + glyphWidth > maxBytes - 2) break;
+                cut.append(glyph);
+                used += glyphWidth;
+                offset += Character.charCount(codePoint);
             }
-
-            // 右侧补空格
-            StringBuilder result = new StringBuilder(text);
-            for (int i = bytes; i < maxBytes; i++) {
-                result.append(" ");
-            }
-            return result.toString();
-
-        } catch (UnsupportedEncodingException e) {
-            return text;
+            value = cut + "..";
+            bytes = textWidth(value);
         }
+        return value + " ".repeat(Math.max(0, maxBytes - bytes));
+    }
+
+    private static int textWidth(String value) {
+        return value == null ? 0 : value.getBytes(PRINT_CHARSET).length;
+    }
+
+    /** 长订单号和地址主动分行，避免由打印机在任意位置自动折行。 */
+    private static void appendField(StringBuilder content, String label, String value, int paperWidth) {
+        String safeValue = value == null ? "" : value;
+        if (textWidth(label + safeValue) <= paperWidth) {
+            content.append(label).append(safeValue).append("<BR>");
+            return;
+        }
+        content.append(label).append("<BR>");
+        appendWrappedLine(content, "  " + safeValue, paperWidth);
+    }
+
+    private static void appendWrappedLine(StringBuilder content, String value, int paperWidth) {
+        StringBuilder line = new StringBuilder();
+        int width = 0;
+        for (int offset = 0; offset < value.length();) {
+            int codePoint = value.codePointAt(offset);
+            String glyph = new String(Character.toChars(codePoint));
+            int glyphWidth = textWidth(glyph);
+            if (width + glyphWidth > paperWidth && width > 0) {
+                content.append(line).append("<BR>");
+                line.setLength(0);
+                width = 0;
+            }
+            line.append(glyph);
+            width += glyphWidth;
+            offset += Character.charCount(codePoint);
+        }
+        content.append(line).append("<BR>");
     }
 
     /**
@@ -414,24 +484,10 @@ public class PrintContentBuilder {
     }
 
     /**
-     * 菜品名称：若为赠菜则在名称右侧加「赠」
-     */
-    private static String formatDishNameWithGift(String dishName, int nameWidth, Integer isGift) {
-        if (dishName == null) {
-            dishName = "";
-        }
-        if (isGift != null && isGift == 1) {
-            int w = Math.max(1, nameWidth - 1);
-            return formatText(dishName, w) + "赠";
-        }
-        return formatText(dishName, nameWidth);
-    }
-
-    /**
      * 右对齐格式化
      */
     private static String formatRightAlign(String text, int width) {
-        int len = text.length();
+        int len = textWidth(text);
         if (len >= width) {
             return text;
         }
@@ -448,7 +504,7 @@ public class PrintContentBuilder {
      * 居中对齐格式化
      */
     private static String formatCenter(String text, int width) {
-        int len = text.length();
+        int len = textWidth(text);
         if (len >= width) {
             return text;
         }

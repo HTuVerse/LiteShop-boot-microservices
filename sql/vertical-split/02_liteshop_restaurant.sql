@@ -639,6 +639,7 @@ CREATE TABLE `printer_info` (
   `card_num` varchar(32) NULL DEFAULT NULL COMMENT '流量卡号码（选填）',
   `store_id` bigint NULL DEFAULT NULL COMMENT '关联的门店ID',
   `template_id` bigint NULL DEFAULT NULL COMMENT '小票模板id',
+  `paper_width` tinyint NOT NULL DEFAULT 0 COMMENT '打印机实际装纸宽度：0为58mm，1为80mm',
   `printer_type` tinyint NULL DEFAULT 1 COMMENT '打印机类型：1-小票机，2-标签机',
   `status` tinyint NULL DEFAULT 0 COMMENT '打印机状态：0-离线，1-在线，2-缺纸',
   `last_online_time` datetime NULL DEFAULT NULL COMMENT '最后在线时间',
@@ -659,6 +660,7 @@ DROP TABLE IF EXISTS `print_template`;
 CREATE TABLE `print_template` (
   `id` bigint NOT NULL COMMENT '主键ID（雪花ID）',
   `template_name` varchar(100) NOT NULL COMMENT '模板名称',
+  `print_scene` varchar(20) NOT NULL DEFAULT 'ORDER' COMMENT '打印用途：ORDER提交订单，ADD_ITEMS加菜',
   `store_id` bigint NULL DEFAULT NULL COMMENT '关联的门店ID（为空表示全局模板）',
   `paper_width` tinyint NOT NULL DEFAULT 0 COMMENT '纸张宽度：0为58mm，1为80mm',
   `show_logo` tinyint NULL DEFAULT 0 COMMENT '是否显示店铺Logo：0-不显示，1-显示',

@@ -11,6 +11,7 @@ import org.hongtu.restaurant.DTO.PrintJob;
 import org.hongtu.restaurant.DTO.PrintTemplate;
 import org.hongtu.restaurant.DTO.PrinterInfo;
 import org.hongtu.restaurant.DTO.RestaurantOrder;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.convert.RestaurantOrderConverter;
 import org.hongtu.restaurant.service.OrderPrintService;
 import org.hongtu.restaurant.service.PrintTemplateService;
@@ -18,6 +19,7 @@ import org.hongtu.restaurant.service.PrinterInfoService;
 import org.hongtu.restaurant.service.RestaurantOrderService;
 import org.hongtu.restaurant.utils.FeieyunPrinterUtil;
 import org.hongtu.restaurant.utils.PrintContentBuilder;
+import org.hongtu.restaurant.utils.ReceiptScanCode;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
 import org.springframework.stereotype.Service;
 
@@ -127,6 +129,12 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     private Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId,
                                               boolean manual) {
+        return printOrderVO(orderVO, printerId, templateId, manual, "ORDER", "receipt");
+    }
+
+    /** 按用途选模板并为每次加菜登记独立的打印任务。 */
+    private Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId,
+                                              boolean manual, String printScene, String jobSuffix) {
         PrintJob printJob = null;
         try {
             // 1. 验证打印机
@@ -142,32 +150,17 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                 return buildErrorResult("打印机已禁用");
             }
 
-            // 2. 获取打印模板
-            PrintTemplate template = null;
-            if (templateId != null) {
-                // 优先使用指定的模板ID
-                template = printTemplateService.getById(templateId);
-                if (template == null) {
-                    log.warn("指定的模板不存在，使用打印机配置的模板");
-                    // 使用打印机配置的模板
-                    if (printer.getTemplateId() != null) {
-                        template = printTemplateService.getById(printer.getTemplateId());
-                    }
-                    // 如果打印机未配置模板，使用门店默认模板
-                    if (template == null) {
-                        template = printTemplateService.getTemplateByStore(orderVO.getStoreId());
-                    }
-                }
-            } else {
-                // 使用打印机配置的模板
-                if (printer.getTemplateId() != null) {
-                    template = printTemplateService.getById(printer.getTemplateId());
-                }
-                // 如果打印机未配置模板，使用门店默认模板
-                if (template == null) {
-                    template = printTemplateService.getTemplateByStore(orderVO.getStoreId());
-                }
+            // 加菜优先使用加菜专用模板；未配置时兼容打印机绑定的旧模板。
+            PrintTemplate assigned = printer.getTemplateId() == null ? null
+                    : printTemplateService.getById(printer.getTemplateId());
+            PrintTemplate template = templateId == null ? null : printTemplateService.getById(templateId);
+            if (template == null && "ADD_ITEMS".equals(printScene)) {
+                PrintTemplate sceneTemplate = printTemplateService.getTemplateByStore(orderVO.getStoreId(), printScene);
+                template = sceneTemplate != null && "ADD_ITEMS".equals(sceneTemplate.getPrintScene()) ? sceneTemplate
+                        : assigned != null ? assigned : sceneTemplate;
             }
+            if (template == null) template = assigned;
+            if (template == null) template = printTemplateService.getTemplateByStore(orderVO.getStoreId(), printScene);
             if (template == null) {
                 return buildErrorResult("门店未配置可用打印模板");
             }
@@ -176,13 +169,16 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             }
 
             // 3. 构建打印内容
-            String printContent = PrintContentBuilder.buildOrderContent(template, orderVO);
+            PaperWidthEnum paperWidth = printer.getPaperWidth() == null
+                    ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
+            String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printScene,
+                    paperWidth, ReceiptScanCode.forOrder(orderVO.getId()));
             log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
 
             // 4. 调用飞鹅打印接口
             int printCopies = template.getPrintCopies() == null ? 1
                     : Math.max(1, Math.min(5, template.getPrintCopies()));
-            String jobKey = orderVO.getId() + ":" + printer.getId() + ":receipt";
+            String jobKey = orderVO.getId() + ":" + printer.getId() + ":" + jobSuffix;
             PrintJob existing = printJobMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PrintJob>()
                     .eq(PrintJob::getJobKey, jobKey)
                     .last("LIMIT 1"));
@@ -315,13 +311,15 @@ public class OrderPrintServiceImpl implements OrderPrintService {
         }
         RestaurantOrderVO orderVO = restaurantOrderConverter.toVO(restaurantOrder);
         List<RestaurantOrderVO.OrderItemVO> allItems = orderVO.getItems();
-        if (allItems != null) {
-            List<RestaurantOrderVO.OrderItemVO> addItemsOnly = allItems.stream()
-                    .filter(item -> item.getId() != null && orderItemIds.contains(item.getId()))
-                    .collect(Collectors.toList());
-            orderVO.setItems(addItemsOnly);
-        }
-        return printOrderVO(orderVO, printerId, templateId);
+        if (allItems == null) return buildErrorResult("订单没有可打印的加菜项");
+        List<RestaurantOrderVO.OrderItemVO> addItemsOnly = allItems.stream()
+                .filter(item -> item.getId() != null && orderItemIds.contains(item.getId()))
+                .collect(Collectors.toList());
+        if (addItemsOnly.isEmpty()) return buildErrorResult("指定的加菜项不属于该订单");
+        orderVO.setItems(addItemsOnly);
+        long firstItemId = addItemsOnly.stream().map(RestaurantOrderVO.OrderItemVO::getId)
+                .min(Long::compareTo).orElseThrow();
+        return printOrderVO(orderVO, printerId, templateId, false, "ADD_ITEMS", "add-items:" + firstItemId);
     }
 
     @Override
@@ -405,7 +403,9 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             }
 
             // 试打使用演示订单与正式打印共用的模板生成器，不读取真实订单。
-            String content = PrintContentBuilder.buildSampleContent(template, printer.getStoreId());
+            PaperWidthEnum paperWidth = printer.getPaperWidth() == null
+                    ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
+            String content = PrintContentBuilder.buildSampleContent(template, printer.getStoreId(), paperWidth);
             int copies = template.getPrintCopies() == null ? 1
                     : Math.max(1, Math.min(5, template.getPrintCopies()));
             String providerResult = feieyunPrinterUtil.print(printer.getSn(), content, copies);

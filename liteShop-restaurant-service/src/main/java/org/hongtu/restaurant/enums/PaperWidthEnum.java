@@ -6,12 +6,12 @@ import com.fasterxml.jackson.annotation.JsonValue;
 import lombok.Getter;
 
 /**
- * 小票纸张宽度及每行可打印字符数。
+ * 小票纸张宽度及安全排版字节数；各留 2 字节边距，防止设备自动折行。
  */
 @Getter
 public enum PaperWidthEnum {
-    MM_58(0, "58mm", 32),
-    MM_80(1, "80mm", 48);
+    MM_58(0, "58mm", 30),
+    MM_80(1, "80mm", 46);
 
     @EnumValue
     @JsonValue

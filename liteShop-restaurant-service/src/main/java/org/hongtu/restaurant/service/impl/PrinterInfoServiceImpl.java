@@ -13,6 +13,7 @@ import org.hongtu.restaurant.DTO.PrinterInfo;
 import org.hongtu.restaurant.DAO.PrinterInfoMapper;
 import org.hongtu.restaurant.enums.PrinterStatusEnum;
 import org.hongtu.restaurant.enums.PrinterTypeEnum;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.service.PrinterInfoService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.utils.FeieyunPrinterUtil;
@@ -103,6 +104,9 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
                     // 如果没有设置打印机类型，默认为小票机
                     if (printerInfo.getPrinterType() == null) {
                         printerInfo.setPrinterType(PrinterTypeEnum.getByCode(1));
+                    }
+                    if (printerInfo.getPaperWidth() == null) {
+                        printerInfo.setPaperWidth(PaperWidthEnum.MM_58);
                     }
 
                     this.save(printerInfo);

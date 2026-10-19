@@ -16,6 +16,7 @@ import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.restaurant.enums.PrinterStatusEnum;
 import org.hongtu.restaurant.enums.PrinterTypeEnum;
+import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.enums.printerBrandEnum;
 
 /**
@@ -71,6 +72,9 @@ public class PrinterInfo implements Serializable {
      * 小票模板id
      */
     private Long templateId;
+
+    /** 实际装纸宽度：0-58mm，1-80mm；打印排版以设备宽度为准。 */
+    private PaperWidthEnum paperWidth;
 
     /**
      * 打印机品牌
