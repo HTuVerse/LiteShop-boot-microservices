@@ -7,6 +7,7 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.Result.Result;
 import org.hongtu.restaurant.service.OrderPrintService;
+import org.hongtu.restaurant.DTO.PrintTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -41,7 +42,7 @@ public class OrderPrintController {
         log.info("打印订单（默认打印机）：orderId={}", orderId);
 
         
-            Map<String, Object> result = orderPrintService.printOrder(orderId,printerId,templateId);
+            Map<String, Object> result = orderPrintService.printOrderManually(orderId,printerId,templateId);
             boolean success = (boolean) result.getOrDefault("success", false);
             
             if (success) {
@@ -93,12 +94,13 @@ public class OrderPrintController {
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:printer:print", "restaurant:order:print", "operations:direct-cashier:print", "operations:table-cashier:print"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Map<String, Object>> testPrint(
             @PathVariable("printerId") Long printerId,
-            @RequestParam(value = "templateId", required = false) Long templateId) {
+            @RequestParam(value = "templateId", required = false) Long templateId,
+            @RequestBody(required = false) PrintTemplate draftTemplate) {
         
         log.info("测试打印：printerId={}, templateId={}", printerId, templateId);
 
         
-            Map<String, Object> result = orderPrintService.testPrint(printerId, templateId);
+            Map<String, Object> result = orderPrintService.testPrint(printerId, templateId, draftTemplate);
             boolean success = (boolean) result.getOrDefault("success", false);
             
             if (success) {

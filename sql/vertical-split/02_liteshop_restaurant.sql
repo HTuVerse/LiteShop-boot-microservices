@@ -499,6 +499,7 @@ CREATE TABLE `print_job` (
   `printer_id` bigint NOT NULL COMMENT '打印机ID',
   `printer_sn` varchar(64) NOT NULL COMMENT '打印机编号快照',
   `provider_order_id` varchar(128) NULL COMMENT '飞鹅云打印订单ID',
+  `print_copies` int NOT NULL DEFAULT 1 COMMENT '该任务打印联数，1到5联',
   `status` tinyint NOT NULL COMMENT '0已提交 1成功 2失败 3提交失败 4提交中',
   `attempts` int NOT NULL DEFAULT 1 COMMENT '提交次数',
   `last_error` varchar(500) NULL COMMENT '最后错误',

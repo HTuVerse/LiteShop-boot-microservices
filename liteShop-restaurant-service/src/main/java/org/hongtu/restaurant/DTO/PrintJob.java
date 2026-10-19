@@ -28,6 +28,8 @@ public class PrintJob {
     private String jobKey;
     /** 待发送的小票内容。订单事务只落库，不在事务里调用打印机。 */
     private String content;
+    /** 该任务应打印的联数，保存模板快照，重试时保持一致。 */
+    private Integer printCopies;
     private String providerOrderId;
     /** 0-已提交，1-打印成功，2-打印失败，3-提交失败，4-提交中，5-待发送。 */
     private Integer status;

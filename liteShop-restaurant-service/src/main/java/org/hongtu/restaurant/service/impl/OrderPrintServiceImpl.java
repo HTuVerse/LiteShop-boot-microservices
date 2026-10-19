@@ -75,17 +75,8 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             return buildErrorResult("该门店未配置打印机");
         }
 
-        // 3. 未传模板时使用门店默认模板
-        Long templateId = null;
-        if (orderVO.getStoreId() != null) {
-            PrintTemplate defaultTemplate = printTemplateService.getTemplateByStore(orderVO.getStoreId());
-            if (defaultTemplate != null && defaultTemplate.getId() != null) {
-                templateId = defaultTemplate.getId();
-            }
-        }
-
-        // 3. 打印订单
-        return printOrderVO(orderVO, printer.getId(), templateId);
+        // 留空时由打印流程优先使用打印机绑定的模板。
+        return printOrderVO(orderVO, printer.getId(), null);
     }
 
     @Override
@@ -95,6 +86,15 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     @Override
     public Map<String, Object> printOrder(Long orderId, Long printerId, Long templateId) {
+        return printOrder(orderId, printerId, templateId, false);
+    }
+
+    @Override
+    public Map<String, Object> printOrderManually(Long orderId, Long printerId, Long templateId) {
+        return printOrder(orderId, printerId, templateId, true);
+    }
+
+    private Map<String, Object> printOrder(Long orderId, Long printerId, Long templateId, boolean manual) {
         log.info("打印订单：orderId={}, printerId={}, templateId={}", orderId, printerId, templateId);
 
         // 1. 获取订单信息
@@ -116,20 +116,17 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             return buildErrorResult("请选择打印机或确保门店已配置默认打印机");
         }
 
-        // 3. 留空时使用门店默认模板
-        if (templateId == null && orderVO.getStoreId() != null) {
-            PrintTemplate defaultTemplate = printTemplateService.getTemplateByStore(orderVO.getStoreId());
-            if (defaultTemplate != null && defaultTemplate.getId() != null) {
-                templateId = defaultTemplate.getId();
-            }
-        }
-
-        // 4. 打印订单
-        return printOrderVO(orderVO, printerId, templateId);
+        // 留空时优先使用打印机绑定的模板，再回退到门店默认模板。
+        return printOrderVO(orderVO, printerId, templateId, manual);
     }
 
     @Override
     public Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId) {
+        return printOrderVO(orderVO, printerId, templateId, false);
+    }
+
+    private Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId,
+                                              boolean manual) {
         PrintJob printJob = null;
         try {
             // 1. 验证打印机
@@ -183,12 +180,16 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
 
             // 4. 调用飞鹅打印接口
-            Integer printCopies = template.getPrintCopies() != null ? template.getPrintCopies() : 1;
+            int printCopies = template.getPrintCopies() == null ? 1
+                    : Math.max(1, Math.min(5, template.getPrintCopies()));
             String jobKey = orderVO.getId() + ":" + printer.getId() + ":receipt";
             PrintJob existing = printJobMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PrintJob>()
                     .eq(PrintJob::getJobKey, jobKey)
                     .last("LIMIT 1"));
-            if (existing != null && existing.getStatus() != null && existing.getStatus() != 2 && existing.getStatus() != 3) {
+            // 自动打印保持幂等；手动打印可重新提交已结束的任务。
+            if (existing != null && existing.getStatus() != null
+                    && (existing.getStatus() == 5 || existing.getStatus() == 4
+                    || !manual && existing.getStatus() != 2 && existing.getStatus() != 3)) {
                 return buildSuccessQueued(existing);
             }
             printJob = existing == null ? new PrintJob() : existing;
@@ -198,14 +199,24 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             printJob.setPrinterSn(printer.getSn());
             printJob.setJobKey(jobKey);
             printJob.setContent(printContent);
+            printJob.setPrintCopies(printCopies);
             printJob.setStatus(5);
-            printJob.setAttempts(existing == null ? 0 : existing.getAttempts());
+            printJob.setAttempts(0);
+            printJob.setLastError(null);
+            printJob.setProviderOrderId(null);
+            printJob.setCallbackTime(null);
             printJob.setCreatedAt(existing == null ? LocalDateTime.now() : existing.getCreatedAt());
             printJob.setUpdatedAt(LocalDateTime.now());
             if (existing == null) {
                 printJobMapper.insert(printJob);
             } else {
                 printJobMapper.updateById(printJob);
+                // MyBatis-Plus 默认跳过 null 字段，显式清除上次投递结果。
+                printJobMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PrintJob>()
+                        .eq(PrintJob::getId, printJob.getId())
+                        .set(PrintJob::getLastError, null)
+                        .set(PrintJob::getProviderOrderId, null)
+                        .set(PrintJob::getCallbackTime, null));
             }
             return buildSuccessQueued(printJob);
         } catch (Exception e) {
@@ -257,7 +268,8 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                 printJobMapper.updateById(printJob);
                 return;
             }
-            String result = feieyunPrinterUtil.print(printer.getSn(), printJob.getContent(), 1);
+            String result = feieyunPrinterUtil.print(printer.getSn(), printJob.getContent(),
+                    printJob.getPrintCopies() == null ? 1 : printJob.getPrintCopies());
 
             // 5. 解析打印结果
             JSONObject resultJson = JSON.parseObject(result);
@@ -355,6 +367,11 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     @Override
     public Map<String, Object> testPrint(Long printerId, Long templateId) {
+        return testPrint(printerId, templateId, null);
+    }
+
+    @Override
+    public Map<String, Object> testPrint(Long printerId, Long templateId, PrintTemplate draftTemplate) {
         log.info("测试打印：printerId={}, templateId={}", printerId, templateId);
 
         try {
@@ -366,22 +383,27 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             if (printer.getEnabled() == null || printer.getEnabled() == StatusEnum.getByCode(0)) {
                 return buildErrorResult("打印机已禁用");
             }
-            if (templateId != null) {
-                PrintTemplate template = printTemplateService.getById(templateId);
+            PrintTemplate template = draftTemplate;
+            if (template == null && templateId != null) {
+                template = printTemplateService.getById(templateId);
                 if (template == null) {
                     return buildErrorResult("打印模板不存在");
                 }
-                if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), printer.getStoreId())) {
-                    return buildErrorResult("打印模板与打印机不属于同一门店");
-                }
+            }
+            if (template != null && template.getStoreId() != null
+                    && !Objects.equals(template.getStoreId(), printer.getStoreId())) {
+                return buildErrorResult("打印模板与打印机不属于同一门店");
             }
 
             // 测试打印不得读取或打印任意真实订单，避免泄露订单和会员信息。
-            String content = "<CB>打印机测试</CB><BR>"
+            String content = template == null ? "<CB>打印机测试</CB><BR>"
                     + "设备：" + (printer.getRemark() == null ? printer.getSn() : printer.getRemark()) + "<BR>"
                     + "时间：" + LocalDateTime.now().format(DATE_FORMATTER) + "<BR>"
-                    + "如能看到本小票，说明打印机连接正常。<BR>";
-            String providerResult = feieyunPrinterUtil.print(printer.getSn(), content, 1);
+                    + "如能看到本小票，说明打印机连接正常。<BR>"
+                    : PrintContentBuilder.buildSampleContent(template, printer.getStoreId());
+            int copies = template == null || template.getPrintCopies() == null ? 1
+                    : Math.max(1, Math.min(5, template.getPrintCopies()));
+            String providerResult = feieyunPrinterUtil.print(printer.getSn(), content, copies);
             JSONObject resultJson = JSON.parseObject(providerResult);
             int ret = resultJson.getIntValue("ret");
             if (ret != 0) {

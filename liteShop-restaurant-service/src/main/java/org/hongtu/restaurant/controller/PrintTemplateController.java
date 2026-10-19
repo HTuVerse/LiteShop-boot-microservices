@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.Result.Result;
 import org.hongtu.restaurant.DTO.PrintTemplate;
 import org.hongtu.restaurant.service.PrintTemplateService;
+import org.hongtu.restaurant.utils.PrintContentBuilder;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -23,6 +24,13 @@ public class PrintTemplateController {
 
     @Resource
     private PrintTemplateService printTemplateService;
+
+    /** 使用当前编辑中的模板生成演示小票，与正式打印共用内容构建器。 */
+    @PostMapping("/preview")
+    @SaCheckPermission(value = {"operations:templates", "restaurant:printer"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<String> preview(@RequestBody PrintTemplate template) {
+        return Result.success(PrintContentBuilder.buildSampleContent(template));
+    }
 
     /**
      * 分页查询打印模板列表

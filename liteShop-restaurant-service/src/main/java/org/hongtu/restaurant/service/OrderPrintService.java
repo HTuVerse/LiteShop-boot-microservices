@@ -1,6 +1,7 @@
 package org.hongtu.restaurant.service;
 
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
+import org.hongtu.restaurant.DTO.PrintTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,9 @@ public interface OrderPrintService {
      * @return 打印结果
      */
     Map<String, Object> printOrder(Long orderId,Long printerId,Long templateId);
+
+    /** 手动打印订单；已完成或失败的任务允许再次提交。 */
+    Map<String, Object> printOrderManually(Long orderId, Long printerId, Long templateId);
 
     /**
      * 打印订单（使用订单VO对象）
@@ -52,6 +56,9 @@ public interface OrderPrintService {
      * @return 打印结果
      */
     Map<String, Object> testPrint(Long printerId, Long templateId);
+
+    /** 使用未保存的模板草稿打印演示小票。 */
+    Map<String, Object> testPrint(Long printerId, Long templateId, PrintTemplate draftTemplate);
 
     /**
      * 仅打印加菜项（加菜单），不打印整单
