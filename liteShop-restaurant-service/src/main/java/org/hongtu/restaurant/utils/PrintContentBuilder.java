@@ -219,8 +219,15 @@ public class PrintContentBuilder {
                     }
                     break;
                 case "createdAt":
-                    if (orderVO.getCreatedAt() != null) {
-                        appendField(content, "下单时间：", orderVO.getCreatedAt().format(DATE_FORMATTER), paperWidth);
+                    LocalDateTime receiptTime = addItems && orderVO.getItems() != null
+                            ? orderVO.getItems().stream()
+                                .map(RestaurantOrderVO.OrderItemVO::getAddTime)
+                                .filter(java.util.Objects::nonNull)
+                                .findFirst().orElse(orderVO.getCreatedAt())
+                            : orderVO.getCreatedAt();
+                    if (receiptTime != null) {
+                        appendField(content, addItems ? "加菜时间：" : "下单时间：",
+                                receiptTime.format(DATE_FORMATTER), paperWidth);
                     }
                     break;
             }
@@ -335,7 +342,8 @@ public class PrintContentBuilder {
         }
 
         // ============ 支付信息 ============
-        if (template.getShowPaymentInfo() != null && template.getShowPaymentInfo() == StatusEnum.getByCode(1)) {
+        if (!addItems && template.getShowPaymentInfo() != null
+                && template.getShowPaymentInfo() == StatusEnum.getByCode(1)) {
             if (orderVO.getPaymentMode() != null) {
                 content.append("支付方式：").append(orderVO.getPaymentMode().getDesc()).append("<BR>");
             }

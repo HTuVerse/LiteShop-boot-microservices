@@ -38,7 +38,7 @@ public class FeieyunPrinterUtil {
      *         失败示例：{"msg":"参数错误 : 该帐号未注册.","ret":-2,"data":null,"serverExecutedTime":37}
      */
     public String addPrinter(String printerList) {
-        log.info("调用添加打印机接口，打印机列表：{}", printerList);
+        log.info("调用添加打印机接口");
 
         try {
             // 构建请求参数（包含4个必要的公共参数：user、stime、sig、apiname）
@@ -48,7 +48,7 @@ public class FeieyunPrinterUtil {
             params.put("printerContent", printerList);
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "printerAddlist", params);
             log.info("添加打印机接口返回结果：{}", result);
 
             return result;
@@ -81,7 +81,7 @@ public class FeieyunPrinterUtil {
             params.put("times", String.valueOf(times));
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "printMsg", params);
             log.info("小票机打印接口返回结果：{}", result);
 
             return result;
@@ -147,7 +147,7 @@ public class FeieyunPrinterUtil {
             params.put("orderid", orderId);
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "queryOrderState", params);
             log.info("查询订单状态返回结果：{}", result);
 
             return result;
@@ -179,7 +179,7 @@ public class FeieyunPrinterUtil {
             params.put("date", date);  // 格式：yyyy-MM-dd
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "queryOrderInfoByDate", params);
             log.info("查询订单统计返回结果：{}", result);
 
             return result;
@@ -226,7 +226,7 @@ public class FeieyunPrinterUtil {
             params.put("sn", sn);
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "queryPrinterStatus", params);
             log.info("查询打印机状态返回结果：{}", result);
 
             return result;
@@ -273,7 +273,7 @@ public class FeieyunPrinterUtil {
             params.put("sn", sn);
 
             // 发送POST请求
-            String result = HttpClientUtil.doPost(config.getApiUrl(), params);
+            String result = HttpClientUtil.doPost(config.getApiUrl() + "delPrinterSqs", params);
             log.info("清空打印队列返回结果：{}", result);
 
             return result;
@@ -311,21 +311,21 @@ public class FeieyunPrinterUtil {
         Map<String, String> params = new HashMap<>();
 
         // 1. user - 用户账号
-        params.put("user", config.getUser());
+        String user = config.getUser();
+        params.put("user", user);
 
         // 2. stime - 当前UNIX时间戳（秒）
         String stime = String.valueOf(System.currentTimeMillis() / 1000);
         params.put("stime", stime);
 
         // 3. sig - 签名（SHA1加密）
-        String signature = generateSignature(config.getUser(), config.getUkey(), stime);
+        String signature = generateSignature(user, config.getUkey(), stime);
         params.put("sig", signature);
 
         // 4. apiname - 接口名称
         params.put("apiname", apiname);
 
-        log.debug("构建公共请求参数 - user: {}, stime: {}, sig: {}, apiname: {}",
-                config.getUser(), stime, signature, apiname);
+        log.debug("构建打印请求参数 - apiname: {}", apiname);
 
         return params;
     }

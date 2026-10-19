@@ -17,6 +17,8 @@ import org.hongtu.restaurant.service.FeieyunCallbackService;
 
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 /**
  * 飞鹅打印机管理与回调接口
@@ -25,7 +27,7 @@ import java.util.Map;
  * 1. 打印机管理：添加、删除、查询打印机
  * 2. 状态查询：查询打印机在线状态
  * 3. 打印回调：打印机完成打印后，飞鹅云主动通知打印结果
- * 4. 扫码回调：顾客扫描小票上的二维码后，飞鹅云通知扫码信息
+ * 4. 扫码回调：设备扫描小票出餐码后更新订单状态
  *
  * 安全机制：
  * - 所有回调请求都包含 sign 参数，用于验证消息合法性
@@ -35,8 +37,7 @@ import java.util.Map;
  * 配置步骤：
  * 1. 登录飞鹅云后台
  * 2. 进入"开发者中心" → "回调设置"
- * 3. 配置回调地址：http://your-domain.com/api/feieyun/callback/print
- *                  http://your-domain.com/api/feieyun/callback/scan
+ * 3. 配置公网 HTTPS 回调地址：/feieyunApi/callback/print 和 /feieyunApi/callback/scan
  *
  * @author hongtu
  */
@@ -280,147 +281,69 @@ public class FeieyunCallbackController {
      *
      * 场景：打印机完成打印后，飞鹅云会调用此接口通知打印结果
      *
-     * 官方回调参数（按照飞鹅云官方文档）：
-     * - orderId: 订单ID（调用打印接口时返回的订单ID）
-     * - status: 打印状态（1-打印成功，0-打印失败）
-     * - time: 打印时间戳
-     * - sign: 签名（用于验证消息合法性，必填）
+     * 飞鹅以表单 POST 发送 orderId、status、stime、sign；验签后记录打印任务状态。
      *
-     * 签名验证规则：
-     * 使用飞鹅云公钥进行 RSA SHA256 签名验证
-     *
-     * 使用场景：
-     * 1. 更新订单状态为"后厨已接单"
-     * 2. 通知顾客"订单已开始制作"
-     * 3. 打印失败时自动重试或人工介入
-     * 4. 统计打印成功率
-     *
-     * @param orderId 打印订单ID
-     * @param status 打印状态（1-成功，0-失败）
-     * @param time 打印时间戳
-     * @param sign 签名（用于验证消息合法性）
-     * @return 返回"ok"表示接收成功
+     * @param params 飞鹅表单参数
+     * @return SUCCESS 表示已处理
      */
     @PostMapping("/callback/print")
     @SaIgnore
-    public String printCallback(
-            @RequestParam("orderId") String orderId,
-            @RequestParam("status") Integer status,
-            @RequestParam("time") Long time,
-            @RequestParam("sign") String sign) {
-
-        log.info("收到打印回调 - 订单ID: {}, 状态: {}, 时间: {}", orderId, status, time);
-
+    public String printCallback(@RequestParam Map<String, String> params) {
         try {
-            if (time == null || Math.abs(System.currentTimeMillis() / 1000 - time) > 300) {
-                log.warn("打印回调时间戳超出允许窗口: orderId={}", orderId);
-                return "fail";
-            }
-            // 1. 构建待验证的数据字符串
-            // 根据飞鹅云官方文档，将所有参数（除sign外）按字典序拼接
-            StringBuilder dataString = new StringBuilder();
-            dataString.append("orderId=").append(orderId);
-            dataString.append("&status=").append(status);
-            dataString.append("&time=").append(time);
-
-            // 2. 验证签名，防止恶意请求
-            if (!callbackService.verifySignature(dataString.toString(), sign)) {
-                log.error("打印回调签名验证失败 - 订单ID: {}", orderId);
-                // 签名验证失败，返回 fail 拒绝请求
-                return "fail";
-            }
-
-            log.info("✅ 签名验证通过");
-
-            // 3. 处理打印回调
-            callbackService.handlePrintCallback(orderId, null, status, time, null);
-
-            // 4. 返回"ok"表示接收成功（飞鹅云要求必须返回"ok"）
-            return "ok";
+            String orderId = params.get("orderId");
+            String status = params.get("status");
+            Long time = callbackTime(params);
+            if (orderId == null || status == null || time == null
+                    || !callbackService.verifySignature(orderId, signedData(params), params.get("sign"))) return "FAIL";
+            callbackService.handlePrintCallback(orderId, null, Integer.valueOf(status), time, null);
+            return "SUCCESS";
         } catch (Exception e) {
             log.error("处理打印回调失败", e);
-            // 处理失败返回 fail，让供应商重试，避免回调静默丢失。
-            return "fail";
+            return "FAIL";
         }
     }
 
     /**
      * 扫码回调接口
      *
-     * 场景：顾客扫描小票上的二维码后，飞鹅云会调用此接口通知扫码信息
+     * 设备扫描正式小票的二维码后，验证设备、签名和打印任务并标记订单制作完成。
      *
-     * 官方回调参数（按照飞鹅云官方文档）：
-     * - openId: 扫码用户的微信OpenID
-     * - sn: 打印机编号
-     * - orderId: 关联的打印订单ID
-     * - time: 扫码时间戳
-     * - content: 二维码内容
-     * - sign: 签名（用于验证消息合法性，必填）
-     *
-     * 签名验证规则：
-     * sign = MD5(user + UKEY + orderId)
-     *
-     * 使用场景：
-     * 1. 自助评价：顾客扫码后跳转到评价页面
-     * 2. 会员营销：扫码领取优惠券/积分
-     * 3. 防伪溯源：查看菜品信息、原材料来源
-     * 4. 桌边服务：呼叫服务员、加菜、买单
-     * 5. 用户行为分析：统计扫码率、用户画像
-     *
-     * @param openId 微信OpenID
-     * @param sn 打印机编号
-     * @param orderId 订单ID
-     * @param time 扫码时间
-     * @param content 二维码内容
-     * @param sign 签名（用于验证消息合法性）
-     * @return 返回"ok"表示接收成功
+     * @param params 飞鹅表单参数
+     * @return SUCCESS 表示已处理
      */
     @PostMapping("/callback/scan")
     @SaIgnore
-    public String scanCallback(
-            @RequestParam("openId") String openId,
-            @RequestParam("sn") String sn,
-            @RequestParam(value = "orderId", required = false) String orderId,
-            @RequestParam("time") Long time,
-            @RequestParam(value = "content", required = false) String content,
-            @RequestParam("sign") String sign) {
-
-        log.info("收到扫码回调 - 打印机: {}, 订单ID: {}, 时间: {}", sn, orderId, time);
-
+    public String scanCallback(@RequestParam Map<String, String> params) {
         try {
-            if (time == null || Math.abs(System.currentTimeMillis() / 1000 - time) > 300) {
-                return "fail";
-            }
-            // 1. 构建待验证的数据字符串
-            // 根据飞鹅云官方文档，将所有参数（除sign外）拼接成字符串
-            StringBuilder dataString = new StringBuilder();
-            if (content != null && !content.isEmpty()) {
-                dataString.append("content=").append(content).append("&");
-            }
-            dataString.append("openId=").append(openId);
-            if (orderId != null && !orderId.isEmpty()) {
-                dataString.append("&orderId=").append(orderId);
-            }
-            dataString.append("&sn=").append(sn);
-            dataString.append("&time=").append(time);
-
-            // 2. 验证签名，防止恶意请求
-            if (!callbackService.verifySignature(dataString.toString(), sign)) {
-                log.error("扫码回调签名验证失败: printerSn={}, orderId={}", sn, orderId);
-                return "fail";
-            }
-
-            log.info("✅ 签名验证通过");
-
-            // 3. 处理扫码回调
-            callbackService.handleScanCallback(openId, sn, orderId, time, content);
-
-            // 4. 返回"ok"表示接收成功
-            return "ok";
+            String sn = params.get("sn");
+            String orderId = params.get("orderId");
+            String content = params.get("content");
+            Long time = callbackTime(params);
+            if (sn == null || content == null || time == null
+                    || !callbackService.verifyScanSignature(sn, orderId, content,
+                    signedData(params), params.get("sign"))) return "FAIL";
+            callbackService.handleScanCallback(params.get("openId"), sn, orderId, time, content);
+            return "SUCCESS";
         } catch (Exception e) {
             log.error("处理扫码回调失败", e);
-            return "fail";
+            return "FAIL";
         }
+    }
+
+    /** 飞鹅签名串按非空表单参数键名排序，原值不做二次 URL 编码。 */
+    private String signedData(Map<String, String> params) {
+        return new TreeMap<>(params).entrySet().stream()
+                .filter(entry -> !"sign".equals(entry.getKey()) && entry.getValue() != null
+                        && !entry.getValue().isEmpty())
+                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .collect(Collectors.joining("&"));
+    }
+
+    private Long callbackTime(Map<String, String> params) {
+        String value = params.containsKey("stime") ? params.get("stime") : params.get("time");
+        if (value == null) return null;
+        long seconds = Long.parseLong(value);
+        return Math.abs(System.currentTimeMillis() / 1000 - seconds) <= 600 ? seconds : null;
     }
 
     /**

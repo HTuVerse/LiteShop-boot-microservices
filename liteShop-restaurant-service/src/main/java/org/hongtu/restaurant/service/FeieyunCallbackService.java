@@ -1,7 +1,5 @@
 package org.hongtu.restaurant.service;
 
-import com.baomidou.mybatisplus.spring.service.IService;
-
 /**
  * 飞鹅打印机回调服务接口
  *
@@ -18,7 +16,10 @@ public interface FeieyunCallbackService {
      * @param sign Base64编码的签名字符串
      * @return true-验证通过，false-验证失败
      */
-    boolean verifySignature(String dataString, String sign);
+    boolean verifySignature(String orderId, String dataString, String sign);
+
+    /** 按小票码和设备定位租户，再验证扫码通知的飞鹅签名。 */
+    boolean verifyScanSignature(String sn, String orderId, String content, String dataString, String sign);
 
     /**
      * 处理打印回调

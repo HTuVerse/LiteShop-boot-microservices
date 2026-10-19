@@ -9,16 +9,22 @@ import org.hongtu.restaurant.config.FeieyunPrinterConfig;
 import org.hongtu.restaurant.service.FeieyunCallbackService;
 import org.hongtu.restaurant.DAO.PrintJobMapper;
 import org.hongtu.restaurant.DTO.PrintJob;
+import org.hongtu.restaurant.DTO.RestaurantOrder;
+import org.hongtu.restaurant.DAO.RestaurantOrderMapper;
+import org.hongtu.restaurant.enums.OrderStatusEnum;
+import org.hongtu.restaurant.service.RestaurantOrderService;
+import org.hongtu.restaurant.utils.ReceiptScanCode;
 import org.hongtu.tenant.TenantIgnore;
 import org.hongtu.tenant.TenantScope;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * 飞鹅打印机回调服务实现
@@ -35,25 +41,16 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
     @Resource
     private PrintJobMapper printJobMapper;
 
-    // 注入你的订单服务（根据实际项目调整）
-    // @Autowired
-    // private RestaurantOrderService orderService;
+    @Resource
+    private RestaurantOrderMapper restaurantOrderMapper;
 
-    // 注入消息通知服务（根据实际项目调整）
-    // @Autowired
-    // private MessageService messageService;
-
-    // 缓存签名验证对象，避免重复创建（Hutool Sign对象）
-    private volatile Sign cachedSign;
+    @Resource
+    private RestaurantOrderService restaurantOrderService;
 
     /**
      * 处理打印回调
      *
-     * 业务逻辑：
-     * 1. 更新订单打印状态
-     * 2. 打印成功：通知顾客"后厨已接单"
-     * 3. 打印失败：记录日志、自动重试或人工介入
-     * 4. 更新订单时间线
+     * 只更新打印任务；订单制作完成由设备扫码触发。
      *
      * @param orderId 打印订单ID（格式：订单号_时间戳_序列号）
      * @param sn 打印机编号
@@ -66,7 +63,7 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
         log.info("======== 处理打印回调 ========");
         log.info("打印订单ID: {}", orderId);
         log.info("打印机编号: {}", sn);
-        log.info("打印状态: {}", status == 1 ? "成功" : "失败");
+        log.info("打印状态: {}", Integer.valueOf(1).equals(status) ? "成功" : "失败");
         log.info("打印时间: {}", formatTimestamp(time));
 
         try {
@@ -86,27 +83,10 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
                 update.setUpdatedAt(LocalDateTime.now());
                 printJobMapper.updateById(update);
             });
-            String businessOrderNo = String.valueOf(printJob.getOrderId());
-
-            if (status == 1) {
-                // ========== 打印成功处理 ==========
-                log.info("✅ 打印成功");
-
-                // 1. 更新订单打印状态
-                // orderService.updatePrintStatus(businessOrderNo, true, orderId);
-
-                // 2. 更新订单状态为"后厨已接单"
-                // orderService.updateOrderStatus(businessOrderNo, OrderStatusEnum.KITCHEN_ACCEPTED);
-
-                // 3. 通知顾客
-                // messageService.sendOrderAcceptedNotification(businessOrderNo);
-
-                // 4. 记录订单时间线
-                // orderService.addOrderTimeline(businessOrderNo, "订单已打印到后厨");
-
-                log.info("打印任务已标记成功: orderId={}", businessOrderNo);
+            if (Integer.valueOf(1).equals(status)) {
+                log.info("打印任务已标记成功: orderId={}", printJob.getOrderId());
             } else {
-                log.error("打印任务已标记失败: orderId={}, reason={}", businessOrderNo, msg);
+                log.error("打印任务已标记失败: orderId={}, reason={}", printJob.getOrderId(), msg);
             }
 
         } catch (Exception e) {
@@ -117,85 +97,49 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
         log.info("==============================");
     }
 
-    /**
-     * 处理扫码回调
-     *
-     * 业务逻辑：
-     * 1. 记录扫码用户信息
-     * 2. 根据二维码内容执行对应业务
-     * 3. 会员营销：发放优惠券/积分
-     * 4. 用户行为分析
-     *
-     * @param openId 微信OpenID
-     * @param sn 打印机编号
-     * @param orderId 订单ID
-     * @param time 扫码时间戳
-     * @param content 二维码内容
-     */
+    /** 核对扫码设备和已投递的小票，再按订单既有状态规则标记制作完成。 */
     @Override
     public void handleScanCallback(String openId, String sn, String orderId, Long time, String content) {
-        log.info("======== 处理扫码回调 ========");
-        log.info("打印机编号: {}", sn);
-        log.info("订单ID: {}", orderId);
-        log.info("扫码时间: {}", formatTimestamp(time));
-
-        try {
-            // 从打印订单ID中提取业务订单号
-            String businessOrderNo = extractOrderNo(orderId);
-
-            // ========== 场景1：自助评价 ==========
-            if (content != null && content.contains("evaluate")) {
-                log.info("场景：自助评价");
-
-                // 1. 生成评价页面链接
-                // String evaluateUrl = generateEvaluateUrl(businessOrderNo, openId);
-
-                // 2. 发送模板消息给用户，引导评价
-                // messageService.sendEvaluateInvitation(openId, businessOrderNo, evaluateUrl);
-
-                log.info("已向用户发送评价邀请");
+        PrintJob job = findScanJob(sn, orderId, content);
+        if (job == null) throw new IllegalArgumentException("未找到匹配的小票打印任务");
+        TenantScope.run(job.getTenantId(), () -> {
+            RestaurantOrder order = restaurantOrderMapper.selectById(job.getOrderId());
+            if (order == null || !Objects.equals(order.getStoreId(), job.getStoreId())) {
+                throw new IllegalStateException("小票与订单门店不匹配");
             }
-
-            // ========== 场景2：会员营销 ==========
-            else if (content != null && content.contains("coupon")) {
-                log.info("场景：领取优惠券");
-
-                // 1. 检查是否已领取
-                // boolean hasClaimed = couponService.hasClaimedPrintCoupon(openId, businessOrderNo);
-
-                // 2. 发放优惠券
-                // if (!hasClaimed) {
-                //     couponService.grantPrintCoupon(openId);
-                //     messageService.sendCouponNotification(openId);
-                //     log.info("已为用户发放优惠券");
-                // }
-
+            // 重复回调和已经结束的订单不倒退状态。
+            if (order.getStatus() == OrderStatusEnum.PREPARED
+                    || order.getStatus() == OrderStatusEnum.COMPLETED
+                    || order.getStatus() == OrderStatusEnum.CANCELLED) return;
+            if (!restaurantOrderService.updateOrderStatus(job.getOrderId(), OrderStatusEnum.PREPARED)) {
+                throw new IllegalStateException("更新订单出餐状态失败");
             }
+            log.info("设备扫码完成出餐: orderId={}, printerSn={}", job.getOrderId(), sn);
+        });
+    }
 
-            // ========== 场景3：桌边服务 ==========
-            else if (content != null && content.contains("service")) {
-                log.info("场景：呼叫服务");
+    @Override
+    public boolean verifyScanSignature(String sn, String orderId, String content, String dataString, String sign) {
+        PrintJob job = findScanJob(sn, orderId, content);
+        return job != null && verifyWithTenant(job.getTenantId(), dataString, sign);
+    }
 
-                // 1. 获取桌号信息
-                // String tableNo = extractTableNo(content);
-
-                // 2. 通知服务员
-                // messageService.notifyWaiter(tableNo, "顾客呼叫服务");
-
-                log.info("已通知服务员");
-            }
-
-            // ========== 场景4：用户行为分析 ==========
-            // 记录扫码行为，用于数据分析
-            // userBehaviorService.recordScanAction(openId, businessOrderNo, sn, content);
-
-            log.info("扫码回调处理完成");
-
-        } catch (Exception e) {
-            log.error("处理扫码回调异常", e);
-        }
-
-        log.info("==============================");
+    /** 扫码消息可能没有飞鹅打印单号，仍须精确匹配设备、订单和实际下发的二维码。 */
+    private PrintJob findScanJob(String sn, String providerOrderId, String content) {
+        Long businessOrderId = ReceiptScanCode.orderId(content);
+        if (businessOrderId == null || sn == null || sn.isBlank()) return null;
+        List<PrintJob> jobs = TenantIgnore.get(() -> printJobMapper.selectList(
+                new LambdaQueryWrapper<PrintJob>()
+                        .eq(PrintJob::getOrderId, businessOrderId)
+                        .eq(PrintJob::getPrinterSn, sn)
+                        .in(PrintJob::getStatus, 0, 1)));
+        String printedQr = "<QR>" + content + "</QR>";
+        return jobs.stream().filter(job -> job.getTenantId() != null
+                        && job.getProviderOrderId() != null
+                        && (providerOrderId == null || providerOrderId.isBlank()
+                            || providerOrderId.equals(job.getProviderOrderId()))
+                        && job.getContent() != null && job.getContent().contains(printedQr))
+                .findFirst().orElse(null);
     }
 
     /**
@@ -211,35 +155,26 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
      * @return true-验证通过，false-验证失败
      */
     @Override
-    public boolean verifySignature(String dataString, String sign) {
-        if (dataString == null || sign == null) {
-            log.error("签名验证失败：参数不能为空 - dataString: {}, sign: {}",
-                    dataString != null, sign != null);
-            return false;
-        }
-
+    public boolean verifySignature(String orderId, String dataString, String sign) {
+        if (orderId == null) return false;
         try {
-            log.debug("======== 开始验证签名 ========");
-            // 1. 获取签名验证对象（Hutool封装）
-            Sign signObj = getSignObject();
-            if (signObj == null) {
-                log.error("创建签名对象失败");
-                return false;
-            }
-
-            // 2. 使用Hutool进行签名验证（内部自动处理Base64解码和SHA256WithRSA验证）
-            boolean isValid = signObj.verify(
-                    dataString.getBytes(StandardCharsets.UTF_8),  // 待验证的数据
-                    SecureUtil.decode(sign)                        // Base64解码签名
-            );
-
-            log.debug("签名验证结果: {}", isValid ? "✅ 通过" : "❌ 失败");
-            log.debug("==============================");
-
-            return isValid;
-
+            PrintJob job = TenantIgnore.get(() -> printJobMapper.selectOne(
+                    new LambdaQueryWrapper<PrintJob>().eq(PrintJob::getProviderOrderId, orderId).last("LIMIT 1")));
+            return job != null && verifyWithTenant(job.getTenantId(), dataString, sign);
         } catch (Exception e) {
             log.error("签名验证异常", e);
+            return false;
+        }
+    }
+
+    private boolean verifyWithTenant(Long tenantId, String dataString, String sign) {
+        if (tenantId == null || dataString == null || sign == null) return false;
+        try {
+            Sign verifier = getSignObject(tenantId);
+            return verifier != null && verifier.verify(dataString.getBytes(StandardCharsets.UTF_8),
+                    SecureUtil.decode(sign));
+        } catch (Exception e) {
+            log.warn("飞鹅回调签名校验失败: tenantId={}", tenantId, e);
             return false;
         }
     }
@@ -247,55 +182,17 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
     /**
      * 获取签名验证对象（使用Hutool简化）
      *
-     * 使用双重检查锁定模式缓存Sign对象
+     * 按打印任务所属租户读取公钥，轮换后立即生效。
      *
      * @return Hutool Sign对象
      */
-    private Sign getSignObject() {
-        if (cachedSign == null) {
-            synchronized (this) {
-                if (cachedSign == null) {
-                    try {
-                        // 获取公钥字符串
-                        String publicKeyStr = config.getPublicKey();
-                        if (publicKeyStr == null || publicKeyStr.isEmpty()) {
-                            log.error("公钥配置为空");
-                            return null;
-                        }
-
-                        log.debug("创建Hutool签名对象...");
-
-                        // 使用Hutool创建RSA签名验证对象
-                        // SignAlgorithm.SHA256withRSA 对应官方文档的 SHA256WithRSA
-                        cachedSign = SecureUtil.sign(SignAlgorithm.SHA256withRSA, null, publicKeyStr);
-
-                        log.info("Hutool签名对象创建成功");
-
-                    } catch (Exception e) {
-                        log.error("创建签名对象失败", e);
-                        return null;
-                    }
-                }
-            }
-        }
-        return cachedSign;
+    private Sign getSignObject(Long tenantId) {
+        String publicKey = config.getPublicKey(tenantId);
+        if (publicKey == null || publicKey.isBlank()) return null;
+        // 不跨租户缓存，租户轮换公钥后立即生效。
+        return SecureUtil.sign(SignAlgorithm.SHA256withRSA, null, publicKey);
     }
 
-
-    /**
-     * 从打印订单ID中提取业务订单号
-     *
-     * @param printOrderId 打印订单ID（格式：订单号_时间戳_序列号）
-     * @return 业务订单号
-     */
-    private String extractOrderNo(String printOrderId) {
-        if (printOrderId == null || !printOrderId.contains("_")) {
-            return printOrderId;
-        }
-        // 打印订单ID格式：订单号_时间戳_序列号
-        // 提取第一部分作为业务订单号
-        return printOrderId.split("_")[0];
-    }
 
     /**
      * 格式化时间戳
