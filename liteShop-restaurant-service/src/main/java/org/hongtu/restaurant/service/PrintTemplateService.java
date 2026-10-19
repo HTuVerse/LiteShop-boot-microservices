@@ -21,10 +21,11 @@ public interface PrintTemplateService extends IService<PrintTemplate> {
      * @param pageSize 每页大小
      * @param storeId 门店ID（可选）
      * @param enabled 是否启用（可选）
+     * @param printScene 打印用途（可选）
      * @return 分页结果
      */
     Page<PrintTemplate> getTemplatePage(Integer currentPage, Integer pageSize,
-                                        Long storeId, Integer enabled);
+                                        Long storeId, Integer enabled, String printScene);
 
     /**
      * 根据门店ID获取打印模板
@@ -34,6 +35,9 @@ public interface PrintTemplateService extends IService<PrintTemplate> {
      * @return 打印模板
      */
     PrintTemplate getTemplateByStore(Long storeId);
+
+    /** 按打印用途选择门店模板；未配置加菜模板时回退到下单模板。 */
+    PrintTemplate getTemplateByStore(Long storeId, String printScene);
 
     /**
      * 获取默认模板

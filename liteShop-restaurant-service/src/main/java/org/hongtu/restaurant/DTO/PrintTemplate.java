@@ -42,6 +42,9 @@ public class PrintTemplate implements Serializable {
      */
     private String templateName;
 
+    /** 模板用途：ORDER-提交订单，ADD_ITEMS-加菜；历史模板默认为 ORDER。 */
+    private String printScene;
+
     /**
      * 关联的门店ID（为空表示全局模板）
      */

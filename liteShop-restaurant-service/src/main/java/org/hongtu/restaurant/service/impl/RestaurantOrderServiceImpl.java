@@ -2646,8 +2646,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             log.info("门店【{}】开始打印加菜单 orderId={}，本批{}项，共{}台打印机", storeId, orderId, orderItemIds.size(), enabledPrinters.size());
             for (PrinterInfo printer : enabledPrinters) {
                 try {
-                    Long templateId = printer.getTemplateId();
-                    Map<String, Object> printResult = orderPrintService.printAddItems(orderId, orderItemIds, printer.getId(), templateId);
+                    // 让打印服务按加菜用途选模板，未配置时才回退到打印机绑定模板。
+                    Map<String, Object> printResult = orderPrintService.printAddItems(orderId, orderItemIds, printer.getId(), null);
                     boolean success = (boolean) printResult.getOrDefault("success", false);
                     if (success) {
                         log.info("✅ 加菜单 orderId={} 在打印机【{}】打印成功", orderId, printer.getRemark());

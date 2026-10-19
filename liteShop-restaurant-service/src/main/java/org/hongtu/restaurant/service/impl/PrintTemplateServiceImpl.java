@@ -38,7 +38,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
 
     @Override
     public Page<PrintTemplate> getTemplatePage(Integer currentPage, Integer pageSize,
-                                               Long storeId, Integer enabled) {
+                                               Long storeId, Integer enabled, String printScene) {
         Page<PrintTemplate> page = new Page<>(currentPage, pageSize);
 
         LambdaQueryWrapper<PrintTemplate> queryWrapper = new LambdaQueryWrapper<>();
@@ -49,6 +49,9 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         if (enabled != null) {
             queryWrapper.eq(PrintTemplate::getEnabled, enabled);
         }
+        if (printScene != null && !printScene.isBlank()) {
+            queryWrapper.eq(PrintTemplate::getPrintScene, normalizeScene(printScene));
+        }
 
         queryWrapper.orderByDesc(PrintTemplate::getIsDefault)
                 .orderByDesc(PrintTemplate::getCreatedAt);
@@ -58,12 +61,19 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
 
     @Override
     public PrintTemplate getTemplateByStore(Long storeId) {
+        return getTemplateByStore(storeId, "ORDER");
+    }
+
+    @Override
+    public PrintTemplate getTemplateByStore(Long storeId, String printScene) {
+        String scene = normalizeScene(printScene);
         LambdaQueryWrapper<PrintTemplate> queryWrapper = new LambdaQueryWrapper<>();
 
         // 优先查找门店专用模板
         if (storeId != null) {
             queryWrapper.eq(PrintTemplate::getStoreId, storeId)
                     .eq(PrintTemplate::getEnabled, StatusEnum.NORMAL)
+                    .eq(PrintTemplate::getPrintScene, scene)
                     .orderByDesc(PrintTemplate::getIsDefault)
                     .orderByDesc(PrintTemplate::getCreatedAt)
                     .last("LIMIT 1");
@@ -75,11 +85,19 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         }
 
         // 使用全局默认模板
-        PrintTemplate defaultTemplate = getDefaultTemplate();
+        PrintTemplate defaultTemplate = this.getOne(new LambdaQueryWrapper<PrintTemplate>()
+                .eq(PrintTemplate::getIsDefault, BooleanEnum.YES)
+                .eq(PrintTemplate::getEnabled, StatusEnum.NORMAL)
+                .eq(PrintTemplate::getPrintScene, scene)
+                .isNull(PrintTemplate::getStoreId)
+                .last("LIMIT 1"));
         if (defaultTemplate != null) {
             log.info("使用全局默认模板：{}", defaultTemplate.getTemplateName());
             return defaultTemplate;
         }
+
+        // 加菜模板未配置时沿用原有下单模板，避免升级后中断打印。
+        if (!"ORDER".equals(scene)) return getTemplateByStore(storeId, "ORDER");
 
         // 如果没有任何模板，返回内置默认配置
         log.warn("未找到任何打印模板，使用内置默认配置");
@@ -91,6 +109,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         LambdaQueryWrapper<PrintTemplate> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(PrintTemplate::getIsDefault, BooleanEnum.YES)
                 .eq(PrintTemplate::getEnabled, StatusEnum.NORMAL)
+                .eq(PrintTemplate::getPrintScene, "ORDER")
                 .isNull(PrintTemplate::getStoreId)
                 .last("LIMIT 1");
         return this.getOne(queryWrapper);
@@ -99,6 +118,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean createTemplate(PrintTemplate template) {
+        template.setPrintScene(normalizeScene(template.getPrintScene()));
         if (template.getId() == null) template.setId(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
         ResourceBindingPlan logoPlan = resourceBindings.prepareSingle("TEMPLATE", template.getId(), "logoUrl",
                 template.getLogoResourceId(), template.getLogoUrl());
@@ -112,7 +132,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
 
         // 如果设置为默认模板，需要先取消其他默认模板
         if (template.getIsDefault() != null && template.getIsDefault() == BooleanEnum.YES) {
-            cancelOtherDefaultTemplates(template.getStoreId());
+            cancelOtherDefaultTemplates(template.getStoreId(), template.getPrintScene());
         }
 
         boolean saved = this.save(template);
@@ -127,6 +147,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         if (existing == null) {
             return false;
         }
+        template.setPrintScene(normalizeScene(template.getPrintScene()));
         if (template.getLogoUrl() == null) template.setLogoUrl(existing.getLogoUrl());
         if (template.getLogoResourceId() == null
                 && java.util.Objects.equals(template.getLogoUrl(), existing.getLogoUrl()))
@@ -145,7 +166,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
 
         // 如果设置为默认模板，需要先取消其他默认模板
         if (template.getIsDefault() != null && template.getIsDefault() == BooleanEnum.YES) {
-            cancelOtherDefaultTemplates(template.getStoreId());
+            cancelOtherDefaultTemplates(targetStoreId, template.getPrintScene());
         }
 
         boolean updated = this.updateById(template);
@@ -179,7 +200,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         }
 
         // 取消其他默认模板
-        cancelOtherDefaultTemplates(template.getStoreId());
+        cancelOtherDefaultTemplates(template.getStoreId(), normalizeScene(template.getPrintScene()));
 
         // 设置当前模板为默认
         template.setIsDefault(BooleanEnum.YES);
@@ -210,6 +231,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         PrintTemplate newTemplate = new PrintTemplate();
         // 复制所有配置
         newTemplate.setTemplateName(newTemplateName);
+        newTemplate.setPrintScene(normalizeScene(sourceTemplate.getPrintScene()));
         newTemplate.setStoreId(sourceTemplate.getStoreId());
         newTemplate.setPaperWidth(sourceTemplate.getPaperWidth());
         newTemplate.setShowLogo(sourceTemplate.getShowLogo());
@@ -249,9 +271,10 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
     /**
      * 取消其他默认模板
      */
-    private void cancelOtherDefaultTemplates(Long storeId) {
+    private void cancelOtherDefaultTemplates(Long storeId, String printScene) {
         LambdaQueryWrapper<PrintTemplate> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(PrintTemplate::getIsDefault, BooleanEnum.YES);
+        queryWrapper.eq(PrintTemplate::getPrintScene, printScene);
 
         if (storeId != null) {
             queryWrapper.eq(PrintTemplate::getStoreId, storeId);
@@ -266,12 +289,18 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         this.update(updateTemplate, queryWrapper);
     }
 
-    /**
-     * 创建内置默认模板配置
-     */
+    /** 限定模板用途，避免未知值导致自动打印选不到模板。 */
+    private String normalizeScene(String printScene) {
+        if (printScene == null || printScene.isBlank()) return "ORDER";
+        if ("ORDER".equals(printScene) || "ADD_ITEMS".equals(printScene)) return printScene;
+        throw new IllegalArgumentException("不支持的打印用途: " + printScene);
+    }
+
+    /** 创建内置默认模板配置。 */
     private PrintTemplate createBuiltInDefaultTemplate() {
         PrintTemplate template = new PrintTemplate();
         template.setTemplateName("内置默认模板");
+        template.setPrintScene("ORDER");
         template.setPaperWidth(PaperWidthEnum.MM_58);
         template.setShowLogo(StatusEnum.DISABLED);
         template.setStoreNameStyle(2); // 加粗+居中

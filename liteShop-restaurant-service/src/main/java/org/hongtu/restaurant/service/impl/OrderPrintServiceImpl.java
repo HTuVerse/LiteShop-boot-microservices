@@ -159,10 +159,16 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                 template = sceneTemplate != null && "ADD_ITEMS".equals(sceneTemplate.getPrintScene()) ? sceneTemplate
                         : assigned != null ? assigned : sceneTemplate;
             }
-            if (template == null) template = assigned;
+            if (template == null && assigned != null
+                    && ("ADD_ITEMS".equals(printScene)
+                        || assigned.getPrintScene() == null
+                        || "ORDER".equals(assigned.getPrintScene()))) template = assigned;
             if (template == null) template = printTemplateService.getTemplateByStore(orderVO.getStoreId(), printScene);
             if (template == null) {
                 return buildErrorResult("门店未配置可用打印模板");
+            }
+            if ("ORDER".equals(printScene) && "ADD_ITEMS".equals(template.getPrintScene())) {
+                return buildErrorResult("加菜模板不能用于提交订单小票");
             }
             if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), orderVO.getStoreId())) {
                 return buildErrorResult("打印模板与订单不属于同一门店");
