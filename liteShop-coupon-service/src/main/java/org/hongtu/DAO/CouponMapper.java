@@ -41,7 +41,7 @@ public interface CouponMapper extends BaseMapper<Coupon> {
     /** 按旧库存条件原子调整可发库存及总量，保持已发放数量不变。 */
     @Update("UPDATE coupon SET remain_count = remain_count + #{delta}, total_count = total_count + #{delta} " +
             "WHERE id = #{couponId} AND remain_count = #{beforeCount} " +
-            "AND remain_count + #{delta} >= 0 AND total_count + #{delta} > 0")
+            "AND remain_count + #{delta} >= 0 AND total_count + #{delta} >= 0")
     int adjustStock(@Param("couponId") Long couponId, @Param("beforeCount") Integer beforeCount,
                     @Param("delta") Integer delta);
 

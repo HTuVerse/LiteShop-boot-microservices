@@ -294,7 +294,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon == null) return Result.error("优惠券不存在");
         long after = (long) coupon.getRemainCount() + delta;
         long totalAfter = (long) coupon.getTotalCount() + delta;
-        if (after < 0 || totalAfter <= 0 || after > Integer.MAX_VALUE || totalAfter > Integer.MAX_VALUE)
+        if (after < 0 || totalAfter < 0 || after > Integer.MAX_VALUE || totalAfter > Integer.MAX_VALUE)
             return Result.error("调整后的剩余库存或总量超出有效范围");
         if (baseMapper.adjustStock(couponId, coupon.getRemainCount(), delta) != 1)
             return Result.error("库存已变化，请刷新后重试");
