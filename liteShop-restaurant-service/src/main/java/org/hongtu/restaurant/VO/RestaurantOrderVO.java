@@ -82,6 +82,12 @@ public class RestaurantOrderVO implements Serializable {
      */
     private Long userId;
 
+    /** 小票展示的会员名称；无关联会员时不打印。 */
+    private String customerName;
+
+    /** 小票展示的会员电话，可由模板选择是否脱敏。 */
+    private String customerPhone;
+
     /** 下单操作人，与会员归属分离。 */
     private Long operatorId;
     private String operatorName;

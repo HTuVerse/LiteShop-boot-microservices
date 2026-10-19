@@ -21,6 +21,9 @@ import org.hongtu.restaurant.utils.FeieyunPrinterUtil;
 import org.hongtu.restaurant.utils.PrintContentBuilder;
 import org.hongtu.restaurant.utils.ReceiptScanCode;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
+import org.hongtu.DTO.SysUser;
+import org.hongtu.api.client.UserFeignClient;
+import org.hongtu.api.util.FeignResultUtil;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -54,6 +57,9 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     @Resource
     private PrintJobMapper printJobMapper;
+
+    @Resource
+    private UserFeignClient userFeignClient;
 
     @Resource
     RestaurantOrderConverter restaurantOrderConverter;
@@ -175,6 +181,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             }
 
             // 3. 构建打印内容
+            fillCustomerForReceipt(orderVO);
             PaperWidthEnum paperWidth = printer.getPaperWidth() == null
                     ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
             String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printScene,
@@ -224,6 +231,20 @@ public class OrderPrintServiceImpl implements OrderPrintService {
         } catch (Exception e) {
             log.error("登记打印任务失败", e);
             return buildErrorResult("登记打印任务失败");
+        }
+    }
+
+    /** 按订单关联会员填充小票客户信息，查询失败不影响出单。 */
+    private void fillCustomerForReceipt(RestaurantOrderVO orderVO) {
+        if (orderVO.getUserId() == null || orderVO.getCustomerName() != null || orderVO.getCustomerPhone() != null) return;
+        try {
+            SysUser customer = FeignResultUtil.unwrap(userFeignClient.getUserById(orderVO.getUserId()));
+            if (customer == null) return;
+            orderVO.setCustomerName(customer.getNickname() == null || customer.getNickname().isBlank()
+                    ? customer.getUsername() : customer.getNickname());
+            orderVO.setCustomerPhone(customer.getPhone());
+        } catch (Exception e) {
+            log.warn("获取小票客户信息失败: orderId={}, userId={}", orderVO.getId(), orderVO.getUserId(), e);
         }
     }
 
