@@ -279,11 +279,20 @@ public class SysUserController {
         }
         var query = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SysUser>()
                 .select(SysUser::getId, SysUser::getUsername, SysUser::getNickname);
-        query.and(w -> w.like(SysUser::getUsername, term).or().like(SysUser::getNickname, term)
-                .or().likeRight(SysUser::getPhone, term)
-                .or().apply("CAST(id AS CHAR) = {0}", term));
+        query.and(w -> {
+            w.likeRight(SysUser::getUsername, term).or().likeRight(SysUser::getNickname, term)
+                    .or().likeRight(SysUser::getPhone, term);
+            if (term.matches("[0-9]{1,19}")) {
+                try {
+                    w.or().eq(SysUser::getId, Long.parseLong(term));
+                } catch (NumberFormatException ignored) {
+                    // 超出 Long 范围时按手机号前缀搜索。
+                }
+            }
+        });
+        // 下拉候选只需本页，不执行全表总数统计。
         return Result.success(recipientMapper.selectPage(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(
-                Math.max(1, currentPage), Math.min(20, Math.max(1, pageSize))), query.orderByDesc(SysUser::getId)));
+                Math.max(1, currentPage), Math.min(20, Math.max(1, pageSize)), false), query.orderByDesc(SysUser::getId)));
     }
 
     /*管理员接口*/
