@@ -77,14 +77,18 @@ FROM hongtu.printer_info;
 
 INSERT INTO liteshop_restaurant.print_template
   (id, template_name, store_id, paper_width, show_logo, logo_url, store_name_style,
-   show_address, show_phone, show_business_hours, order_info_fields, dish_list_style,
-   show_dish_image, show_dish_spec, show_dish_note, show_order_note, show_payment_info,
+   show_address, show_phone, show_business_hours, order_info_fields,
+   show_dish_image, show_dish_unit_price, show_dish_quantity, show_dish_amount,
+   show_dish_spec, show_dish_original_price, show_dish_discount_price, show_dish_note,
+   show_order_note, show_payment_info,
    footer_text, show_qrcode, qrcode_template, qrcode_size, font_size, print_density,
    print_copies, is_default, enabled, remark, created_at, updated_at, show_pickup_code, tenant_id)
 SELECT id, template_name, store_id,
        CASE paper_width WHEN '58mm' THEN 0 WHEN '80mm' THEN 1 ELSE CAST(paper_width AS UNSIGNED) END,
        show_logo, logo_url, store_name_style, show_address, show_phone, show_business_hours,
-       order_info_fields, dish_list_style, show_dish_image, show_dish_spec, show_dish_note,
+       order_info_fields, show_dish_image, 1, 1, 1,
+       CASE WHEN dish_list_style = 1 THEN show_dish_spec ELSE 0 END, 1, 1,
+       CASE WHEN dish_list_style = 1 THEN show_dish_note ELSE 0 END,
        show_order_note, show_payment_info, footer_text, show_qrcode, qrcode_template,
        qrcode_size, font_size, print_density, print_copies, is_default, enabled, remark,
        created_at, updated_at, show_pickup_code, 1

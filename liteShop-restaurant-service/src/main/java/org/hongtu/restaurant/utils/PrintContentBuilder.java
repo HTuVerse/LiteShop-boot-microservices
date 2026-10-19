@@ -60,7 +60,7 @@ public class PrintContentBuilder {
     public static String buildOrderContent(PrintTemplate template, RestaurantOrderVO orderVO,
                                            String printScene, PaperWidthEnum actualPaperWidth, String scanCode) {
         // 判断是否启用取餐码突出显示模式
-        boolean isPickupCodeFocused = template.getShowPickupCode() != null &&
+        boolean isPickupCodeFocused = !"ADD_ITEMS".equals(printScene) && template.getShowPickupCode() != null &&
                 template.getShowPickupCode() == BooleanEnum.YES && orderVO.getPickupMode()== pickupModeEnum.NUMBERCALLING;
 
         return buildNormalContent(template, orderVO, isPickupCodeFocused, actualPaperWidth,
@@ -138,6 +138,9 @@ public class PrintContentBuilder {
             content.append("<LOGO><BR>");
         }
 
+        // 加菜单标题放在小票顶部，与取餐码区块明确分开。
+        if (addItems) content.append("<C><BOLD>加菜单</BOLD></C><BR>");
+
         // ============ 店铺名称 ============
         String storeName = orderVO.getStoreName();
         Integer storeNameStyle = template.getStoreNameStyle() != null ? template.getStoreNameStyle() : 2;
@@ -178,9 +181,6 @@ public class PrintContentBuilder {
                     .append("</CB><BR>");
             content.append("<C>(等餐期间请注意听取叫号)</C><BR>");
         }
-
-        // 厨房可直接区分追加菜品与首次下单。
-        if (addItems) content.append("<CB>加菜单</CB><BR>");
 
         // ============ 订单信息 ============
         content.append(buildDividerLine(paperWidth));
@@ -246,17 +246,20 @@ public class PrintContentBuilder {
         content.append(buildDividerLine(paperWidth));
 
         // ============ 菜品列表 ============
-        Integer dishListStyle = template.getDishListStyle() != null ? template.getDishListStyle() : 0;
+        boolean showUnitPrice = template.getShowDishUnitPrice() != StatusEnum.DISABLED;
+        boolean showQuantity = template.getShowDishQuantity() != StatusEnum.DISABLED;
+        boolean showAmount = template.getShowDishAmount() != StatusEnum.DISABLED;
 
-        // 表头与明细共用同一组字节列宽，金额始终落在首行。
-        int priceWidth = paperWidth > 30 ? 8 : 7;
-        int quantityWidth = 6;
-        int amountWidth = paperWidth > 30 ? 9 : 8;
+        // 每个金额字段独立控制，关闭的列把空间还给菜名。
+        int priceWidth = showUnitPrice ? (paperWidth > 30 ? 8 : 7) : 0;
+        int quantityWidth = showQuantity ? 6 : 0;
+        int amountWidth = showAmount ? (paperWidth > 30 ? 9 : 8) : 0;
         int nameWidth = paperWidth - priceWidth - quantityWidth - amountWidth;
-        content.append(formatText("菜品", nameWidth))
-                .append(formatRightAlign("单价", priceWidth))
-                .append(formatCenter("数量", quantityWidth))
-                .append(formatRightAlign("金额", amountWidth)).append("<BR>");
+        content.append(formatText("菜品", nameWidth));
+        if (showUnitPrice) content.append(formatRightAlign("单价", priceWidth));
+        if (showQuantity) content.append(formatCenter("数量", quantityWidth));
+        if (showAmount) content.append(formatRightAlign("金额", amountWidth));
+        content.append("<BR>");
         content.append(buildDashLine(paperWidth));
 
         // 菜品明细
@@ -270,34 +273,38 @@ public class PrintContentBuilder {
             BigDecimal discountPrice = item.getDiscountAmount();
             Integer isGift = item.getIsGift();
 
-            String priceStr = formatPrice(price);
-            String quantityStr = String.valueOf(quantity);
-            String totalStr = formatPrice(itemTotal);
-            int rowPriceWidth = Math.max(priceWidth, textWidth(priceStr));
-            int rowQuantityWidth = Math.max(quantityWidth, textWidth(quantityStr));
-            int rowAmountWidth = Math.max(amountWidth, textWidth(totalStr));
+            String priceStr = showUnitPrice ? formatPrice(price) : "";
+            String quantityStr = showQuantity ? String.valueOf(quantity) : "";
+            String totalStr = showAmount ? formatPrice(itemTotal) : "";
+            int rowPriceWidth = showUnitPrice ? Math.max(priceWidth, textWidth(priceStr)) : 0;
+            int rowQuantityWidth = showQuantity ? Math.max(quantityWidth, textWidth(quantityStr)) : 0;
+            int rowAmountWidth = showAmount ? Math.max(amountWidth, textWidth(totalStr)) : 0;
             int rowNameWidth = paperWidth - rowPriceWidth - rowQuantityWidth - rowAmountWidth;
             String itemLabel = (dishName == null ? "" : dishName)
                     + (isGift != null && isGift == 1 ? "(赠)" : "");
             // 菜名占满首行可用列，剩余部分在金额行之后续行。
             int firstNameWidth = Math.max(0, rowNameWidth);
             int firstEnd = prefixEnd(itemLabel, firstNameWidth);
-            content.append(formatText(itemLabel.substring(0, firstEnd), firstNameWidth))
-                    .append(formatRightAlign(priceStr, rowPriceWidth))
-                    .append(formatCenter(quantityStr, rowQuantityWidth))
-                    .append(formatRightAlign(totalStr, rowAmountWidth));
+            content.append(formatText(itemLabel.substring(0, firstEnd), firstNameWidth));
+            if (showUnitPrice) content.append(formatRightAlign(priceStr, rowPriceWidth));
+            if (showQuantity) content.append(formatCenter(quantityStr, rowQuantityWidth));
+            if (showAmount) content.append(formatRightAlign(totalStr, rowAmountWidth));
             content.append("<BR>");
             if (firstEnd < itemLabel.length()) {
                 appendWrappedLine(content, "  " + itemLabel.substring(firstEnd), paperWidth);
             }
             if (discountPrice != null && discountPrice.compareTo(BigDecimal.ZERO) > 0) {
                 BigDecimal originalTotal = (itemTotal == null ? BigDecimal.ZERO : itemTotal).add(discountPrice);
-                content.append("<RIGHT>原价 ").append(formatPrice(originalTotal))
-                        .append(" 优惠 ").append(formatPrice(discountPrice)).append("</RIGHT><BR>");
+                if (template.getShowDishOriginalPrice() != StatusEnum.DISABLED) {
+                    content.append("<RIGHT>原价：").append(formatPrice(originalTotal)).append("</RIGHT><BR>");
+                }
+                if (template.getShowDishDiscountPrice() != StatusEnum.DISABLED) {
+                    content.append("<RIGHT>优惠价：").append(formatPrice(itemTotal)).append("</RIGHT><BR>");
+                }
             }
 
             // 显示规格信息
-            if (dishListStyle == 1 && template.getShowDishSpec() == StatusEnum.getByCode(1) &&
+            if (template.getShowDishSpec() == StatusEnum.NORMAL &&
                     item.getSpecOptionsText() != null && !item.getSpecOptionsText().isEmpty() &&
                     !"null".equals(item.getSpecOptionsText())) {
                 String[] specs = item.getSpecOptionsText().split("、");
@@ -309,7 +316,7 @@ public class PrintContentBuilder {
             }
 
             // 显示备注
-            if (dishListStyle == 1 && template.getShowDishNote() == StatusEnum.getByCode(1) &&
+            if (template.getShowDishNote() == StatusEnum.NORMAL &&
                     item.getNote() != null && !item.getNote().isEmpty() && !"null".equals(item.getNote())) {
                 content.append("  备注：").append(item.getNote()).append("<BR>");
             }

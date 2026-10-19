@@ -241,9 +241,13 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         newTemplate.setShowPhone(sourceTemplate.getShowPhone());
         newTemplate.setShowBusinessHours(sourceTemplate.getShowBusinessHours());
         newTemplate.setOrderInfoFields(sourceTemplate.getOrderInfoFields());
-        newTemplate.setDishListStyle(sourceTemplate.getDishListStyle());
         newTemplate.setShowDishImage(sourceTemplate.getShowDishImage());
+        newTemplate.setShowDishUnitPrice(sourceTemplate.getShowDishUnitPrice());
+        newTemplate.setShowDishQuantity(sourceTemplate.getShowDishQuantity());
+        newTemplate.setShowDishAmount(sourceTemplate.getShowDishAmount());
         newTemplate.setShowDishSpec(sourceTemplate.getShowDishSpec());
+        newTemplate.setShowDishOriginalPrice(sourceTemplate.getShowDishOriginalPrice());
+        newTemplate.setShowDishDiscountPrice(sourceTemplate.getShowDishDiscountPrice());
         newTemplate.setShowDishNote(sourceTemplate.getShowDishNote());
         newTemplate.setShowOrderNote(sourceTemplate.getShowOrderNote());
         newTemplate.setShowPaymentInfo(sourceTemplate.getShowPaymentInfo());
@@ -308,10 +312,14 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         template.setShowPhone(StatusEnum.NORMAL);
         template.setShowBusinessHours(StatusEnum.DISABLED);
         template.setOrderInfoFields("[\"orderNo\",\"tableName\",\"orderType\",\"createdAt\"]");
-        template.setDishListStyle(0); // 简约样式
         template.setShowDishImage(StatusEnum.DISABLED);
-        template.setShowDishSpec(StatusEnum.NORMAL);
-        template.setShowDishNote(StatusEnum.NORMAL);
+        template.setShowDishUnitPrice(StatusEnum.NORMAL);
+        template.setShowDishQuantity(StatusEnum.NORMAL);
+        template.setShowDishAmount(StatusEnum.NORMAL);
+        template.setShowDishSpec(StatusEnum.DISABLED);
+        template.setShowDishOriginalPrice(StatusEnum.NORMAL);
+        template.setShowDishDiscountPrice(StatusEnum.NORMAL);
+        template.setShowDishNote(StatusEnum.DISABLED);
         template.setShowOrderNote(StatusEnum.NORMAL);
         template.setShowPaymentInfo(StatusEnum.NORMAL);
         template.setFooterText("谢谢惠顾，欢迎再次光临！");

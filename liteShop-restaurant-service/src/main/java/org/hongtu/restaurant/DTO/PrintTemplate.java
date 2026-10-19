@@ -95,19 +95,29 @@ public class PrintTemplate implements Serializable {
     private String orderInfoFields;
 
     /**
-     * 菜品列表显示样式：0-简约（仅名称、数量、价格），1-详细（含规格、备注）
-     */
-    private Integer dishListStyle;
-
-    /**
      * 是否显示菜品图片：0-不显示，1-显示（会影响打印速度）
      */
     private StatusEnum showDishImage;
+
+    /** 是否显示菜品单价：0-不显示，1-显示。 */
+    private StatusEnum showDishUnitPrice;
+
+    /** 是否显示菜品数量：0-不显示，1-显示。 */
+    private StatusEnum showDishQuantity;
+
+    /** 是否显示菜品金额：0-不显示，1-显示。 */
+    private StatusEnum showDishAmount;
 
     /**
      * 是否显示菜品规格：0-不显示，1-显示
      */
     private StatusEnum showDishSpec;
+
+    /** 优惠菜品是否显示原价：0-不显示，1-显示。 */
+    private StatusEnum showDishOriginalPrice;
+
+    /** 优惠菜品是否显示优惠价：0-不显示，1-显示。 */
+    private StatusEnum showDishDiscountPrice;
 
     /**
      * 是否显示菜品备注：0-不显示，1-显示
