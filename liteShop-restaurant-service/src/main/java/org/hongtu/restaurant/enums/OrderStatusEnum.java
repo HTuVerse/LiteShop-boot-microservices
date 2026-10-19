@@ -33,20 +33,14 @@ public enum OrderStatusEnum {
     }
 
     /**
-     * 订单履约状态只能逐步向前推进；取消由专用取消流程处理。
+     * 未结束订单可直接选择履约目标状态；取消由专用取消流程处理。
      * 支付状态不参与这里的流转。
      */
     public boolean canTransitionTo(OrderStatusEnum nextStatus) {
         if (nextStatus == null || nextStatus == this || isTerminal()) {
             return false;
         }
-        return switch (this) {
-            case PLACED -> nextStatus == ACCEPTED || nextStatus == CANCELLED;
-            case ACCEPTED -> nextStatus == PREPARING || nextStatus == CANCELLED;
-            case PREPARING -> nextStatus == PREPARED || nextStatus == CANCELLED;
-            case PREPARED -> nextStatus == COMPLETED || nextStatus == CANCELLED;
-            case COMPLETED, CANCELLED -> false;
-        };
+        return true;
     }
 
     public boolean isTerminal() {

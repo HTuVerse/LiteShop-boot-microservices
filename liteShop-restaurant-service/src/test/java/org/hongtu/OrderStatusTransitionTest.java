@@ -25,21 +25,22 @@ class OrderStatusTransitionTest {
     }
 
     @Test
-    void onlyAllowsSequentialForwardTransitionsOrCancellation() {
+    void allowsDirectSelectionBeforeTerminalStatus() {
         assertTrue(OrderStatusEnum.PLACED.canTransitionTo(OrderStatusEnum.ACCEPTED));
         assertTrue(OrderStatusEnum.ACCEPTED.canTransitionTo(OrderStatusEnum.PREPARING));
         assertTrue(OrderStatusEnum.PREPARING.canTransitionTo(OrderStatusEnum.PREPARED));
         assertTrue(OrderStatusEnum.PREPARED.canTransitionTo(OrderStatusEnum.COMPLETED));
         assertTrue(OrderStatusEnum.PREPARING.canTransitionTo(OrderStatusEnum.CANCELLED));
 
-        assertFalse(OrderStatusEnum.PLACED.canTransitionTo(OrderStatusEnum.PREPARING));
-        assertFalse(OrderStatusEnum.PREPARED.canTransitionTo(OrderStatusEnum.ACCEPTED));
+        assertTrue(OrderStatusEnum.PLACED.canTransitionTo(OrderStatusEnum.PREPARING));
+        assertTrue(OrderStatusEnum.PREPARED.canTransitionTo(OrderStatusEnum.ACCEPTED));
+        assertFalse(OrderStatusEnum.ACCEPTED.canTransitionTo(OrderStatusEnum.ACCEPTED));
         assertFalse(OrderStatusEnum.COMPLETED.canTransitionTo(OrderStatusEnum.CANCELLED));
         assertFalse(OrderStatusEnum.CANCELLED.canTransitionTo(OrderStatusEnum.PLACED));
     }
 
     @Test
-    void serviceRejectsSkippingCancellationAndUnpaidOnlineFulfilment() {
+    void serviceAllowsSkippingButRejectsCancellationAndUnpaidOnlineFulfilment() {
         var service = spy(new RestaurantOrderServiceImpl());
         var order = new RestaurantOrder()
                 .setId(1L)
@@ -59,7 +60,7 @@ class OrderStatusTransitionTest {
                 () -> service.updateOrderStatus(1L, OrderStatusEnum.ACCEPTED));
 
         order.setPaymentStatus(PaymentStatusEnum.PAID);
-        assertTrue(service.updateOrderStatus(1L, OrderStatusEnum.ACCEPTED));
-        assertEquals(OrderStatusEnum.ACCEPTED, order.getStatus());
+        assertTrue(service.updateOrderStatus(1L, OrderStatusEnum.PREPARING));
+        assertEquals(OrderStatusEnum.PREPARING, order.getStatus());
     }
 }
