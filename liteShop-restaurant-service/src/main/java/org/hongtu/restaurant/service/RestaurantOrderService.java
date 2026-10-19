@@ -273,4 +273,7 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
      * @return 计算结果：usable、totalDiscountAmount、couponDetails（各券明细）
      */
     Result calcCouponDiscount(Long userId, List<Long> userCouponIds, BigDecimal orderTotalAmount, Long storeId);
+
+    /** 按购物车实购菜品和服务端价格试算优惠券。 */
+    Result calcCouponDiscountForCart(Long userId, CouponQuoteRequest request);
 }

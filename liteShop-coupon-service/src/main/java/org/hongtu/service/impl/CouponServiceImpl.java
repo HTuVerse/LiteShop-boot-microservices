@@ -126,6 +126,11 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (existCoupon == null) {
             return Result.error("优惠券不存在");
         }
+        CouponTypeEnum targetType = coupon.getType() == null ? existCoupon.getType() : coupon.getType();
+        if (targetType == CouponTypeEnum.DISH_FREE
+                && (coupon.getDishItems() == null || coupon.getDishItems().isEmpty())) {
+            return Result.error("菜品免单券必须关联至少一个菜品");
+        }
         org.hongtu.security.OperationPermission.requireChange("marketing:coupon:status", existCoupon.getStatus(), coupon.getStatus());
         // 如果修改了总数，需要同步调整剩余数量
         if (coupon.getTotalCount() != null && !coupon.getTotalCount().equals(existCoupon.getTotalCount())) {
@@ -140,9 +145,10 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         boolean updated = updateById(coupon);
         if (updated) {
             // 更新关联菜品（如果传了dishItems，则重新保存）
-            CouponTypeEnum type = coupon.getType() != null ? coupon.getType() : existCoupon.getType();
-            if (needDishItems(type) && coupon.getDishItems() != null) {
+            if (needDishItems(targetType)) {
                 couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
+            } else if (existCoupon.getType() == CouponTypeEnum.DISH_FREE) {
+                couponDishItemService.deleteItemsByCouponId(coupon.getId());
             }
             log.info("优惠券更新成功：id={}", coupon.getId());
             // 查询完整数据返回

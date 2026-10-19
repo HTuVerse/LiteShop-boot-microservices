@@ -116,6 +116,9 @@ public class CouponDiscountResultVO {
     @AllArgsConstructor
     public static class DishItemVO {
 
+        /** 对应本次试算的购物车行，避免同菜品不同规格串用优惠。 */
+        private String lineKey;
+
         /**
          * 菜品ID
          */

@@ -132,7 +132,7 @@ public class DishController {
      * @return 分页菜品列表
      */
     @GetMapping("/pageList")
-    @SaCheckPermission(value = {"restaurant:dish"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    @SaCheckPermission(value = {"restaurant:dish", "marketing:coupon"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result getDishPage(
             @RequestParam(defaultValue = "1") Integer currentPage,
             @RequestParam(defaultValue = "10") Integer pageSize,

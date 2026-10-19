@@ -824,7 +824,7 @@ public class RestaurantOrderController {
      * - totalDiscountAmount: 总优惠金额
      * - couponDetails: 各优惠券明细列表
      *   - userCouponId/couponId/couponName/couponType/couponTypeDesc
-     *   - discountAmount: 优惠金额（满减券返回面值，菜品免单券返回关联菜品总价，整单折扣券返回0需前端根据value和订单金额计算）
+     *   - discountAmount: 服务端计算的实际优惠金额；菜品免单券须使用 POST 接口提交购物车
      *   - value: 券面值/折扣率
      *   - minAmount: 最低消费金额
      *   - dishItems: 关联菜品列表（仅菜品免单券）
@@ -840,6 +840,13 @@ public class RestaurantOrderController {
             Long userId = StpUtil.getLoginIdAsLong();
             return restaurantOrderService.calcCouponDiscount(userId, userCouponIds, orderTotalAmount, storeId);
         
+    }
+
+    /** 按购物车实购菜品试算优惠券，供结算页使用。 */
+    @PostMapping("/calc-coupon-discount")
+    public Result calcCouponDiscountForCart(@RequestBody CouponQuoteRequest request) {
+        Long userId = StpUtil.getLoginIdAsLong();
+        return restaurantOrderService.calcCouponDiscountForCart(userId, request);
     }
 
     /**
