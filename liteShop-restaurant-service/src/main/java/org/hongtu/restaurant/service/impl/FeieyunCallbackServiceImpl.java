@@ -11,6 +11,7 @@ import org.hongtu.restaurant.DAO.PrintJobMapper;
 import org.hongtu.restaurant.DTO.PrintJob;
 import org.hongtu.restaurant.DTO.RestaurantOrder;
 import org.hongtu.restaurant.DAO.RestaurantOrderMapper;
+import org.hongtu.restaurant.DAO.PrinterInfoMapper;
 import org.hongtu.restaurant.enums.OrderStatusEnum;
 import org.hongtu.restaurant.service.RestaurantOrderService;
 import org.hongtu.restaurant.utils.ReceiptScanCode;
@@ -20,11 +21,15 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Objects;
+import java.util.Base64;
+import javax.crypto.Cipher;
 
 /**
  * 飞鹅打印机回调服务实现
@@ -43,6 +48,9 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
 
     @Resource
     private RestaurantOrderMapper restaurantOrderMapper;
+
+    @Resource
+    private PrinterInfoMapper printerInfoMapper;
 
     @Resource
     private RestaurantOrderService restaurantOrderService;
@@ -122,6 +130,38 @@ public class FeieyunCallbackServiceImpl implements FeieyunCallbackService {
     public boolean verifyScanSignature(String sn, String orderId, String content, String dataString, String sign) {
         PrintJob job = findScanJob(sn, orderId, content);
         return job != null && verifyWithTenant(job.getTenantId(), dataString, sign);
+    }
+
+    /** 出餐宝上传 RSA 加密扫码内容，按设备归属租户解密后再精确匹配已打印票据。 */
+    @Override
+    public void handleEncryptedScanCallback(String sn, String result) {
+        if (sn == null || sn.isBlank() || result == null || result.isBlank())
+            throw new IllegalArgumentException("扫码回调参数不完整");
+        List<Long> tenantIds = TenantIgnore.get(() -> printerInfoMapper.findTenantIdsBySn(sn));
+        for (Long tenantId : tenantIds) {
+            String privateKey = config.getScanPrivateKey(tenantId);
+            if (privateKey == null || privateKey.isBlank()) continue;
+            String content;
+            try {
+                content = decryptScanResult(result, privateKey);
+            } catch (Exception ignored) {
+                continue;
+            }
+            PrintJob job = findScanJob(sn, null, content);
+            if (job == null || !tenantId.equals(job.getTenantId())) continue;
+            handleScanCallback(null, sn, null, Instant.now().getEpochSecond(), content);
+            return;
+        }
+        throw new IllegalArgumentException("扫码内容未匹配到本设备已打印的小票");
+    }
+
+    private String decryptScanResult(String result, String privateKey) throws Exception {
+        String pem = privateKey.replace("-----BEGIN PRIVATE KEY-----", "")
+                .replace("-----END PRIVATE KEY-----", "").replaceAll("\\s", "");
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        cipher.init(Cipher.DECRYPT_MODE, KeyFactory.getInstance("RSA")
+                .generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(pem))));
+        return new String(cipher.doFinal(Base64.getDecoder().decode(result)), StandardCharsets.UTF_8);
     }
 
     /** 扫码消息可能没有飞鹅打印单号，仍须精确匹配设备、订单和实际下发的二维码。 */

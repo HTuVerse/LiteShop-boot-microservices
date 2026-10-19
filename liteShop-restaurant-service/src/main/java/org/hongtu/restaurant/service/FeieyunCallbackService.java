@@ -21,6 +21,9 @@ public interface FeieyunCallbackService {
     /** 按小票码和设备定位租户，再验证扫码通知的飞鹅签名。 */
     boolean verifyScanSignature(String sn, String orderId, String content, String dataString, String sign);
 
+    /** 解密出餐宝 JSON 通知的 result 并更新对应订单。 */
+    void handleEncryptedScanCallback(String sn, String result);
+
     /**
      * 处理打印回调
      *

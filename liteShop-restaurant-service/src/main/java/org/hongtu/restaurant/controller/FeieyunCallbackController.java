@@ -13,6 +13,7 @@ import org.hongtu.restaurant.DTO.PrinterInfo;
 import org.hongtu.restaurant.service.PrinterInfoService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.http.MediaType;
 import org.hongtu.restaurant.service.FeieyunCallbackService;
 
 import java.util.List;
@@ -311,7 +312,7 @@ public class FeieyunCallbackController {
      * @param params 飞鹅表单参数
      * @return SUCCESS 表示已处理
      */
-    @PostMapping("/callback/scan")
+    @PostMapping(value = "/callback/scan", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
     @SaIgnore
     public String scanCallback(@RequestParam Map<String, String> params) {
         try {
@@ -327,6 +328,19 @@ public class FeieyunCallbackController {
         } catch (Exception e) {
             log.error("处理扫码回调失败", e);
             return "FAIL";
+        }
+    }
+
+    /** 出餐宝 JSON 通知：result 为 RSA 加密的扫码内容，响应 res 供设备播报结果。 */
+    @PostMapping(value = "/callback/scan", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @SaIgnore
+    public Map<String, Object> encryptedScanCallback(@RequestBody Map<String, String> params) {
+        try {
+            callbackService.handleEncryptedScanCallback(params.get("sn"), params.get("result"));
+            return Map.of("res", "SUCCESS", "audio", 0);
+        } catch (Exception e) {
+            log.warn("飞鹅设备扫码回调处理失败: sn={}", params.get("sn"), e);
+            return Map.of("res", "FAIL", "audio", 0);
         }
     }
 

@@ -19,6 +19,10 @@ import java.util.List;
 @Mapper
 public interface PrinterInfoMapper extends BaseMapper<PrinterInfo> {
 
+    /** 按设备 SN 查找所有归属租户，供无登录态的扫码回调选择解密私钥。 */
+    @Select("SELECT DISTINCT tenant_id FROM printer_info WHERE sn = #{sn}")
+    List<Long> findTenantIdsBySn(@Param("sn") String sn);
+
 
     /**
      * 根据门店ID查询打印机列表

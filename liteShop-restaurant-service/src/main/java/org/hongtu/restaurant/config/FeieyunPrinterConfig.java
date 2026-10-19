@@ -1,49 +1,36 @@
 package org.hongtu.restaurant.config;
 
-import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import jakarta.annotation.Resource;
+import org.hongtu.exception.BusinessException;
 import org.springframework.stereotype.Component;
+import java.net.URI;
 
-/**
- * 飞鹅打印机配置类
- * 
- * @author hongtu
- */
-@Data
+/** 飞鹅云参数代理；每次按当前租户从配置服务读取。 */
 @Component
-@ConfigurationProperties(prefix = "feieyun.printer")
 public class FeieyunPrinterConfig {
-    
-    /**
-     * 飞鹅云API接口地址
-     */
-    private String apiUrl = "http://api.feieyun.cn/Api/Open/";
-    
-    /**
-     * 飞鹅云账号
-     */
-    private String user;
-    
-    /**
-     * 飞鹅云后台注册账号后生成的UKEY（注意：不是打印机的KEY）
-     */
-    private String ukey;
-    
-    /**
-     * 打印机编号（可选，用于单打印机场景）
-     */
-    private String sn;
+    @Resource private TenantRestaurantConfig tenantConfig;
 
+    public String getApiUrl() {
+        String url = tenantConfig.get("printer_api_url");
+        try {
+            URI uri = URI.create(url);
+            if ("https".equalsIgnoreCase(uri.getScheme()) && "api.feieyun.cn".equalsIgnoreCase(uri.getHost())
+                    && "/Api/Open/".equals(uri.getPath()) && uri.getUserInfo() == null
+                    && uri.getQuery() == null && uri.getFragment() == null) return url;
+        } catch (IllegalArgumentException ignored) {
+            // 错误地址统一交给下面的业务异常处理。
+        }
+        throw new BusinessException("飞鹅云接口地址必须为 https://api.feieyun.cn/Api/Open/");
+    }
+    public String getUser() { return required("printer_user", "飞鹅云账号"); }
+    public String getUkey() { return required("printer_ukey", "飞鹅云 UKEY"); }
+    public String getSn() { return tenantConfig.get("printer_sn"); }
+    public String getPublicKey(Long tenantId) { return tenantConfig.get(tenantId, "printer_public_key"); }
+    public String getScanPrivateKey(Long tenantId) { return tenantConfig.get(tenantId, "printer_scan_private_key"); }
 
-    /**
-     * 飞鹅云公钥（用于回调签名验证）
-     */
-    private String publicKey = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2LDlvyuClqrnKW01FqYg" +
-            "valPy1/e09ZWlvjb5Nu+0T1PsGhKjF4WBb+D7x3Dy/Db5IHMcpG/Eps6ew6n/6rw" +
-            "v8Ctu+uZI33YNv9sqAMPjG2EN+WcqCrVrMGUmjITVpIkQEjTdkuismf+VL3x+eJo" +
-            "W1y/TaLb9vchReBc6IZowRu2yItC+tFbock5Nupsl5uOCKltm3s0VqtiHUrpgVeV" +
-            "8dVJHLhmLENnLgcTqrkZeKogFDT+fTOhzQPZVEqQgdat/6kcmD44lN4UI7EvVNfe" +
-            "amwRLgy4e/CpInD9cql+t5eiRLem0+rgPq9RLivM1pRt67crH0WGY1xXtAtzWO0M" +
-            "MwIDAQAB";
+    private String required(String key, String name) {
+        String value = tenantConfig.get(key);
+        if (value == null || value.isBlank()) throw new BusinessException(name + "未配置");
+        return value;
+    }
 }
-
