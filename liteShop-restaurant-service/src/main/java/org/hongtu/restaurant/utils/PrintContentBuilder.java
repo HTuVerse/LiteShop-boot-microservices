@@ -227,10 +227,10 @@ public class PrintContentBuilder {
             String formattedDishName = formatDishNameWithGift(dishName, dishNameWidth, isGift);
             String priceStr = formatPrice(price);
             String quantityStr = String.valueOf(quantity);
-            String totalStr = formatAmountWithOriginal(itemTotal, discountPrice, 12);
-            int amountColWidth = (totalStr.contains("→") ? 12 : 9);
+            String totalStr = formatPrice(itemTotal);
+            int amountColWidth = 9;
 
-            // 第一行：菜名 + 单价 + 数量 + 金额（有优惠时金额为「原价→实付」）
+            // 第一行固定列宽；优惠明细单独占行，避免 58mm 小票金额列溢出。
             content.append(formattedDishName);
             if (paperWidth == 48) {
                 content.append(formatRightAlign(priceStr, 6));
@@ -242,6 +242,11 @@ public class PrintContentBuilder {
                 content.append(" ").append(formatRightAlign(totalStr, amountColWidth));
             }
             content.append("<BR>");
+            if (discountPrice != null && discountPrice.compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal originalTotal = (itemTotal == null ? BigDecimal.ZERO : itemTotal).add(discountPrice);
+                content.append("<RIGHT>原价 ").append(formatPrice(originalTotal))
+                        .append(" 优惠 ").append(formatPrice(discountPrice)).append("</RIGHT><BR>");
+            }
 
             // 显示规格信息
             if (dishListStyle == 1 && template.getShowDishSpec() == StatusEnum.getByCode(1) &&
@@ -420,23 +425,6 @@ public class PrintContentBuilder {
             return formatText(dishName, w) + "赠";
         }
         return formatText(dishName, nameWidth);
-    }
-
-    /**
-     * 金额列：有优惠时显示原价（划线价）+ 实付 totalPrice，格式为「原价x.xx 实付y.yy」；无优惠仅显示 totalPrice
-     */
-    private static String formatAmountWithOriginal(BigDecimal totalPrice, BigDecimal discountPrice, int amountWidth) {
-        String actualStr = formatPrice(totalPrice);
-        if (discountPrice == null || discountPrice.compareTo(BigDecimal.ZERO) <= 0) {
-            return actualStr;
-        }
-        BigDecimal originalTotal = (totalPrice != null ? totalPrice : BigDecimal.ZERO).add(discountPrice);
-        String originalStr = formatPrice(originalTotal);
-        String combined = originalStr + "→" + actualStr;
-        if (combined.length() <= amountWidth) {
-            return combined;
-        }
-        return originalStr + " " + actualStr;
     }
 
     /**

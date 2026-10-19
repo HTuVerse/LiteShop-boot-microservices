@@ -390,18 +390,23 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                     return buildErrorResult("打印模板不存在");
                 }
             }
+            if (template == null && printer.getTemplateId() != null) {
+                template = printTemplateService.getById(printer.getTemplateId());
+            }
+            if (template == null) {
+                template = printTemplateService.getTemplateByStore(printer.getStoreId());
+            }
+            if (template == null) {
+                return buildErrorResult("打印机未绑定模板，且门店没有可用的默认模板");
+            }
             if (template != null && template.getStoreId() != null
                     && !Objects.equals(template.getStoreId(), printer.getStoreId())) {
                 return buildErrorResult("打印模板与打印机不属于同一门店");
             }
 
-            // 测试打印不得读取或打印任意真实订单，避免泄露订单和会员信息。
-            String content = template == null ? "<CB>打印机测试</CB><BR>"
-                    + "设备：" + (printer.getRemark() == null ? printer.getSn() : printer.getRemark()) + "<BR>"
-                    + "时间：" + LocalDateTime.now().format(DATE_FORMATTER) + "<BR>"
-                    + "如能看到本小票，说明打印机连接正常。<BR>"
-                    : PrintContentBuilder.buildSampleContent(template, printer.getStoreId());
-            int copies = template == null || template.getPrintCopies() == null ? 1
+            // 试打使用演示订单与正式打印共用的模板生成器，不读取真实订单。
+            String content = PrintContentBuilder.buildSampleContent(template, printer.getStoreId());
+            int copies = template.getPrintCopies() == null ? 1
                     : Math.max(1, Math.min(5, template.getPrintCopies()));
             String providerResult = feieyunPrinterUtil.print(printer.getSn(), content, copies);
             JSONObject resultJson = JSON.parseObject(providerResult);

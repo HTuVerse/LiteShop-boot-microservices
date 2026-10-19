@@ -29,7 +29,8 @@ public class PrintTemplateController {
     @PostMapping("/preview")
     @SaCheckPermission(value = {"operations:templates", "restaurant:printer"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<String> preview(@RequestBody PrintTemplate template) {
-        return Result.success(PrintContentBuilder.buildSampleContent(template));
+        // Result.success(String) 会把字符串放入 msg，前端读取的 data 将为空。
+        return Result.success("预览生成成功", PrintContentBuilder.buildSampleContent(template));
     }
 
     /**
