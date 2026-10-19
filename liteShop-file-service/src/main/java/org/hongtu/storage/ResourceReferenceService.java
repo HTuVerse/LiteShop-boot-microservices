@@ -131,10 +131,10 @@ public class ResourceReferenceService {
     /** 与登记使用同一条文件行锁，先封锁新引用，再执行外部存储删除。 */
     @Transactional(rollbackFor = Exception.class)
     public void beginDelete(Long resourceId) {
-        requireMigrationReady();
         String state = jdbc.queryForObject("SELECT deletion_state FROM file_upload WHERE id=? FOR UPDATE",
                 String.class, resourceId);
         if (!"ACTIVE".equals(state)) throw new IllegalStateException("资源正在删除或等待恢复");
+        requireMigrationReady(files.findAcrossTenants(resourceId));
         if (count(resourceId) > 0) throw new IllegalStateException("资源仍被业务引用，请先移除关联");
         jdbc.update("UPDATE file_upload SET deletion_state='DELETING' WHERE id=?", resourceId);
     }
@@ -159,11 +159,18 @@ public class ResourceReferenceService {
                 resourceId);
     }
 
-    /** 历史引用回填前一律拒绝物理删除及公开转私有。 */
-    public void requireMigrationReady() {
-        Integer ready = jdbc.queryForObject("SELECT deletion_enabled FROM file_resource_reference_control WHERE id=1",
-                Integer.class);
-        if (!Integer.valueOf(1).equals(ready))
+    /** 回填保护只覆盖控制记录建立前的旧文件；之后上传的文件仍检查引用表和业务 URL。 */
+    public void requireMigrationReady(FileUpload file) {
+        if (file == null) throw new IllegalArgumentException("资源不存在");
+        Boolean allowed = jdbc.queryForObject(
+                "SELECT deletion_enabled,updated_at FROM file_resource_reference_control WHERE id=1",
+                (rs, rowNum) -> {
+                    if (rs.getInt("deletion_enabled") == 1) return true;
+                    var cutoff = rs.getTimestamp("updated_at");
+                    return cutoff != null && file.getCreatedAt() != null
+                            && file.getCreatedAt().isAfter(cutoff.toLocalDateTime());
+                });
+        if (!Boolean.TRUE.equals(allowed))
             throw new IllegalStateException("资源引用回填尚未验证，暂不可删除或转为私有");
     }
 

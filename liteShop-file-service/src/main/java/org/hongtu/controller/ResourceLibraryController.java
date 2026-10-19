@@ -292,7 +292,7 @@ public class ResourceLibraryController {
 
     /** 同时核对历史业务 URL 和当前派生 URL，防止切换入口后误删仍被引用的文件。 */
     private void requireUnused(FileUpload record) {
-        referenceService.requireMigrationReady();
+        referenceService.requireMigrationReady(record);
         if (referenceService.count(record.getId()) > 0)
             throw new IllegalStateException("该资源仍被业务引用，请先移除关联");
         references.requireUnused(record.getUrl());
