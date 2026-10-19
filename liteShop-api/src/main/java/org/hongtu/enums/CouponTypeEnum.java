@@ -11,11 +11,12 @@ import lombok.Getter;
  * 支持的优惠券类型：
  * <ul>
  *   <li>满减券(0)：满指定金额减固定金额，如满100减20</li>
- *   <li>整单折扣券(2)：整单按比例打折，如整单85折（value=0.85）</li>
- *   <li>菜品免单券(3)：指定菜品免费，需要关联菜品</li>
+ *   <li>整单折扣券(1)：整单按比例打折，如整单85折（value=0.85）</li>
+ *   <li>菜品免单券(2)：指定菜品中任选一份免费</li>
+ *   <li>菜品折扣券(3)：指定菜品中任选一份打折</li>
  * </ul>
  * 
- * 计算优先级：菜品免单券 > 满减券 > 整单折扣券
+ * 计算优先级：菜品免单券 > 菜品折扣券 > 满减券 > 整单折扣券
  * </p>
  *
  * @author Ht
@@ -43,7 +44,10 @@ public enum CouponTypeEnum {
      * <p>指定菜品免费，需要通过 coupon_dish_item 表关联菜品</p>
      * <p>value 字段不使用</p>
      */
-    DISH_FREE(2, "菜品免单券");
+    DISH_FREE(2, "菜品免单券"),
+
+    /** 指定菜品中任选一份按折扣率优惠。 */
+    DISH_DISCOUNT(3, "菜品折扣券");
     
     @EnumValue
     private final Integer code;
@@ -101,7 +105,7 @@ public enum CouponTypeEnum {
      * @return true 表示需要关联菜品
      */
     public boolean needDishItems() {
-        return this == DISH_FREE;
+        return this == DISH_FREE || this == DISH_DISCOUNT;
     }
 
     /**
@@ -109,6 +113,6 @@ public enum CouponTypeEnum {
      * @return true 表示需要设置 value
      */
     public boolean needValue() {
-        return this == FULL_REDUCTION || this == ORDER_DISCOUNT;
+        return this == FULL_REDUCTION || this == ORDER_DISCOUNT || this == DISH_DISCOUNT;
     }
 } 

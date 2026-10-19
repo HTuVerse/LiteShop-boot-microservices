@@ -272,15 +272,18 @@ public class SysUserController {
                              @RequestParam(defaultValue = "1") int currentPage,
                              @RequestParam(defaultValue = "30") int pageSize) {
         org.hongtu.tenant.TenantContext.getTenantId();
+        String term = keyWord == null ? "" : keyWord.trim();
+        // 发券搜索禁止空条件遍历全量用户；前端至少输入两个字符。
+        if (term.length() < 2 || term.length() > 50) {
+            return Result.error("请至少输入两个搜索字符，最多50个");
+        }
         var query = new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SysUser>()
                 .select(SysUser::getId, SysUser::getUsername, SysUser::getNickname);
-        if (StrUtil.isNotBlank(keyWord)) {
-            query.and(w -> w.like(SysUser::getUsername, keyWord).or().like(SysUser::getNickname, keyWord)
-                    .or().eq(SysUser::getPhone, keyWord)
-                    .or().apply("CAST(id AS CHAR) = {0}", keyWord));
-        }
+        query.and(w -> w.like(SysUser::getUsername, term).or().like(SysUser::getNickname, term)
+                .or().likeRight(SysUser::getPhone, term)
+                .or().apply("CAST(id AS CHAR) = {0}", term));
         return Result.success(recipientMapper.selectPage(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(
-                Math.max(1, currentPage), Math.min(100, Math.max(1, pageSize))), query.orderByDesc(SysUser::getId)));
+                Math.max(1, currentPage), Math.min(20, Math.max(1, pageSize))), query.orderByDesc(SysUser::getId)));
     }
 
     /*管理员接口*/

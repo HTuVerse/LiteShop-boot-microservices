@@ -47,6 +47,16 @@ public class UserCouponVO {
      */
     private CouponTypeEnum type;
 
+    /** 适用门店，空表示全部门店。 */
+    private String storeIds;
+
+    /** 可用星期，1周一至7周日；空表示每天。 */
+    private String useWeekdays;
+
+    /** 每日可用时段，空表示全天。 */
+    private java.time.LocalTime useStartTime;
+    private java.time.LocalTime useEndTime;
+
     /**
      * 面值(折扣券存折扣率0.8)
      */

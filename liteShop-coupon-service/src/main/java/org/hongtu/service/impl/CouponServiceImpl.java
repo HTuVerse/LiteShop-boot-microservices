@@ -1,13 +1,16 @@
 package org.hongtu.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
+import org.hongtu.DAO.CouponStockAdjustmentMapper;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DTO.Coupon;
 import org.hongtu.DTO.CouponDishItem;
+import org.hongtu.DTO.CouponStockAdjustment;
 import org.hongtu.DTO.UserCoupon;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.CouponStatusEnum;
@@ -15,12 +18,15 @@ import org.hongtu.enums.CouponTypeEnum;
 import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.CouponService;
+import org.hongtu.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 import java.util.List;
 
 /**
@@ -40,6 +46,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     @Resource
     private CouponDishItemService couponDishItemService;
+
+    @Resource
+    private CouponStockAdjustmentMapper stockAdjustmentMapper;
 
     // ==================== 优惠券查询 ====================
 
@@ -68,7 +77,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     /**
      * 创建优惠券
-     * 支持类型：满减券(0)、整单折扣券(2)、菜品免单券(3)
+     * 支持满减、整单折扣、菜品免单和菜品折扣四种类型。
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -80,10 +89,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon.getType() == null) {
             return Result.error("优惠券类型不能为空");
         }
-        // 菜品免单券不需要value，其它类型必填
-        if (coupon.getType() != CouponTypeEnum.DISH_FREE && coupon.getValue() == null) {
-            return Result.error("优惠券面值/折扣率/套餐价格不能为空");
-        }
+        String ruleError = validateRules(coupon);
+        if (ruleError != null) return Result.error(ruleError);
+        if (coupon.getType() == CouponTypeEnum.DISH_FREE) coupon.setValue(java.math.BigDecimal.ZERO);
         if (coupon.getTotalCount() == null || coupon.getTotalCount() <= 0) {
             return Result.error("发放总数必须大于0");
         }
@@ -127,27 +135,28 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return Result.error("优惠券不存在");
         }
         CouponTypeEnum targetType = coupon.getType() == null ? existCoupon.getType() : coupon.getType();
-        if (targetType == CouponTypeEnum.DISH_FREE
+        if (targetType.needDishItems()
                 && (coupon.getDishItems() == null || coupon.getDishItems().isEmpty())) {
-            return Result.error("菜品免单券必须关联至少一个菜品");
+            return Result.error("菜品券必须关联至少一个菜品");
         }
+        coupon.setType(targetType);
+        String ruleError = validateRules(coupon);
+        if (ruleError != null) return Result.error(ruleError);
+        if (targetType == CouponTypeEnum.DISH_FREE) coupon.setValue(java.math.BigDecimal.ZERO);
         org.hongtu.security.OperationPermission.requireChange("marketing:coupon:status", existCoupon.getStatus(), coupon.getStatus());
-        // 如果修改了总数，需要同步调整剩余数量
+        // 库存只能通过专用增减接口修改，避免普通编辑覆盖并发发券后的库存。
         if (coupon.getTotalCount() != null && !coupon.getTotalCount().equals(existCoupon.getTotalCount())) {
-            int diff = coupon.getTotalCount() - existCoupon.getTotalCount();
-            int newRemainCount = existCoupon.getRemainCount() + diff;
-            if (newRemainCount < 0) {
-                return Result.error("调整后的库存不能小于0，当前已发放：" + (existCoupon.getTotalCount() - existCoupon.getRemainCount()));
-            }
-            coupon.setRemainCount(newRemainCount);
+            return Result.error("请通过库存调整功能增减剩余库存");
         }
+        coupon.setTotalCount(null);
+        coupon.setRemainCount(null);
         // 更新主表
         boolean updated = updateById(coupon);
         if (updated) {
             // 更新关联菜品（如果传了dishItems，则重新保存）
             if (needDishItems(targetType)) {
                 couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
-            } else if (existCoupon.getType() == CouponTypeEnum.DISH_FREE) {
+            } else if (existCoupon.getType().needDishItems()) {
                 couponDishItemService.deleteItemsByCouponId(coupon.getId());
             }
             log.info("优惠券更新成功：id={}", coupon.getId());
@@ -235,6 +244,82 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         return type != null && type.needDishItems();
     }
 
+    /** 规范化适用门店和时段，拒绝无效折扣率与不完整的使用限制。 */
+    private String validateRules(Coupon coupon) {
+        if (coupon.getType().needValue() && coupon.getValue() == null) return "优惠券面值或折扣率不能为空";
+        if (coupon.getType() == CouponTypeEnum.FULL_REDUCTION && coupon.getValue().signum() <= 0) return "满减金额必须大于0";
+        if ((coupon.getType() == CouponTypeEnum.ORDER_DISCOUNT || coupon.getType() == CouponTypeEnum.DISH_DISCOUNT)
+                && (coupon.getValue().compareTo(java.math.BigDecimal.ZERO) <= 0
+                || coupon.getValue().compareTo(java.math.BigDecimal.ONE) >= 0)) return "折扣率必须大于0且小于1";
+        if (coupon.getMinAmount() != null && coupon.getMinAmount().signum() < 0) return "最低消费不能小于0";
+        if (coupon.getStartTime() != null && coupon.getEndTime() != null
+                && !coupon.getStartTime().isBefore(coupon.getEndTime())) return "有效期结束必须晚于开始";
+        if ((coupon.getUseStartTime() == null) != (coupon.getUseEndTime() == null)) return "每日可用时段需同时填写起止时间";
+        if (coupon.getUseStartTime() != null && !coupon.getUseStartTime().isBefore(coupon.getUseEndTime()))
+            return "每日可用结束时间必须晚于开始时间";
+        try {
+            coupon.setStoreIds(normalizeIds(coupon.getStoreIds(), false));
+            coupon.setUseWeekdays(normalizeIds(coupon.getUseWeekdays(), true));
+        } catch (IllegalArgumentException e) {
+            return e.getMessage();
+        }
+        return null;
+    }
+
+    private String normalizeIds(String raw, boolean weekdays) {
+        if (!StringUtils.hasText(raw)) return "";
+        String value = Arrays.stream(raw.split(","))
+                .map(String::trim).distinct().collect(Collectors.joining(","));
+        for (String part : value.split(",")) {
+            if (!part.matches("[1-9][0-9]*")) throw new IllegalArgumentException(weekdays ? "可用星期格式错误" : "门店ID格式错误");
+            long id;
+            try { id = Long.parseLong(part); } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(weekdays ? "可用星期格式错误" : "门店ID格式错误");
+            }
+            if (weekdays && id > 7) throw new IllegalArgumentException("可用星期只能是1至7");
+        }
+        if (value.length() > (weekdays ? 13 : 2000)) throw new IllegalArgumentException("适用范围过长");
+        return value;
+    }
+
+    /** 库存增减与记录同事务提交，按旧库存条件更新以防并发覆盖。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result<Coupon> adjustStock(Long couponId, Integer delta, String reason, Long operatorId) {
+        if (couponId == null || delta == null || delta == 0 || delta == Integer.MIN_VALUE
+                || !StringUtils.hasText(reason) || reason.trim().length() > 200) {
+            return Result.error("请填写有效的库存增减数量和200字以内的原因");
+        }
+        Coupon coupon = getById(couponId);
+        if (coupon == null) return Result.error("优惠券不存在");
+        long after = (long) coupon.getRemainCount() + delta;
+        long totalAfter = (long) coupon.getTotalCount() + delta;
+        if (after < 0 || totalAfter <= 0 || after > Integer.MAX_VALUE || totalAfter > Integer.MAX_VALUE)
+            return Result.error("调整后的剩余库存或总量超出有效范围");
+        if (baseMapper.adjustStock(couponId, coupon.getRemainCount(), delta) != 1)
+            return Result.error("库存已变化，请刷新后重试");
+        CouponStockAdjustment record = new CouponStockAdjustment();
+        record.setCouponId(couponId);
+        record.setDelta(delta);
+        record.setBeforeCount(coupon.getRemainCount());
+        record.setAfterCount((int) after);
+        record.setOperatorId(operatorId);
+        record.setReason(reason.trim());
+        record.setCreateTime(LocalDateTime.now());
+        record.setTenantId(TenantContext.getTenantId());
+        stockAdjustmentMapper.insert(record);
+        return Result.success("库存调整成功", getById(couponId));
+    }
+
+    @Override
+    public Result<Page<CouponStockAdjustment>> getStockAdjustments(Long couponId, Integer currentPage, Integer pageSize) {
+        if (couponId == null || getById(couponId) == null) return Result.error("优惠券不存在");
+        Page<CouponStockAdjustment> page = new Page<>(Math.max(1, currentPage), Math.min(50, Math.max(1, pageSize)));
+        return Result.success(stockAdjustmentMapper.selectPage(page,
+                new LambdaQueryWrapper<CouponStockAdjustment>().eq(CouponStockAdjustment::getCouponId, couponId)
+                        .orderByDesc(CouponStockAdjustment::getCreateTime)));
+    }
+
     /**
      * 切换优惠券上下架状态（自动取反）
      */
@@ -263,8 +348,10 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             }
         }
         // 更新状态
-        coupon.setStatus(targetStatus);
-        boolean updated = updateById(coupon);
+        // 仅更新状态，不能用读出的旧库存覆盖同时进行的发券或补库。
+        boolean updated = baseMapper.update(null, new LambdaUpdateWrapper<Coupon>()
+                .eq(Coupon::getId, id).eq(Coupon::getStatus, currentStatus)
+                .set(Coupon::getStatus, targetStatus)) == 1;
         if (updated) {
             String message = (targetStatus == OnOrOffShelfEnum.ON_SHELF) ? "上架成功" : "下架成功";
             log.info("优惠券状态切换成功：id={}, {} -> {}", id, currentStatus.getDesc(), targetStatus.getDesc());

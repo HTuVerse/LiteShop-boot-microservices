@@ -6,8 +6,11 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaMode;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
+import cn.dev33.satoken.stp.StpUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DTO.Coupon;
+import org.hongtu.DTO.CouponStockAdjustment;
+import org.hongtu.DTO.CouponStockAdjustmentRequest;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.service.CouponService;
@@ -87,6 +90,24 @@ public class CouponController {
         
             return couponService.updateCoupon(coupon);
         
+    }
+
+    /** 按增减量调整剩余可发库存。 */
+    @PutMapping("/stock")
+    @SaCheckPermission(value = {"marketing:coupon:edit"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<Coupon> adjustStock(@RequestBody CouponStockAdjustmentRequest request) {
+        if (request == null) return Result.error("库存调整参数不能为空");
+        return couponService.adjustStock(request.getCouponId(), request.getDelta(),
+                request.getReason(), StpUtil.getLoginIdAsLong());
+    }
+
+    /** 查询指定优惠券的库存调整记录。 */
+    @GetMapping("/stock/adjustments")
+    @SaCheckPermission(value = {"marketing:coupon"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result<Page<CouponStockAdjustment>> getStockAdjustments(@RequestParam Long couponId,
+            @RequestParam(defaultValue = "1") Integer currentPage,
+            @RequestParam(defaultValue = "20") Integer pageSize) {
+        return couponService.getStockAdjustments(couponId, currentPage, pageSize);
     }
 
     /**

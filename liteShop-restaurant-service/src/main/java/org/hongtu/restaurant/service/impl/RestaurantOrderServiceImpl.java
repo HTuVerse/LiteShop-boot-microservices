@@ -399,7 +399,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             if (calcData != null && calcData.getCouponDetails() != null && !orderItems.isEmpty()) {
                 Map<String, BigDecimal> freeAmountByLine = new HashMap<>();
                 for (CouponDiscountResultVO.CouponDetailVO detail : calcData.getCouponDetails()) {
-                    if (detail.getCouponType() == CouponTypeEnum.DISH_FREE && detail.getDishItems() != null) {
+                    if (detail.getCouponType() != null && detail.getCouponType().needDishItems() && detail.getDishItems() != null) {
                         for (CouponDiscountResultVO.DishItemVO di : detail.getDishItems()) {
                             if (di.getLineKey() != null && di.getCurrentPrice() != null) {
                                 freeAmountByLine.merge(di.getLineKey(), di.getCurrentPrice(), BigDecimal::add);
@@ -1450,7 +1450,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             persistPricingAdjustments(order.getId(), newItems, pricingQuote);
         }
 
-        // 6.5 【加菜优惠券】仅支持菜品免单券，处理优惠并分摊到本批订单项的优惠金额
+        // 6.5 加菜仅支持菜品券，优惠分摊到本批订单项。
         List<Long> addItemUserCouponIds = request.getUserCouponIds();
         List<Coupon> addItemUsedCoupons = new ArrayList<>();
         if (addItemUserCouponIds != null && !addItemUserCouponIds.isEmpty() && !newItems.isEmpty()) {
@@ -1458,21 +1458,24 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             if (userId == null) {
                 throw new BusinessException("加菜使用优惠券需登录");
             }
-            // 校验：加菜只能用菜品免单券（Feign 批量查询 coupon-service）
+            // 加菜只允许菜品免单和菜品折扣券。
             List<UserCoupon> addItemUserCoupons = FeignResultUtil.unwrap(couponFeignClient.getUserCouponsByIds(addItemUserCouponIds));
             List<Long> addItemCouponIds = addItemUserCoupons.stream()
                     .map(UserCoupon::getCouponId)
                     .collect(Collectors.toList());
             List<Coupon> addItemCoupons = FeignResultUtil.unwrap(couponFeignClient.getCouponsByIds(addItemCouponIds));
             for (Coupon c : addItemCoupons) {
-                if (c.getType() != CouponTypeEnum.DISH_FREE) {
-                    throw new BusinessException("加菜仅支持使用菜品免单券，无法使用其它类型优惠券");
+                if (!c.getType().needDishItems()) {
+                    throw new BusinessException("加菜仅支持使用菜品券，无法使用其它类型优惠券");
                 }
                 addItemUsedCoupons.add(c);
             }
-            // 按本批加菜金额计算优惠（仅菜品免单券会产生折扣）
+            // 按本批加菜金额计算菜品券优惠。
+            // 门槛按加菜后的整单金额判断，抵扣仍只落在本批实购菜品上。
+            BigDecimal fullOrderAmount = (order.getTotalAmount() == null ? BigDecimal.ZERO
+                    : order.getTotalAmount()).add(addAmount);
             Result calcResult = calcCouponDiscountWithLines(userId, addItemUserCouponIds,
-                    addAmount, order.getStoreId(), couponLines(newItems));
+                    fullOrderAmount, order.getStoreId(), couponLines(newItems));
             CouponDiscountResultVO calcData = (CouponDiscountResultVO) (calcResult != null ? calcResult.getData() : null);
             if (calcData == null || !Boolean.TRUE.equals(calcData.getUsable())) {
                 throw new BusinessException("优惠券不可用：" + (calcData != null ? calcData.getReason() : "未知"));
@@ -1481,7 +1484,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             Map<String, BigDecimal> freeAmountByLine = new HashMap<>();
             if (calcData.getCouponDetails() != null) {
                 for (CouponDiscountResultVO.CouponDetailVO detail : calcData.getCouponDetails()) {
-                    if (detail.getCouponType() == CouponTypeEnum.DISH_FREE && detail.getDishItems() != null) {
+                    if (detail.getCouponType() != null && detail.getCouponType().needDishItems() && detail.getDishItems() != null) {
                         for (CouponDiscountResultVO.DishItemVO di : detail.getDishItems()) {
                             if (di.getLineKey() != null && di.getCurrentPrice() != null) {
                                 freeAmountByLine.merge(di.getLineKey(), di.getCurrentPrice(), BigDecimal::add);
@@ -2716,14 +2719,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
     /**
      * 获取优惠券计算优先级（数值越小越先计算）
-     * 计算顺序：菜品免单券(1) > 满减券(2) > 整单折扣券(3)
+     * 计算顺序：菜品免单券 > 菜品折扣券 > 满减券 > 整单折扣券。
      */
     private int getCouponPriority(CouponTypeEnum type) {
         if (type == null) return 99;
         return switch (type) {
-            case DISH_FREE -> 1;       // 菜品免单最先
-            case FULL_REDUCTION -> 2;  // 满减
-            case ORDER_DISCOUNT -> 3;  // 整单折扣最后
+            case DISH_FREE -> 1;
+            case DISH_DISCOUNT -> 2;
+            case FULL_REDUCTION -> 3;
+            case ORDER_DISCOUNT -> 4;
         };
     }
 
@@ -2899,12 +2903,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             Map<Long, Coupon> couponMap = coupons.stream()
                     .collect(Collectors.toMap(Coupon::getId, c -> c));
 
-            // 5. 按优先级排序：菜品免单券 > 满减券 > 整单折扣券
+            // 5. 菜品券先于整单券，避免整单折扣先耗尽可抵扣金额。
             List<UserCoupon> sortedUserCoupons = new ArrayList<>(userCoupons);
             sortedUserCoupons.sort((a, b) -> {
                 Coupon ca = couponMap.get(a.getCouponId());
                 Coupon cb = couponMap.get(b.getCouponId());
-                return getCouponPriority(ca.getType()) - getCouponPriority(cb.getType());
+                return getCouponPriority(ca == null ? null : ca.getType())
+                        - getCouponPriority(cb == null ? null : cb.getType());
             });
 
             // 6. 递减计算各优惠券的优惠金额（整单折扣基于前面券折扣后的剩余金额）
@@ -2919,6 +2924,31 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                             .reason("优惠券信息不存在").build());
                 }
 
+                // 模板限制实时生效，结算试算与下单共用此处校验。
+                if ((coupon.getStartTime() != null && now.isBefore(coupon.getStartTime()))
+                        || (coupon.getEndTime() != null && now.isAfter(coupon.getEndTime()))) {
+                    return Result.success(CouponDiscountResultVO.builder().usable(false)
+                            .reason("优惠券「" + coupon.getName() + "」不在有效期内").build());
+                }
+                if (coupon.getStoreIds() != null && !coupon.getStoreIds().isBlank()
+                        && (storeId == null || !List.of(coupon.getStoreIds().split(","))
+                        .contains(String.valueOf(storeId)))) {
+                    return Result.success(CouponDiscountResultVO.builder().usable(false)
+                            .reason("优惠券「" + coupon.getName() + "」不适用于当前门店").build());
+                }
+                if (coupon.getUseWeekdays() != null && !coupon.getUseWeekdays().isBlank()
+                        && !List.of(coupon.getUseWeekdays().split(","))
+                        .contains(String.valueOf(now.getDayOfWeek().getValue()))) {
+                    return Result.success(CouponDiscountResultVO.builder().usable(false)
+                            .reason("优惠券「" + coupon.getName() + "」今天不可用").build());
+                }
+                if (coupon.getUseStartTime() != null && coupon.getUseEndTime() != null
+                        && (now.toLocalTime().isBefore(coupon.getUseStartTime())
+                        || !now.toLocalTime().isBefore(coupon.getUseEndTime()))) {
+                    return Result.success(CouponDiscountResultVO.builder().usable(false)
+                            .reason("优惠券「" + coupon.getName() + "」不在可用时段").build());
+                }
+
                 // 最低消费按整单优惠前金额判断，所有券类型使用相同口径。
                 BigDecimal minAmount = coupon.getMinAmount() == null ? BigDecimal.ZERO : coupon.getMinAmount();
                 if (orderTotalAmount.compareTo(minAmount) < 0) {
@@ -2929,13 +2959,16 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 // 计算优惠金额（根据券类型和剩余金额）
                 CouponOrderLine freeLine = null;
                 BigDecimal discountAmount;
-                if (coupon.getType() == CouponTypeEnum.DISH_FREE) {
+                if (coupon.getType().needDishItems()) {
                     freeLine = chooseFreeDishLine(coupon, orderLines);
                     if (freeLine == null) {
                         return Result.success(CouponDiscountResultVO.builder().usable(false)
-                                .reason("订单中没有优惠券「" + coupon.getName() + "」可免单的菜品").build());
+                                .reason("订单中没有优惠券「" + coupon.getName() + "」适用的菜品").build());
                     }
-                    discountAmount = freeLine.unitPayable.min(remainingAmount);
+                    discountAmount = coupon.getType() == CouponTypeEnum.DISH_FREE
+                            ? freeLine.unitPayable.min(remainingAmount)
+                            : freeLine.unitPayable.multiply(BigDecimal.ONE.subtract(coupon.getValue()))
+                                    .setScale(2, RoundingMode.DOWN).min(remainingAmount);
                     freeLine.remainingQuantity--;
                 } else {
                     discountAmount = calculateCouponDiscountAmount(coupon, remainingAmount);
@@ -3022,7 +3055,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 yield discountAmount.setScale(2, RoundingMode.DOWN);
             }
 
-            case DISH_FREE -> BigDecimal.ZERO;
+            case DISH_FREE, DISH_DISCOUNT -> BigDecimal.ZERO;
         };
     }
 

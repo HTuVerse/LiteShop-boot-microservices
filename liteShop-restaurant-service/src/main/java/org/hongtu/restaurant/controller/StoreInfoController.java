@@ -55,7 +55,7 @@ public class StoreInfoController {
      * @return 分页门店列表
      */
     @GetMapping("/pageList")
-    @SaCheckPermission(value = {"restaurant:store", "restaurant:category", "restaurant:dish", "restaurant:table", "restaurant:order", "restaurant:printer", "restaurant:analysis", "system:user-store", "operations:direct-cashier", "operations:table-cashier", "operations:console", "operations:templates"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    @SaCheckPermission(value = {"restaurant:store", "restaurant:category", "restaurant:dish", "restaurant:table", "restaurant:order", "restaurant:printer", "restaurant:analysis", "system:user-store", "operations:direct-cashier", "operations:table-cashier", "operations:console", "operations:templates", "marketing:coupon"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Page<StoreInfo>> getStorePage(
             @RequestParam(defaultValue = "1") Integer currentPage,
             @RequestParam(defaultValue = "10") Integer pageSize,

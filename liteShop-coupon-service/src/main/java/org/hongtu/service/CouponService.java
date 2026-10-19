@@ -3,6 +3,7 @@ package org.hongtu.service;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.IService;
 import org.hongtu.DTO.Coupon;
+import org.hongtu.DTO.CouponStockAdjustment;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.OnOrOffShelfEnum;
 
@@ -39,6 +40,12 @@ public interface CouponService extends IService<Coupon> {
      * @return 更新结果
      */
     Result<Coupon> updateCoupon(Coupon coupon);
+
+    /** 调整剩余可发库存并写入操作记录。 */
+    Result<Coupon> adjustStock(Long couponId, Integer delta, String reason, Long operatorId);
+
+    /** 分页读取库存调整记录。 */
+    Result<Page<CouponStockAdjustment>> getStockAdjustments(Long couponId, Integer currentPage, Integer pageSize);
 
     /**
      * 删除优惠券

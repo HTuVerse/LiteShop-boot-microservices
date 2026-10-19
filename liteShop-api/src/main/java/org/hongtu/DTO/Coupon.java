@@ -3,6 +3,7 @@ package org.hongtu.DTO;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -16,6 +17,7 @@ import org.hongtu.enums.OnOrOffShelfEnum;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
 
 /**
@@ -52,7 +54,7 @@ public class Coupon implements Serializable {
 
     /**
      * 优惠券类型
-     * 0:满减券, 1:整单折扣券, 2:菜品免单券
+     * 0:满减券, 1:整单折扣券, 2:菜品免单券, 3:菜品折扣券
      */
     private CouponTypeEnum type;
 
@@ -61,13 +63,30 @@ public class Coupon implements Serializable {
      * - 满减券: 减免金额（如20=减20元）
      * - 整单折扣券: 折扣率（如0.85=85折）
      * - 菜品免单券: 不使用（可为0）
+     * - 菜品折扣券: 折扣率（如0.85=85折），每单限一份
      */
     private BigDecimal value;
 
     /**
-     * 最低消费金额（满减券、整单折扣券使用）
+     * 最低消费金额，按优惠前整单金额判断。
      */
     private BigDecimal minAmount;
+
+    /** 适用门店ID，逗号分隔；为空表示全部门店。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String storeIds;
+
+    /** 可用星期，1=周一至7=周日，逗号分隔；为空表示每天。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String useWeekdays;
+
+    /** 每日可用时段起点；与结束时间同时为空表示全天。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalTime useStartTime;
+
+    /** 每日可用时段终点。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalTime useEndTime;
 
     /**
      * 发放总数

@@ -20,9 +20,13 @@ CREATE TABLE `coupon` (
   `id` bigint NOT NULL COMMENT '优惠券ID（雪花ID）',
   `name` varchar(100) NOT NULL COMMENT '优惠券名称',
   `description` text NULL COMMENT '描述',
-  `type` tinyint NOT NULL DEFAULT 0 COMMENT '类型(0:满减券, 1:整单折扣券, 2:菜品免单券)',
+  `type` tinyint NOT NULL DEFAULT 0 COMMENT '类型(0:满减券, 1:整单折扣券, 2:菜品免单券, 3:菜品折扣券)',
   `value` decimal(10, 2) NOT NULL COMMENT '面值(折扣券存折扣率0.8)',
   `min_amount` decimal(10, 2) NULL DEFAULT NULL COMMENT '最低消费金额',
+  `store_ids` varchar(2000) NULL COMMENT '适用门店ID，逗号分隔；空表示全部门店',
+  `use_weekdays` varchar(13) NULL COMMENT '可用星期，1周一至7周日，逗号分隔；空表示每天',
+  `use_start_time` time NULL COMMENT '每日可用开始时间；空表示全天',
+  `use_end_time` time NULL COMMENT '每日可用结束时间；空表示全天',
   `total_count` int NOT NULL COMMENT '发放总数',
   `remain_count` int NOT NULL COMMENT '剩余数量',
   `start_time` datetime NULL DEFAULT NULL COMMENT '有效期开始',
@@ -36,6 +40,24 @@ CREATE TABLE `coupon` (
   INDEX `idx_tenant_status`(`tenant_id`, `status`),
   INDEX `idx_tenant_status_end` (`tenant_id`, `status`, `end_time`)
 ) ENGINE = InnoDB COMMENT = '优惠券';
+
+-- ----------------------------
+-- 优惠券剩余可发库存调整记录
+-- ----------------------------
+DROP TABLE IF EXISTS `coupon_stock_adjustment`;
+CREATE TABLE `coupon_stock_adjustment` (
+  `id` bigint NOT NULL COMMENT '调整记录ID',
+  `coupon_id` bigint NOT NULL COMMENT '优惠券ID',
+  `delta` int NOT NULL COMMENT '剩余可发库存变动量，正数补库，负数减库，单位张',
+  `before_count` int NOT NULL COMMENT '调整前剩余可发库存，单位张',
+  `after_count` int NOT NULL COMMENT '调整后剩余可发库存，单位张',
+  `operator_id` bigint NOT NULL COMMENT '操作管理员ID',
+  `reason` varchar(200) NOT NULL COMMENT '调整原因',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '调整时间',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_coupon_time` (`tenant_id`, `coupon_id`, `create_time`)
+) ENGINE=InnoDB COMMENT='优惠券剩余可发库存调整记录';
 
 -- ----------------------------
 -- 优惠券-菜品关联表（套餐券/团购券/菜品券的菜品明细）

@@ -130,11 +130,15 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                     vo.setType(coupon.getType());
                     vo.setValue(coupon.getValue());
                     vo.setMinAmount(coupon.getMinAmount());
+                    vo.setStoreIds(coupon.getStoreIds());
+                    vo.setUseWeekdays(coupon.getUseWeekdays());
+                    vo.setUseStartTime(coupon.getUseStartTime());
+                    vo.setUseEndTime(coupon.getUseEndTime());
                     // 设置叠加规则字段
                     vo.setStackable(coupon.getStackable());
                     vo.setExclusiveGroup(coupon.getExclusiveGroup());
                     // 只有菜品免单券需要关联菜品
-                    if (coupon.getType() == CouponTypeEnum.DISH_FREE) {
+                    if (coupon.getType().needDishItems()) {
                         vo.setDishItems(couponDishItemService.getItemsByCouponId(coupon.getId()));
                     }
                 }
