@@ -244,7 +244,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         Coupon template = couponMapper.selectById(couponId);
         if (template == null) return Result.error("优惠券模板不存在");
         if (couponMapper.recallTemplate(couponId) != 1) return Result.error("该模板已批量回收，请刷新后重试");
-        List<UserCoupon> items = userCouponMapper.selectList(revocableQuery(couponId));
+        // 锁定读取取最新已提交的券，避免 REPEATABLE READ 的旧快照漏掉刚发放的券。
+        List<UserCoupon> items = userCouponMapper.selectList(revocableQuery(couponId).last("FOR UPDATE"));
         String batchId = UUID.randomUUID().toString();
         int revoked = 0;
         for (UserCoupon item : items) {
