@@ -33,13 +33,22 @@ CREATE TABLE `coupon` (
   `end_time` datetime NULL DEFAULT NULL COMMENT '有效期结束',
   `status` tinyint NOT NULL DEFAULT 1 COMMENT '状态(0:下架,1:上架)',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `stackable` tinyint NULL DEFAULT 1 COMMENT '是否可叠加(0不可,1可)',
+  `stackable` tinyint NULL DEFAULT 0 COMMENT '是否可叠加(0不可,1可；还需存在明确配对)',
   `exclusive_group` int NULL DEFAULT NULL COMMENT '互斥组ID(同组互斥)',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),
   INDEX `idx_tenant_status`(`tenant_id`, `status`),
   INDEX `idx_tenant_status_end` (`tenant_id`, `status`, `end_time`)
 ) ENGINE = InnoDB COMMENT = '优惠券';
+
+-- 两张券只有配置明确配对、且双方均允许叠加时才能同单使用。
+CREATE TABLE `coupon_stack_pair` (
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `coupon_id_low` bigint NOT NULL COMMENT '两张券中较小的券模板ID',
+  `coupon_id_high` bigint NOT NULL COMMENT '两张券中较大的券模板ID',
+  PRIMARY KEY (`tenant_id`, `coupon_id_low`, `coupon_id_high`),
+  INDEX `idx_stack_high` (`tenant_id`, `coupon_id_high`)
+) ENGINE = InnoDB COMMENT = '优惠券允许叠加配对表';
 
 -- ----------------------------
 -- 优惠券剩余可发库存调整记录
@@ -87,7 +96,7 @@ CREATE TABLE `user_coupon` (
   `obtain_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '领取时间',
   `use_time` datetime NULL DEFAULT NULL COMMENT '使用时间',
   `start_time` datetime NULL DEFAULT NULL COMMENT '开始时间',
-  `expire_time` datetime NOT NULL COMMENT '过期时间',
+  `expire_time` datetime NULL COMMENT '过期时间；空表示长期有效',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),
   INDEX `idx_user_status`(`user_id`, `status`),

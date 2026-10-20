@@ -105,4 +105,10 @@ public class UserCouponVO {
      * 互斥组ID（同组互斥）
      */
     private String exclusiveGroup;
+
+    /** 当前券可与哪些券模板叠加；是否真正可用仍以订单试算为准。 */
+    private List<Long> stackWithCouponIds;
+
+    /** 面向顾客展示的可叠加券名称。 */
+    private List<String> stackWithCouponNames;
 }

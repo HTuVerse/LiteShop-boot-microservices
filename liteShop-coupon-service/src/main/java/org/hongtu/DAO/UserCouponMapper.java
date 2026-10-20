@@ -20,7 +20,8 @@ import java.time.LocalDateTime;
 @Mapper
 public interface UserCouponMapper extends BaseMapper<UserCoupon> {
 
-    @Select("SELECT count(*) FROM user_coupon WHERE user_id = #{userId} AND status IN (0, 1) AND expire_time > NOW()")
+    @Select("SELECT count(*) FROM user_coupon WHERE user_id = #{userId} AND status IN (0, 1) " +
+            "AND (expire_time IS NULL OR expire_time > NOW())")
     Long getUserTotalCoupons(@Param("userId") Long userId);
 
     /**
@@ -38,7 +39,7 @@ public interface UserCouponMapper extends BaseMapper<UserCoupon> {
      * @return 更新的记录数
      */
     @Update("UPDATE user_coupon SET status = 1 " +
-            "WHERE status = 0 AND start_time <= NOW() AND expire_time > NOW()")
+            "WHERE status = 0 AND start_time <= NOW() AND (expire_time IS NULL OR expire_time > NOW())")
     int batchUpdateEffectiveStatus();
 
     /**

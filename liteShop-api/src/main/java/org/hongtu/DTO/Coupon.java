@@ -109,6 +109,7 @@ public class Coupon implements Serializable {
      * 有效期结束
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime endTime;
 
     /**
@@ -126,12 +127,12 @@ public class Coupon implements Serializable {
      */
     private BooleanEnum stackable;
 
-    /**
-     * 互斥组ID
-     * 同一组的优惠券互斥，不能同时使用（如：所有整单折扣券设为同一组）
-     * 为空表示无互斥规则
-     */
+    /** 同组券互斥；为空表示只按明确的配对关系判断。 */
     private String exclusiveGroup;
+
+    /** 明确允许一起使用的其他券模板 ID；配对关系单独存表。 */
+    @TableField(exist = false)
+    private List<Long> stackWithCouponIds;
 
     /**
      * 关联的菜品列表（非持久化字段）

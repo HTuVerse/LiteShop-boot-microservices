@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
+import org.hongtu.DAO.CouponStackPairMapper;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.api.client.UserFeignClient;
@@ -50,6 +51,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
     UserFeignClient userFeignClient;
     @Resource
     CouponDishItemService couponDishItemService;
+    @Resource
+    CouponStackPairMapper stackPairMapper;
     @Resource
     VerifyRecordMapper verifyRecordMapper;
 
@@ -110,6 +113,18 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             // 创建优惠券ID到优惠券对象的映射，方便后续查找
             Map<Long, Coupon> couponMap = coupons.stream()
                     .collect(Collectors.toMap(Coupon::getId, coupon -> coupon));
+            // 一页内批量解析配对券名称，避免顾客端只看到内部 ID。
+            Map<Long, List<Long>> stackPartners = new HashMap<>();
+            Set<Long> partnerIds = new HashSet<>();
+            Long tenantId = org.hongtu.tenant.TenantContext.getTenantId();
+            for (Coupon coupon : coupons) {
+                List<Long> ids = stackPairMapper.listPartnerIds(tenantId, coupon.getId());
+                stackPartners.put(coupon.getId(), ids);
+                partnerIds.addAll(ids);
+            }
+            Map<Long, String> partnerNames = partnerIds.isEmpty() ? Map.of()
+                    : couponMapper.selectByIds(partnerIds).stream()
+                    .collect(Collectors.toMap(Coupon::getId, Coupon::getName));
             // 转换为VO对象
             for (UserCoupon userCoupon : userCouponPage.getRecords()) {
                 UserCouponVO vo = new UserCouponVO();
@@ -140,6 +155,10 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                     // 设置叠加规则字段
                     vo.setStackable(coupon.getStackable());
                     vo.setExclusiveGroup(coupon.getExclusiveGroup());
+                    List<Long> allowedIds = stackPartners.getOrDefault(coupon.getId(), List.of());
+                    vo.setStackWithCouponIds(allowedIds);
+                    vo.setStackWithCouponNames(allowedIds.stream().map(partnerNames::get)
+                            .filter(Objects::nonNull).collect(Collectors.toList()));
                     // 只有菜品免单券需要关联菜品
                     if (coupon.getType().needDishItems()) {
                         vo.setDishItems(couponDishItemService.getItemsByCouponId(coupon.getId()));
@@ -198,15 +217,15 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             if (startTime == null && coupon.getStartTime() != null && coupon.getStartTime().isAfter(couponStartTime)) {
                 couponStartTime = coupon.getStartTime();
             }
-            LocalDateTime couponExpireTime = expiredTime == null ? couponStartTime.plusDays(3) : LocalDateTimeUtil.of(expiredTime);
-            if (expiredTime == null && coupon.getEndTime() != null && coupon.getEndTime().isBefore(couponExpireTime)) {
-                couponExpireTime = coupon.getEndTime();
-            }
-            if (!couponExpireTime.isAfter(couponStartTime) || !couponExpireTime.isAfter(now)) {
+            // 未单独指定截止时间时沿用券模板：模板长期有效则用户券也长期有效。
+            LocalDateTime couponExpireTime = expiredTime == null ? coupon.getEndTime() : LocalDateTimeUtil.of(expiredTime);
+            if (couponExpireTime != null && (!couponExpireTime.isAfter(couponStartTime)
+                    || !couponExpireTime.isAfter(now))) {
                 return Result.error("过期时间必须晚于生效时间及当前时间");
             }
             if ((coupon.getStartTime() != null && couponStartTime.isBefore(coupon.getStartTime()))
-                    || (coupon.getEndTime() != null && couponExpireTime.isAfter(coupon.getEndTime()))) {
+                    || (coupon.getEndTime() != null && couponExpireTime != null
+                    && couponExpireTime.isAfter(coupon.getEndTime()))) {
                 return Result.error("发放有效期必须在优惠券的有效期范围内");
             }
             // 检查库存是否充足
@@ -539,93 +558,58 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
 
         // 批量查询用户优惠券
         List<UserCoupon> userCoupons = userCouponMapper.selectByIds(userCouponIds);
-        if (userCoupons.isEmpty()) {
+        if (userCoupons.size() != userCouponIds.size()) {
             throw new BusinessException(400, "优惠券不存在");
         }
 
         // 批量查询优惠券详情
         List<Long> couponIds = userCoupons.stream()
                 .map(UserCoupon::getCouponId).collect(Collectors.toList());
+        if (new HashSet<>(couponIds).size() != couponIds.size()) {
+            throw new BusinessException(400, "同一种优惠券每单只能使用一张");
+        }
         List<Coupon> coupons = couponMapper.selectByIds(couponIds);
 
         if (coupons.size() != couponIds.size()) {
             throw new BusinessException(400, "部分优惠券信息不存在");
         }
 
-        // 构建优惠券ID到优惠券的映射
-        Map<Long, Coupon> couponMap = coupons.stream()
-                .collect(Collectors.toMap(Coupon::getId, c -> c));
-
         // 1. 检查是否有不可叠加的券
         for (Coupon coupon : coupons) {
             BooleanEnum stackable = coupon.getStackable();
-            // stackable 为 null 或 YES(1) 表示可叠加，NO(0) 表示不可叠加
-            if (stackable != null && stackable == BooleanEnum.NO) {
+            if (stackable != BooleanEnum.YES) {
                 throw new BusinessException(400, "优惠券「" + coupon.getName() + "」不可与其他优惠券叠加使用");
             }
         }
 
-        // 2. 检查互斥冲突（exclusiveGroup 存储的是互斥的优惠券ID列表，如 "1,2,3"）
+        // 无向配对由后台维护：每两张券必须有明确关系，未配置的组合默认不可叠加。
+        Long tenantId = org.hongtu.tenant.TenantContext.getTenantId();
+        for (Coupon coupon : coupons) {
+            Set<Long> partners = new HashSet<>(stackPairMapper.listPartnerIds(tenantId, coupon.getId()));
+            for (Coupon other : coupons) {
+                if (!coupon.getId().equals(other.getId()) && !partners.contains(other.getId())) {
+                    throw new BusinessException(400, "优惠券「" + coupon.getName()
+                            + "」与「" + other.getName() + "」未配置为可叠加");
+                }
+            }
+        }
+
+        // 2. 旧互斥组仍生效：相同组号的券不能同单使用。
         for (Coupon coupon : coupons) {
             String exclusiveGroup = coupon.getExclusiveGroup();
             if (exclusiveGroup == null || exclusiveGroup.trim().isEmpty()) {
                 continue;
             }
-            // 解析互斥的优惠券ID列表
-            Set<Long> exclusiveIds = parseExclusiveGroup(exclusiveGroup);
-            // 检查是否有其他选中的优惠券在互斥列表中
             for (Coupon otherCoupon : coupons) {
-                if (!coupon.getId().equals(otherCoupon.getId()) && exclusiveIds.contains(otherCoupon.getId())) {
+                if (!coupon.getId().equals(otherCoupon.getId())
+                        && exclusiveGroup.equals(otherCoupon.getExclusiveGroup())) {
                     throw new BusinessException(400,
                             "优惠券「" + coupon.getName() + "」与「" + otherCoupon.getName() + "」互斥，不能同时使用");
                 }
             }
         }
 
-        // 3. 满减券和整单折扣券同类型互斥（菜品免单券不参与同类型互斥，可叠加多张）
-        Map<CouponTypeEnum, List<Coupon>> typeGroups = new HashMap<>();
-        for (Coupon coupon : coupons) {
-            CouponTypeEnum type = coupon.getType();
-            // 只有满减券和整单折扣券参与同类型互斥校验
-            if (type == CouponTypeEnum.FULL_REDUCTION || type == CouponTypeEnum.ORDER_DISCOUNT) {
-                typeGroups.computeIfAbsent(type, k -> new ArrayList<>()).add(coupon);
-            }
-        }
-
-        for (Map.Entry<CouponTypeEnum, List<Coupon>> entry : typeGroups.entrySet()) {
-            if (entry.getValue().size() > 1) {
-                List<String> conflictNames = entry.getValue().stream()
-                        .map(Coupon::getName)
-                        .collect(Collectors.toList());
-                throw new BusinessException(400,
-                        "同类型优惠券「" + String.join("」和「", conflictNames) + "」不能同时使用，请只选择一张");
-            }
-        }
-
         log.info("优惠券叠加规则校验通过 - userCouponIds: {}", userCouponIds);
     }
 
-    /**
-     * 解析互斥组字符串，转为优惠券ID集合
-     * @param exclusiveGroup 逗号分隔的优惠券ID字符串，如 "1,2,3"
-     * @return 优惠券ID集合
-     */
-    private Set<Long> parseExclusiveGroup(String exclusiveGroup) {
-        Set<Long> ids = new HashSet<>();
-        if (exclusiveGroup == null || exclusiveGroup.trim().isEmpty()) {
-            return ids;
-        }
-        String[] parts = exclusiveGroup.split(",");
-        for (String part : parts) {
-            String trimmed = part.trim();
-            if (!trimmed.isEmpty()) {
-                try {
-                    ids.add(Long.parseLong(trimmed));
-                } catch (NumberFormatException e) {
-                    log.warn("互斥组包含无效的优惠券ID: {}", trimmed);
-                }
-            }
-        }
-        return ids;
-    }
 }

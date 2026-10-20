@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
 import org.hongtu.DAO.CouponStockAdjustmentMapper;
+import org.hongtu.DAO.CouponStackPairMapper;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DTO.Coupon;
 import org.hongtu.DTO.CouponDishItem;
@@ -15,6 +16,7 @@ import org.hongtu.DTO.UserCoupon;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.CouponStatusEnum;
 import org.hongtu.enums.CouponTypeEnum;
+import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.CouponService;
@@ -26,6 +28,7 @@ import org.springframework.util.StringUtils;
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.stream.Collectors;
 import java.util.List;
 
@@ -49,6 +52,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     @Resource
     private CouponStockAdjustmentMapper stockAdjustmentMapper;
+
+    @Resource
+    private CouponStackPairMapper stackPairMapper;
 
     // ==================== 优惠券查询 ====================
 
@@ -91,6 +97,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         }
         String ruleError = validateRules(coupon);
         if (ruleError != null) return Result.error(ruleError);
+        if (coupon.getStackable() == null) coupon.setStackable(BooleanEnum.NO);
+        String stackError = validateStackPartners(coupon);
+        if (stackError != null) return Result.error(stackError);
         if (coupon.getType() == CouponTypeEnum.DISH_FREE) coupon.setValue(java.math.BigDecimal.ZERO);
         if (coupon.getTotalCount() == null || coupon.getTotalCount() <= 0) {
             return Result.error("发放总数必须大于0");
@@ -114,6 +123,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             if (needDishItems(coupon.getType()) && coupon.getDishItems() != null) {
                 couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
             }
+            saveStackPartners(coupon.getId(), coupon.getStackWithCouponIds());
             log.info("优惠券创建成功：id={}, name={}, type={}", coupon.getId(), coupon.getName(), coupon.getType());
             return Result.success("创建成功", coupon);
         }
@@ -140,8 +150,11 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return Result.error("菜品券必须关联至少一个菜品");
         }
         coupon.setType(targetType);
+        if (coupon.getStackable() == null) coupon.setStackable(existCoupon.getStackable());
         String ruleError = validateRules(coupon);
         if (ruleError != null) return Result.error(ruleError);
+        String stackError = validateStackPartners(coupon);
+        if (stackError != null) return Result.error(stackError);
         if (targetType == CouponTypeEnum.DISH_FREE) coupon.setValue(java.math.BigDecimal.ZERO);
         org.hongtu.security.OperationPermission.requireChange("marketing:coupon:status", existCoupon.getStatus(), coupon.getStatus());
         // 库存只能通过专用增减接口修改，避免普通编辑覆盖并发发券后的库存。
@@ -159,10 +172,14 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             } else if (existCoupon.getType().needDishItems()) {
                 couponDishItemService.deleteItemsByCouponId(coupon.getId());
             }
+            if (coupon.getStackWithCouponIds() != null || coupon.getStackable() != BooleanEnum.YES) {
+                saveStackPartners(coupon.getId(), coupon.getStackWithCouponIds());
+            }
             log.info("优惠券更新成功：id={}", coupon.getId());
             // 查询完整数据返回
             Coupon result = getById(coupon.getId());
             result.setDishItems(couponDishItemService.getItemsByCouponId(coupon.getId()));
+            result.setStackWithCouponIds(stackPairMapper.listPartnerIds(TenantContext.getTenantId(), coupon.getId()));
             return Result.success("更新成功", result);
         }
         return Result.error("更新失败");
@@ -192,6 +209,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         }
         // 删除关联菜品
         couponDishItemService.deleteItemsByCouponId(id);
+        stackPairMapper.deleteByCouponId(TenantContext.getTenantId(), id);
         // 删除优惠券
         boolean removed = removeById(id);
         if (removed) {
@@ -217,6 +235,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (needDishItems(coupon.getType())) {
             coupon.setDishItems(couponDishItemService.getItemsByCouponId(id));
         }
+        coupon.setStackWithCouponIds(stackPairMapper.listPartnerIds(TenantContext.getTenantId(), id));
         return Result.success(coupon);
     }
 
@@ -246,6 +265,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     /** 规范化适用门店和时段，拒绝无效折扣率与不完整的使用限制。 */
     private String validateRules(Coupon coupon) {
+        if (coupon.getStartTime() == null) return "请选择优惠券生效时间";
         if (coupon.getType().needValue() && coupon.getValue() == null) return "优惠券面值或折扣率不能为空";
         if (coupon.getType() == CouponTypeEnum.FULL_REDUCTION && coupon.getValue().signum() <= 0) return "满减金额必须大于0";
         if ((coupon.getType() == CouponTypeEnum.ORDER_DISCOUNT || coupon.getType() == CouponTypeEnum.DISH_DISCOUNT)
@@ -264,6 +284,34 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return e.getMessage();
         }
         return null;
+    }
+
+    /** 配对按券模板 ID 维护；两端共用一条记录，禁止跨租户或与不可叠加券配对。 */
+    private String validateStackPartners(Coupon coupon) {
+        List<Long> ids = coupon.getStackWithCouponIds();
+        if (ids == null || ids.isEmpty()) return null;
+        if (coupon.getStackable() != BooleanEnum.YES) return "选择可叠加优惠券前，请先开启叠加使用";
+        if (ids.size() > 50 || new HashSet<>(ids).size() != ids.size()) return "可叠加优惠券不能重复且最多选择50张";
+        for (Long id : ids) {
+            if (id == null || id <= 0 || id.equals(coupon.getId())) return "可叠加优惠券ID无效";
+            Coupon partner = getById(id);
+            if (partner == null) return "选择的可叠加优惠券不存在或不属于当前租户";
+            if (partner.getStackable() != BooleanEnum.YES) return "优惠券「" + partner.getName() + "」未开启叠加使用";
+            if (StringUtils.hasText(coupon.getExclusiveGroup())
+                    && coupon.getExclusiveGroup().equals(partner.getExclusiveGroup()))
+                return "相同互斥组的优惠券不能配置为可叠加";
+        }
+        return null;
+    }
+
+    /** 删除旧关系后保存新的无向配对，单张券解除配对会同步影响另一端。 */
+    private void saveStackPartners(Long couponId, List<Long> partnerIds) {
+        Long tenantId = TenantContext.getTenantId();
+        stackPairMapper.deleteByCouponId(tenantId, couponId);
+        if (partnerIds == null) return;
+        for (Long partnerId : partnerIds) {
+            stackPairMapper.insertPair(tenantId, Math.min(couponId, partnerId), Math.max(couponId, partnerId));
+        }
     }
 
     private String normalizeIds(String raw, boolean weekdays) {
