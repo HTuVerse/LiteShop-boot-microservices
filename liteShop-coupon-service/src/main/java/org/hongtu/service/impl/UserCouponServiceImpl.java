@@ -134,6 +134,9 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                     vo.setUseWeekdays(coupon.getUseWeekdays());
                     vo.setUseStartTime(coupon.getUseStartTime());
                     vo.setUseEndTime(coupon.getUseEndTime());
+                    // 结算页需同时展示领券有效期与券模板有效期。
+                    vo.setTemplateStartTime(coupon.getStartTime());
+                    vo.setTemplateEndTime(coupon.getEndTime());
                     // 设置叠加规则字段
                     vo.setStackable(coupon.getStackable());
                     vo.setExclusiveGroup(coupon.getExclusiveGroup());

@@ -82,6 +82,10 @@ public class UserCouponVO {
      * 有效期结束
      */
     private LocalDateTime expireTime;
+
+    /** 券模板的有效期，可能比用户领券有效期更短。 */
+    private LocalDateTime templateStartTime;
+    private LocalDateTime templateEndTime;
     /**
      * 优惠券唯一码
      */
