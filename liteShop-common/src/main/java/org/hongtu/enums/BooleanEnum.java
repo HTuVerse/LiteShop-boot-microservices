@@ -53,19 +53,23 @@ public enum BooleanEnum {
         return null;
     }
 
-    /**
-     * 告诉 Jackson 根据 code 字段反序列化
-     * */
-    @JsonCreator
-    public static BooleanEnum fromCode(Integer code) {
-        if (code == null) {
+    /** 兼容服务间 JSON 的中文描述与数据库编码。 */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static BooleanEnum fromJson(Object value) {
+        if (value == null) {
             return null;
         }
+        String text = value.toString().trim();
         for (BooleanEnum status : BooleanEnum.values()) {
-            if (status.getCode().equals(code)) {
+            if (status.getDesc().equals(text) || status.name().equals(text)
+                    || status.getCode().toString().equals(text)) {
                 return status;
             }
         }
-        throw new IllegalArgumentException("无效的权限类型码: " + code);
+        throw new IllegalArgumentException("无效的是否状态: " + value);
     }
-} 
+
+    public static BooleanEnum fromCode(Integer code) {
+        return code == null ? null : fromJson(code);
+    }
+}

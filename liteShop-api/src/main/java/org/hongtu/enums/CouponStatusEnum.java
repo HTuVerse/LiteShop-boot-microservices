@@ -62,19 +62,23 @@ public enum CouponStatusEnum {
         return null;
     }
 
-    /**
-     * 告诉 Jackson 根据 code 字段反序列化
-     * */
-    @JsonCreator
-    public static CouponStatusEnum fromCode(Integer code) {
-        if (code == null) {
+    /** 兼容服务间 JSON 的中文描述与请求中的数字编码。 */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static CouponStatusEnum fromJson(Object value) {
+        if (value == null) {
             return null;
         }
+        String text = value.toString().trim();
         for (CouponStatusEnum type : CouponStatusEnum.values()) {
-            if (type.getCode().equals(code)) {
+            if (type.getDesc().equals(text) || type.name().equals(text)
+                    || type.getCode().toString().equals(text)) {
                 return type;
             }
         }
-        throw new IllegalArgumentException("无效的权限类型码: " + code);
+        throw new IllegalArgumentException("无效的优惠券状态: " + value);
     }
-} 
+
+    public static CouponStatusEnum fromCode(Integer code) {
+        return code == null ? null : fromJson(code);
+    }
+}

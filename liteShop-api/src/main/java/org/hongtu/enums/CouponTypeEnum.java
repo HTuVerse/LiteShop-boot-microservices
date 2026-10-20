@@ -78,26 +78,24 @@ public enum CouponTypeEnum {
         return null;
     }
 
-    /**
-     * 告诉 Jackson 根据 code 字段反序列化
-     * */
-    /**
-     * 根据 code 反序列化（Jackson使用）
-     * @param code 类型码
-     * @return 枚举实例
-     * @throws IllegalArgumentException code 无效时抛出
-     */
-    @JsonCreator
-    public static CouponTypeEnum fromCode(Integer code) {
-        if (code == null) {
+    /** 兼容服务间 JSON 的中文描述与请求中的数字编码。 */
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static CouponTypeEnum fromJson(Object value) {
+        if (value == null) {
             return null;
         }
+        String text = value.toString().trim();
         for (CouponTypeEnum type : CouponTypeEnum.values()) {
-            if (type.getCode().equals(code)) {
+            if (type.getDesc().equals(text) || type.name().equals(text)
+                    || type.getCode().toString().equals(text)) {
                 return type;
             }
         }
-        throw new IllegalArgumentException("无效的优惠券类型码: " + code);
+        throw new IllegalArgumentException("无效的优惠券类型: " + value);
+    }
+
+    public static CouponTypeEnum fromCode(Integer code) {
+        return code == null ? null : fromJson(code);
     }
 
     /**

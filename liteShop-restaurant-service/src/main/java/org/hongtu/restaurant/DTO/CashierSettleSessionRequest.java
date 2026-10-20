@@ -4,6 +4,7 @@ import lombok.Data;
 import org.hongtu.restaurant.enums.PaymentTypeEnum;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 收银台-桌位结算请求 DTO
@@ -34,6 +35,8 @@ public class CashierSettleSessionRequest {
      * 用户ID（余额支付时必填）
      */
     private Long userId;
+
+    private List<Long> userCouponIds;
 
     /**
      * 整单折扣率（选填，结算时收银可打折扣。例如 0.8 表示 8 折，1.0 表示无折扣）

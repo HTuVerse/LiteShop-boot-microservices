@@ -1680,8 +1680,16 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         PricingQuoteVO pricingQuote = quoteCashierItems(request.getStoreId(), request.getUserId(), request.getCartItems());
         BigDecimal totalAmount = pricingQuote.getListAmount();
         BigDecimal payable = BigDecimal.ZERO;
-        for (PricingQuoteVO.Line line : pricingQuote.getLines()) {
-            payable = payable.add(line.getLinePayableAmount());
+        for (int i = 0; i < request.getCartItems().size(); i++) {
+            if (!Integer.valueOf(1).equals(request.getCartItems().get(i).getIsGift())) {
+                payable = payable.add(pricingQuote.getLines().get(i).getLinePayableAmount());
+            }
+        }
+        CouponDiscountResultVO couponQuote = requireCashierCoupon(request.getUserId(), request.getUserCouponIds(),
+                payable, request.getStoreId(), cashierCouponLines(request.getCartItems(), pricingQuote));
+        if (couponQuote != null) payable = payable.subtract(couponQuote.getTotalDiscountAmount()).max(BigDecimal.ZERO);
+        if (payable.signum() == 0) {
+            throw new BusinessException("优惠券已全额抵扣，请使用现金方式完成零元结算");
         }
         // 客户端金额仅做一致性检查，实际以服务端计价为准。
         CashierAmountGuard.requireClientAmountMatches(request.getTotalPrice(), payable);
@@ -1698,6 +1706,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         order.setDiscountAmount(totalAmount.subtract(payable).max(BigDecimal.ZERO));
         order.setDiscountRate(BigDecimal.ONE);
         order.setActualAmount(payable);
+        setCashierCouponMetadata(order, request.getUserCouponIds(), couponQuote);
         order.setDiningCount(request.getPeopleCount());
         order.setPaymentMode(PaymentModeEnum.ONLINE);
         order.setNote(request.getNote());
@@ -1727,9 +1736,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             orderItem.setUnitSellingPrice(pricedLine.getUnitSellingPrice());
             orderItem.setQuantity(cartItem.getQuantity());
             applyCostSnapshot(orderItem, pricedLine);
-            orderItem.setIsGift(0);
-            orderItem.setLinePayableAmount(pricedLine.getLinePayableAmount());
-            orderItem.setDiscountAmount(pricedLine.getLineListAmount().subtract(pricedLine.getLinePayableAmount()));
+            boolean gift = Integer.valueOf(1).equals(cartItem.getIsGift());
+            orderItem.setIsGift(gift ? 1 : 0);
+            orderItem.setLinePayableAmount(gift ? BigDecimal.ZERO : pricedLine.getLinePayableAmount());
+            orderItem.setDiscountAmount(gift ? pricedLine.getLineListAmount()
+                    : pricedLine.getLineListAmount().subtract(pricedLine.getLinePayableAmount()));
             orderItem.setSpecOptionsText(cartItem.getSpecText());
             orderItem.setCreatedAt(LocalDateTime.now());
             orderItem.setUpdatedAt(LocalDateTime.now());
@@ -1741,9 +1752,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             orderItems.add(orderItem);
         }
         restaurantOrderItemService.saveBatch(orderItems);
+        if (couponQuote != null) distributeCashierPayable(order.getId(), payable);
         persistPricingAdjustments(order.getId(), orderItems, pricingQuote);
 
         reserveOrderStock(order);
+        verifyCouponsWithCompensation(request.getUserCouponIds(), order.getId());
         return order.getId();
     }
 
@@ -1801,18 +1814,21 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
         }
         BigDecimal itemDiscountSum = calculatedTotalAmount.subtract(payableBeforeRate).max(BigDecimal.ZERO);
+        CouponDiscountResultVO couponQuote = requireCashierCoupon(request.getUserId(), request.getUserCouponIds(),
+                payableBeforeRate, request.getStoreId(), cashierCouponLines(request.getCartItems(), pricingQuote));
+        BigDecimal couponDiscount = couponQuote == null ? BigDecimal.ZERO : couponQuote.getTotalDiscountAmount();
+        BigDecimal payableAfterCoupon = payableBeforeRate.subtract(couponDiscount).max(BigDecimal.ZERO);
         if (request.getDiscountRate() != null && request.getDiscountRate().compareTo(BigDecimal.ONE) != 0)
             org.hongtu.security.OperationPermission.order("discount");
         BigDecimal discountRate = request.getDiscountRate() != null ?
                 request.getDiscountRate() : BigDecimal.ONE;
-        BigDecimal rateDiscountAmount = BigDecimal.ZERO;
-
-        if (discountRate.compareTo(BigDecimal.ONE) < 0) {
-            rateDiscountAmount = payableBeforeRate.multiply(BigDecimal.ONE.subtract(discountRate)).setScale(2, RoundingMode.HALF_UP);
-        }
         // 实付 = 折前应付 * 折扣率；订单总优惠 = 订单项优惠 + 折扣优惠
-        BigDecimal calculatedActualAmount = payableBeforeRate.multiply(discountRate).setScale(2, RoundingMode.HALF_UP);
-        BigDecimal totalDiscountAmount = itemDiscountSum.add(rateDiscountAmount);
+        BigDecimal calculatedActualAmount = CashierAmountGuard.applyManualDiscount(payableAfterCoupon, discountRate);
+        BigDecimal rateDiscountAmount = payableAfterCoupon.subtract(calculatedActualAmount);
+        if (calculatedActualAmount.signum() == 0 && request.getPaymentType() == PaymentTypeEnum.BANLANCE_PAY) {
+            throw new BusinessException("优惠券已全额抵扣，请使用现金方式完成零元结算");
+        }
+        BigDecimal totalDiscountAmount = itemDiscountSum.add(couponDiscount).add(rateDiscountAmount);
 
         // 3. 客户端金额仅用于一致性检查，订单和扣款金额统一使用服务端计价结果。
         CashierAmountGuard.requireClientAmountMatches(request.getTotalPrice(), calculatedActualAmount);
@@ -1842,6 +1858,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         order.setDiscountAmount(totalDiscountAmount);
         order.setDiscountRate(discountRate);
         order.setActualAmount(calculatedActualAmount);
+        setCashierCouponMetadata(order, request.getUserCouponIds(), couponQuote);
         order.setDiningCount(request.getPeopleCount());
         order.setPaymentMode(user != null ? PaymentModeEnum.ONLINE : PaymentModeEnum.OFFLINE);
         order.setNote(request.getNote());
@@ -1874,6 +1891,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             int remainingNormalItems = (int) request.getCartItems().stream()
                     .filter(item -> !Integer.valueOf(1).equals(item.getIsGift())).count();
             BigDecimal remainingActualAmount = calculatedActualAmount;
+            BigDecimal remainingBaseAmount = payableBeforeRate;
             for (int i = 0; i < request.getCartItems().size(); i++) {
                 CashierOrderRequest.CartItem cartItem = request.getCartItems().get(i);
                 PricingQuoteVO.Line pricedLine = pricingQuote.getLines().get(i);
@@ -1898,11 +1916,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 } else {
                     BigDecimal linePayable = remainingNormalItems == 1
                             ? remainingActualAmount
-                            : pricedLine.getLinePayableAmount().multiply(discountRate)
-                                    .setScale(2, RoundingMode.HALF_UP);
+                            : (remainingBaseAmount.signum() == 0 ? BigDecimal.ZERO
+                                : remainingActualAmount.multiply(pricedLine.getLinePayableAmount())
+                                    .divide(remainingBaseAmount, 2, RoundingMode.HALF_UP));
                     orderItem.setLinePayableAmount(linePayable);
                     orderItem.setDiscountAmount(pricedLine.getLineListAmount().subtract(linePayable));
                     remainingActualAmount = remainingActualAmount.subtract(linePayable);
+                    remainingBaseAmount = remainingBaseAmount.subtract(pricedLine.getLinePayableAmount());
                     remainingNormalItems--;
                 }
 
@@ -1931,6 +1951,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             log.error("订单【{}】减少库存失败: {}", order.getOrderNo(), e.getMessage(), e);
             throw new BusinessException("库存不足或减少失败：" + e.getMessage());
         }
+
+        // 先核销优惠券；后续本地事务失败会由回滚回调返券。
+        verifyCouponsWithCompensation(request.getUserCouponIds(), order.getId());
 
         // 6.5 余额支付：扣减用户余额并记录流水（user-service 本地事务原子完成）
         // 【微服务改造】刻意放在库存扣减之后：远程扣款失败会抛异常，本地事务（订单/明细/库存）整体回滚，无需补偿
@@ -2006,6 +2029,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (!sessionNo.equals(order.getSessionNo())) {
             throw new BusinessException("订单与会话不匹配");
         }
+        storeDataScopeService.checkStoreAccess(order.getStoreId());
         if (order.getStatus() == OrderStatusEnum.CANCELLED || order.getStatus() == OrderStatusEnum.COMPLETED) {
             throw new BusinessException("当前订单状态不允许结算");
         }
@@ -2036,19 +2060,45 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (discountRate.compareTo(BigDecimal.ONE) != 0) {
             org.hongtu.security.OperationPermission.order("discount");
         }
-        BigDecimal serverPayable = CashierAmountGuard.applyManualDiscount(order.getActualAmount(), discountRate);
-        if (serverPayable.compareTo(BigDecimal.ZERO) <= 0) {
+        List<Long> selectedCoupons = request.getUserCouponIds();
+        CouponDiscountResultVO couponQuote = null;
+        BigDecimal couponDiscount = BigDecimal.ZERO;
+        BigDecimal beforeCoupon = order.getActualAmount();
+        if (selectedCoupons != null && !selectedCoupons.isEmpty()) {
+            if (order.getUserId() == null || !order.getUserId().equals(request.getUserId())) {
+                throw new BusinessException("优惠券会员与订单会员不一致");
+            }
+            if (StrUtil.isNotBlank(order.getUserCouponIds())) {
+                throw new BusinessException("订单已有优惠券，不能重复使用");
+            }
+            List<RestaurantOrderItem> couponItems = restaurantOrderItemService.list(
+                    new LambdaQueryWrapper<RestaurantOrderItem>().eq(RestaurantOrderItem::getOrderId, orderId));
+            couponQuote = requireCashierCoupon(order.getUserId(), selectedCoupons, beforeCoupon,
+                    order.getStoreId(), couponLines(couponItems));
+            couponDiscount = couponQuote.getTotalDiscountAmount();
+        }
+        BigDecimal serverPayable = CashierAmountGuard.applyManualDiscount(
+                beforeCoupon.subtract(couponDiscount).max(BigDecimal.ZERO), discountRate);
+        if (serverPayable.compareTo(BigDecimal.ZERO) <= 0 && couponQuote == null) {
             throw new BusinessException("服务端应付金额为0，禁止人工结算，请检查订单优惠和明细");
         }
         order.setDiscountRate(discountRate);
         order.setActualAmount(serverPayable);
+        setCashierCouponMetadata(order, selectedCoupons, couponQuote);
         // 优惠金额（菜品优惠+折扣优惠）始终 = 总价 - 实付，保证无折扣时也正确显示
         BigDecimal total = order.getTotalAmount() != null ? order.getTotalAmount() : BigDecimal.ZERO;
         order.setDiscountAmount(total.subtract(serverPayable).max(BigDecimal.ZERO));
+        if (couponQuote != null || discountRate.compareTo(BigDecimal.ONE) != 0) {
+            distributeCashierPayable(orderId, serverPayable);
+        }
 
         PaymentTypeEnum paymentType = CashierAmountGuard.requireSettlementPaymentType(request.getPaymentType());
+        if (serverPayable.signum() == 0 && paymentType == PaymentTypeEnum.BANLANCE_PAY) {
+            throw new BusinessException("优惠券已全额抵扣，请使用现金方式完成零元结算");
+        }
         BigDecimal tenderedAmount = CashierAmountGuard.requireTenderedAmount(
                 paymentType, request.getActualAmount(), serverPayable);
+        verifyCouponsWithCompensation(selectedCoupons, order.getId());
         BigDecimal deductedBalanceAmount = null;
         if (paymentType == PaymentTypeEnum.BANLANCE_PAY) {
             if (request.getUserId() == null) {
@@ -2822,6 +2872,101 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         return calcCouponDiscountWithLines(userId, request.getUserCouponIds(), total, request.getStoreId(), lines);
     }
 
+    @Override
+    public Result cashierCouponQuote(CashierCouponQuoteRequest request) {
+        if (request == null || request.getUserId() == null) {
+            throw new BusinessException("请先选择会员");
+        }
+        if (StrUtil.isNotBlank(request.getSessionNo())) {
+            RestaurantOrder order = getOrderBySessionNo(request.getSessionNo());
+            if (order == null || !request.getSessionNo().equals(order.getSessionNo())) {
+                throw new BusinessException("桌位订单不存在");
+            }
+            storeDataScopeService.checkStoreAccess(order.getStoreId());
+            if (!request.getUserId().equals(order.getUserId())) {
+                throw new BusinessException("优惠券会员与订单会员不一致");
+            }
+            if (StrUtil.isNotBlank(order.getUserCouponIds()) || order.getPaymentStatus() == PaymentStatusEnum.PAID) {
+                throw new BusinessException("订单已有优惠券或已支付");
+            }
+            List<RestaurantOrderItem> items = restaurantOrderItemService.list(
+                    new LambdaQueryWrapper<RestaurantOrderItem>().eq(RestaurantOrderItem::getOrderId, order.getId()));
+            List<CouponOrderLine> lines = couponLines(items);
+            BigDecimal total = lines.stream().map(line -> line.linePayable)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            return calcCouponDiscountWithLines(request.getUserId(), request.getUserCouponIds(),
+                    total, order.getStoreId(), lines);
+        }
+        if (request.getStoreId() == null || request.getCartItems() == null || request.getCartItems().isEmpty()) {
+            throw new BusinessException("请选择门店和菜品");
+        }
+        storeDataScopeService.checkStoreAccess(request.getStoreId());
+        validateCartItems(request.getStoreId(), request.getCartItems());
+        PricingQuoteVO pricing = quoteCashierItems(request.getStoreId(), request.getUserId(), request.getCartItems());
+        List<CouponOrderLine> lines = cashierCouponLines(request.getCartItems(), pricing);
+        BigDecimal total = lines.stream().map(line -> line.linePayable)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return calcCouponDiscountWithLines(request.getUserId(), request.getUserCouponIds(),
+                total, request.getStoreId(), lines);
+    }
+
+    private List<CouponOrderLine> cashierCouponLines(List<CashierOrderRequest.CartItem> items, PricingQuoteVO pricing) {
+        List<CouponOrderLine> lines = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            CashierOrderRequest.CartItem item = items.get(i);
+            if (Integer.valueOf(1).equals(item.getIsGift())) continue;
+            PricingQuoteVO.Line priced = pricing.getLines().get(i);
+            lines.add(new CouponOrderLine(String.valueOf(i), item.getDishId(), priced.getDishName(),
+                    item.getQuantity(), priced.getLinePayableAmount()));
+        }
+        return lines;
+    }
+
+    private CouponDiscountResultVO requireCashierCoupon(Long userId, List<Long> ids,
+                                                          BigDecimal total, Long storeId,
+                                                          List<CouponOrderLine> lines) {
+        if (ids == null || ids.isEmpty()) return null;
+        if (userId == null) throw new BusinessException("使用优惠券请先选择会员");
+        Result result = calcCouponDiscountWithLines(userId, ids, total, storeId, lines);
+        CouponDiscountResultVO quote = result == null ? null : (CouponDiscountResultVO) result.getData();
+        if (quote == null || !Boolean.TRUE.equals(quote.getUsable())) {
+            throw new BusinessException("优惠券不可用：" + (quote == null ? "试算失败" : quote.getReason()));
+        }
+        return quote;
+    }
+
+    private void setCashierCouponMetadata(RestaurantOrder order, List<Long> ids, CouponDiscountResultVO quote) {
+        if (quote == null || ids == null || ids.isEmpty()) return;
+        order.setUserCouponIds(ids.stream().map(String::valueOf).collect(Collectors.joining(",")));
+        order.setCouponTypes(quote.getCouponDetails().stream()
+                .map(CouponDiscountResultVO.CouponDetailVO::getCouponType).collect(Collectors.toList()));
+    }
+
+    /** 将结算优惠同步落到订单明细，保证后续退款与订单主表金额一致。 */
+    private void distributeCashierPayable(Long orderId, BigDecimal payable) {
+        List<RestaurantOrderItem> items = restaurantOrderItemService.list(
+                new LambdaQueryWrapper<RestaurantOrderItem>().eq(RestaurantOrderItem::getOrderId, orderId));
+        List<RestaurantOrderItem> payableItems = items.stream()
+                .filter(item -> !Integer.valueOf(1).equals(item.getIsGift()))
+                .filter(item -> item.getLinePayableAmount() != null && item.getLinePayableAmount().signum() > 0)
+                .collect(Collectors.toList());
+        BigDecimal remainingBase = payableItems.stream().map(RestaurantOrderItem::getLinePayableAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal remainingPayable = payable;
+        for (int i = 0; i < payableItems.size(); i++) {
+            RestaurantOrderItem item = payableItems.get(i);
+            BigDecimal previous = item.getLinePayableAmount();
+            BigDecimal allocated = i == payableItems.size() - 1 ? remainingPayable
+                    : remainingPayable.multiply(previous).divide(remainingBase, 2, RoundingMode.HALF_UP);
+            item.setLinePayableAmount(allocated);
+            item.setDiscountAmount((item.getDiscountAmount() == null ? BigDecimal.ZERO
+                    : item.getDiscountAmount()).add(previous.subtract(allocated)));
+            remainingPayable = remainingPayable.subtract(allocated);
+            remainingBase = remainingBase.subtract(previous);
+        }
+        if (!payableItems.isEmpty()) restaurantOrderItemService.updateBatchById(payableItems);
+    }
+
     /** 下单、加菜和结算试算共用同一套券规则。 */
     Result calcCouponDiscountWithLines(Long userId, List<Long> userCouponIds,
                                                BigDecimal orderTotalAmount, Long storeId,
@@ -2842,6 +2987,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     .couponDetails(new ArrayList<>())
                     .build();
             return Result.success(resultVO);
+        }
+
+        if (userCouponIds.contains(null) || new HashSet<>(userCouponIds).size() != userCouponIds.size()) {
+            return Result.success(CouponDiscountResultVO.builder().usable(false)
+                    .reason("优惠券选择重复或参数错误").build());
         }
 
         try {

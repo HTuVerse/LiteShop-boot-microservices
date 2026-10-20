@@ -849,6 +849,13 @@ public class RestaurantOrderController {
         return restaurantOrderService.calcCouponDiscountForCart(userId, request);
     }
 
+    /** 收银员代会员试算，门店和桌位数据范围由订单服务复核。 */
+    @PostMapping("/cashier/couponQuote")
+    @SaCheckPermission(value = {"operations:direct-cashier", "operations:table-cashier", "restaurant:order:settle"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result cashierCouponQuote(@RequestBody CashierCouponQuoteRequest request) {
+        return restaurantOrderService.cashierCouponQuote(request);
+    }
+
     /**
      * 普通用户只能操作自己的订单；桌台共享操作必须同时提供并匹配有效会话号。
      * 管理员仍需先通过 MyBatis 的 tenant_id / store_id 数据范围过滤。

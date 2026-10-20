@@ -34,6 +34,9 @@ public class CashierOrderRequest {
      */
     private Long userId;
 
+    /** 当前会员选择的用户优惠券ID。 */
+    private List<Long> userCouponIds;
+
     /**
      * 会话编号（可选；桌位收银时由前端传入，用于关联订单与会话。
      * 注意：桌位收银应走“先提交订单/加菜、再桌位结算”流程，不要用本直接下单接口创建桌位订单）

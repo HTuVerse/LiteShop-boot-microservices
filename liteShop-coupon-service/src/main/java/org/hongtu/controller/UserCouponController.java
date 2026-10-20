@@ -49,6 +49,18 @@ public class UserCouponController {
         
     }
 
+    /** 收银员只能通过明确的收银权限查询指定会员的优惠券。 */
+    @GetMapping("/cashier/list")
+    @SaCheckPermission(value = {"operations:direct-cashier", "operations:table-cashier", "restaurant:order:settle"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result getCashierUserCoupons(@RequestParam Long userId,
+                                        @RequestParam(defaultValue = "1") Integer currentPage,
+                                        @RequestParam(defaultValue = "10") Integer pageSize) {
+        if (userId == null || currentPage < 1 || pageSize < 1 || pageSize > 100) {
+            return Result.error("优惠券查询参数不正确");
+        }
+        return userCouponService.getUserCoupons(currentPage, pageSize, "最近领取", userId, null);
+    }
+
     /**
      * 发送优惠券给用户（管理员接口）
      * @param userId 用户ID
