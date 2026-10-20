@@ -6,12 +6,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
+import org.hongtu.DAO.CouponRevokeRecordMapper;
 import org.hongtu.DAO.CouponStockAdjustmentMapper;
 import org.hongtu.DAO.CouponStackPairMapper;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DTO.Coupon;
 import org.hongtu.DTO.CouponDishItem;
 import org.hongtu.DTO.CouponStockAdjustment;
+import org.hongtu.DTO.CouponRevokeRecord;
 import org.hongtu.DTO.UserCoupon;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.CouponStatusEnum;
@@ -54,6 +56,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     @Resource
     private CouponStockAdjustmentMapper stockAdjustmentMapper;
+
+    @Resource
+    private CouponRevokeRecordMapper revokeRecordMapper;
 
     @Resource
     private CouponStackPairMapper stackPairMapper;
@@ -203,6 +208,11 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return Result.error("优惠券不存在");
         }
         if (coupon.getRecallTime() != null) return Result.error("已批量回收的模板须保留审计记录，不可删除");
+        // 单张回收同样需要保留模板，保证回收原因与发放记录可追溯。
+        if (revokeRecordMapper.selectCount(new LambdaQueryWrapper<CouponRevokeRecord>()
+                .eq(CouponRevokeRecord::getCouponId, id)) > 0) {
+            return Result.error("该模板已有用户券回收记录，不可删除");
+        }
         // 检查是否有用户持有该优惠券
         LambdaQueryWrapper<UserCoupon> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(UserCoupon::getCouponId, id)
