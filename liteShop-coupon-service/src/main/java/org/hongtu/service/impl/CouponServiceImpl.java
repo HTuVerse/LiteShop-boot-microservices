@@ -21,12 +21,14 @@ import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.CouponService;
 import org.hongtu.tenant.TenantContext;
+import org.hongtu.utils.CouponUnavailableDay;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.stream.Collectors;
@@ -83,7 +85,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
 
     /**
      * 创建优惠券
-     * 支持满减、整单折扣、菜品免单和菜品折扣四种类型。
+     * 支持满减、整单折扣、菜品免单、菜品折扣和代金券。
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -120,7 +122,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         boolean saved = save(coupon);
         if (saved) {
             // 保存关联菜品
-            if (needDishItems(coupon.getType()) && coupon.getDishItems() != null) {
+            if (usesDishItems(coupon.getType(), coupon.getDishItems())) {
                 couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
             }
             saveStackPartners(coupon.getId(), coupon.getStackWithCouponIds());
@@ -167,9 +169,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         boolean updated = updateById(coupon);
         if (updated) {
             // 更新关联菜品（如果传了dishItems，则重新保存）
-            if (needDishItems(targetType)) {
+            if (usesDishItems(targetType, coupon.getDishItems())) {
                 couponDishItemService.saveItems(coupon.getId(), coupon.getDishItems());
-            } else if (existCoupon.getType().needDishItems()) {
+            } else if (existCoupon.getType().needDishItems() || existCoupon.getType() == CouponTypeEnum.CASH_VOUCHER) {
                 couponDishItemService.deleteItemsByCouponId(coupon.getId());
             }
             if (coupon.getStackWithCouponIds() != null || coupon.getStackable() != BooleanEnum.YES) {
@@ -232,7 +234,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return Result.error("优惠券不存在");
         }
         // 查询关联菜品
-        if (needDishItems(coupon.getType())) {
+        if (needDishItems(coupon.getType()) || coupon.getType() == CouponTypeEnum.CASH_VOUCHER) {
             coupon.setDishItems(couponDishItemService.getItemsByCouponId(id));
         }
         coupon.setStackWithCouponIds(stackPairMapper.listPartnerIds(TenantContext.getTenantId(), id));
@@ -263,11 +265,17 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         return type != null && type.needDishItems();
     }
 
+    /** 代金券可选菜品范围，菜品专属券仍强制指定菜品。 */
+    private boolean usesDishItems(CouponTypeEnum type, List<CouponDishItem> items) {
+        return needDishItems(type) || (type == CouponTypeEnum.CASH_VOUCHER && items != null && !items.isEmpty());
+    }
+
     /** 规范化适用门店和时段，拒绝无效折扣率与不完整的使用限制。 */
     private String validateRules(Coupon coupon) {
         if (coupon.getStartTime() == null) return "请选择优惠券生效时间";
         if (coupon.getType().needValue() && coupon.getValue() == null) return "优惠券面值或折扣率不能为空";
-        if (coupon.getType() == CouponTypeEnum.FULL_REDUCTION && coupon.getValue().signum() <= 0) return "满减金额必须大于0";
+        if ((coupon.getType() == CouponTypeEnum.FULL_REDUCTION || coupon.getType() == CouponTypeEnum.CASH_VOUCHER)
+                && coupon.getValue().signum() <= 0) return "抵扣金额必须大于0";
         if ((coupon.getType() == CouponTypeEnum.ORDER_DISCOUNT || coupon.getType() == CouponTypeEnum.DISH_DISCOUNT)
                 && (coupon.getValue().compareTo(java.math.BigDecimal.ZERO) <= 0
                 || coupon.getValue().compareTo(java.math.BigDecimal.ONE) >= 0)) return "折扣率必须大于0且小于1";
@@ -280,10 +288,32 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         try {
             coupon.setStoreIds(normalizeIds(coupon.getStoreIds(), false));
             coupon.setUseWeekdays(normalizeIds(coupon.getUseWeekdays(), true));
+            coupon.setUnavailableDates(normalizeUnavailableDates(coupon.getUnavailableDates()));
+            coupon.setUnavailableHolidays(normalizeUnavailableHolidays(coupon.getUnavailableHolidays()));
         } catch (IllegalArgumentException e) {
             return e.getMessage();
         }
         return null;
+    }
+
+    /** 只接受完整 ISO 日期，防止无效日期被保存后静默失效。 */
+    private String normalizeUnavailableDates(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        List<String> dates = Arrays.stream(value.split(",")).map(String::trim).distinct().toList();
+        if (dates.size() > 100) throw new IllegalArgumentException("不可用日期最多选择100天");
+        for (String date : dates) {
+            if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) throw new IllegalArgumentException("不可用日期格式应为yyyy-MM-dd");
+            try { LocalDate.parse(date); } catch (Exception e) { throw new IllegalArgumentException("不可用日期无效：" + date); }
+        }
+        return String.join(",", dates);
+    }
+
+    private String normalizeUnavailableHolidays(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        List<String> holidays = Arrays.stream(value.split(",")).map(String::trim).distinct().toList();
+        if (holidays.stream().anyMatch(code -> !CouponUnavailableDay.HOLIDAYS.contains(code)))
+            throw new IllegalArgumentException("不可用节日无效");
+        return String.join(",", holidays);
     }
 
     /** 配对按券模板 ID 维护；两端共用一条记录，禁止跨租户或与不可叠加券配对。 */

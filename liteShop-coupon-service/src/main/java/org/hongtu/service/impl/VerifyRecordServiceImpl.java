@@ -165,6 +165,10 @@ public class VerifyRecordServiceImpl extends ServiceImpl<VerifyRecordMapper, Ver
      * @return null表示可核销，否则返回不可核销原因
      */
     private String checkCanVerify(UserCoupon userCoupon) {
+        Coupon template = couponMapper.selectById(userCoupon.getCouponId());
+        if (template == null) return "优惠券模板不存在";
+        if (org.hongtu.utils.CouponUnavailableDay.matches(template.getUnavailableDates(),
+                template.getUnavailableHolidays(), LocalDateTime.now().toLocalDate())) return "优惠券今天不可使用";
         // 检查是否已核销过
         LambdaQueryWrapper<VerifyRecord> verifyQuery = new LambdaQueryWrapper<>();
         verifyQuery.eq(VerifyRecord::getUserCouponId, userCoupon.getId())

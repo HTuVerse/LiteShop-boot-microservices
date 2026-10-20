@@ -147,6 +147,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                     vo.setMinAmount(coupon.getMinAmount());
                     vo.setStoreIds(coupon.getStoreIds());
                     vo.setUseWeekdays(coupon.getUseWeekdays());
+                    vo.setUnavailableDates(coupon.getUnavailableDates());
+                    vo.setUnavailableHolidays(coupon.getUnavailableHolidays());
                     vo.setUseStartTime(coupon.getUseStartTime());
                     vo.setUseEndTime(coupon.getUseEndTime());
                     // 结算页需同时展示领券有效期与券模板有效期。
@@ -160,7 +162,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                     vo.setStackWithCouponNames(allowedIds.stream().map(partnerNames::get)
                             .filter(Objects::nonNull).collect(Collectors.toList()));
                     // 只有菜品免单券需要关联菜品
-                    if (coupon.getType().needDishItems()) {
+                    if (coupon.getType().needDishItems() || coupon.getType() == CouponTypeEnum.CASH_VOUCHER) {
                         vo.setDishItems(couponDishItemService.getItemsByCouponId(coupon.getId()));
                     }
                 }
@@ -457,6 +459,13 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         // 4. 校验是否到了生效时间
         if (userCoupon.getStartTime() != null && userCoupon.getStartTime().isAfter(LocalDateTime.now())) {
             throw new BusinessException(400, "优惠券尚未生效，无法使用");
+        }
+
+        Coupon template = couponMapper.selectById(userCoupon.getCouponId());
+        if (template == null) throw new BusinessException(400, "优惠券模板不存在");
+        if (org.hongtu.utils.CouponUnavailableDay.matches(
+                template.getUnavailableDates(), template.getUnavailableHolidays(), LocalDateTime.now().toLocalDate())) {
+            throw new BusinessException(400, "优惠券今天不可使用");
         }
 
         // 5. 【CAS乐观锁】核销：只有 status=1(未使用) 才能更新为 status=2(已使用)

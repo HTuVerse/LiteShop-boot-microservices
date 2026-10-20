@@ -54,7 +54,7 @@ public class Coupon implements Serializable {
 
     /**
      * 优惠券类型
-     * 0:满减券, 1:整单折扣券, 2:菜品免单券, 3:菜品折扣券
+     * 0:满减券, 1:整单折扣券, 2:菜品免单券, 3:菜品折扣券, 4:代金券
      */
     private CouponTypeEnum type;
 
@@ -64,6 +64,7 @@ public class Coupon implements Serializable {
      * - 整单折扣券: 折扣率（如0.85=85折）
      * - 菜品免单券: 不使用（可为0）
      * - 菜品折扣券: 折扣率（如0.85=85折），每单限一份
+     * - 代金券: 固定抵扣金额（元）
      */
     private BigDecimal value;
 
@@ -79,6 +80,14 @@ public class Coupon implements Serializable {
     /** 可用星期，1=周一至7=周日，逗号分隔；为空表示每天。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String useWeekdays;
+
+    /** 不可用的具体公历日期，yyyy-MM-dd，逗号分隔。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String unavailableDates;
+
+    /** 每年不可用的节日编码，逗号分隔；按节日当天匹配。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String unavailableHolidays;
 
     /** 每日可用时段起点；与结束时间同时为空表示全天。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)

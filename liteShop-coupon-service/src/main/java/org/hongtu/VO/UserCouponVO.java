@@ -43,7 +43,7 @@ public class UserCouponVO {
 
     /**
      * 优惠券类型
-     * 0:满减券, 1:整单折扣券, 2:菜品免单券
+     * 0:满减券, 1:整单折扣券, 2:菜品免单券, 3:菜品折扣券, 4:代金券
      */
     private CouponTypeEnum type;
 
@@ -52,6 +52,12 @@ public class UserCouponVO {
 
     /** 可用星期，1周一至7周日；空表示每天。 */
     private String useWeekdays;
+
+    /** 不可用的具体公历日期。 */
+    private String unavailableDates;
+
+    /** 每年自动匹配的不可用节日编码。 */
+    private String unavailableHolidays;
 
     /** 每日可用时段，空表示全天。 */
     private java.time.LocalTime useStartTime;

@@ -14,9 +14,10 @@ import lombok.Getter;
  *   <li>整单折扣券(1)：整单按比例打折，如整单85折（value=0.85）</li>
  *   <li>菜品免单券(2)：指定菜品中任选一份免费</li>
  *   <li>菜品折扣券(3)：指定菜品中任选一份打折</li>
+ *   <li>代金券(4)：固定面值直接抵扣，可选指定菜品</li>
  * </ul>
  * 
- * 计算优先级：菜品免单券 > 菜品折扣券 > 满减券 > 整单折扣券
+ * 计算优先级：菜品免单券 > 菜品折扣券 > 代金券 > 满减券 > 整单折扣券
  * </p>
  *
  * @author Ht
@@ -47,7 +48,10 @@ public enum CouponTypeEnum {
     DISH_FREE(2, "菜品免单券"),
 
     /** 指定菜品中任选一份按折扣率优惠。 */
-    DISH_DISCOUNT(3, "菜品折扣券");
+    DISH_DISCOUNT(3, "菜品折扣券"),
+
+    /** 固定面值直接抵扣，可选指定菜品，不设置最低消费即无门槛。 */
+    CASH_VOUCHER(4, "代金券");
     
     @EnumValue
     private final Integer code;
@@ -111,6 +115,6 @@ public enum CouponTypeEnum {
      * @return true 表示需要设置 value
      */
     public boolean needValue() {
-        return this == FULL_REDUCTION || this == ORDER_DISCOUNT || this == DISH_DISCOUNT;
+        return this == FULL_REDUCTION || this == ORDER_DISCOUNT || this == DISH_DISCOUNT || this == CASH_VOUCHER;
     }
 } 
