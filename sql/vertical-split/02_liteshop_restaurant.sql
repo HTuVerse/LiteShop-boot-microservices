@@ -660,7 +660,6 @@ DROP TABLE IF EXISTS `print_template`;
 CREATE TABLE `print_template` (
   `id` bigint NOT NULL COMMENT '主键ID（雪花ID）',
   `template_name` varchar(100) NOT NULL COMMENT '模板名称',
-  `print_scene` varchar(20) NOT NULL DEFAULT 'ORDER' COMMENT '打印用途：ORDER提交订单，ADD_ITEMS加菜',
   `store_id` bigint NULL DEFAULT NULL COMMENT '关联的门店ID（为空表示全局模板）',
   `paper_width` tinyint NOT NULL DEFAULT 0 COMMENT '纸张宽度：0为58mm，1为80mm',
   `show_logo` tinyint NULL DEFAULT 0 COMMENT '是否显示店铺Logo：0-不显示，1-显示',
@@ -674,6 +673,7 @@ CREATE TABLE `print_template` (
   `show_dish_unit_price` tinyint NOT NULL DEFAULT 1 COMMENT '是否显示菜品单价：0-不显示，1-显示',
   `show_dish_quantity` tinyint NOT NULL DEFAULT 1 COMMENT '是否显示菜品数量：0-不显示，1-显示',
   `show_dish_amount` tinyint NOT NULL DEFAULT 1 COMMENT '是否显示菜品金额：0-不显示，1-显示',
+  `show_order_total` tinyint NOT NULL DEFAULT 1 COMMENT '是否显示订单合计：0-不显示，1-显示',
   `show_dish_spec` tinyint NULL DEFAULT 1 COMMENT '是否显示菜品规格：0-不显示，1-显示',
   `show_dish_original_price` tinyint NOT NULL DEFAULT 1 COMMENT '优惠菜品是否显示原价：0-不显示，1-显示',
   `show_dish_discount_price` tinyint NOT NULL DEFAULT 1 COMMENT '优惠菜品是否显示优惠价：0-不显示，1-显示',

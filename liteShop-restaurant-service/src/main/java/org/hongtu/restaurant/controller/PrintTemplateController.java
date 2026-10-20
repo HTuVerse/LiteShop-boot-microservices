@@ -40,7 +40,6 @@ public class PrintTemplateController {
      * @param pageSize 每页大小
      * @param storeId 门店ID（可选）
      * @param enabled 是否启用（可选）
-     * @param printScene 打印用途（可选：ORDER、ADD_ITEMS）
      * @return 分页结果
      */
     @GetMapping("/page")
@@ -49,14 +48,13 @@ public class PrintTemplateController {
             @RequestParam(value = "currentPage", defaultValue = "1") Integer currentPage,
             @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
             @RequestParam(value = "storeId", required = false) Long storeId,
-            @RequestParam(value = "enabled", required = false) Integer enabled,
-            @RequestParam(value = "printScene", required = false) String printScene) {
+            @RequestParam(value = "enabled", required = false) Integer enabled) {
 
         log.info("分页查询打印模板列表：page={}, size={}, storeId={}, enabled={}",
                 currentPage, pageSize, storeId, enabled);
 
         
-            Page<PrintTemplate> page = printTemplateService.getTemplatePage(currentPage, pageSize, storeId, enabled, printScene);
+            Page<PrintTemplate> page = printTemplateService.getTemplatePage(currentPage, pageSize, storeId, enabled);
             return Result.success(page);
         
     }

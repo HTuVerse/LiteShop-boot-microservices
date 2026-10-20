@@ -138,9 +138,9 @@ public class OrderPrintServiceImpl implements OrderPrintService {
         return printOrderVO(orderVO, printerId, templateId, manual, "ORDER", "receipt");
     }
 
-    /** 按用途选模板并为每次加菜登记独立的打印任务。 */
+    /** 按打印机绑定模板出单，并为每次加菜登记独立的打印任务。 */
     private Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId,
-                                              boolean manual, String printScene, String jobSuffix) {
+                                              boolean manual, String printEvent, String jobSuffix) {
         PrintJob printJob = null;
         try {
             // 1. 验证打印机
@@ -156,25 +156,19 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                 return buildErrorResult("打印机已禁用");
             }
 
-            // 加菜优先使用加菜专用模板；未配置时兼容打印机绑定的旧模板。
-            PrintTemplate assigned = printer.getTemplateId() == null ? null
+            // 打印时机只决定菜品范围；同一台设备始终使用它绑定的小票模板。
+            PrintTemplate template = printer.getTemplateId() == null ? null
                     : printTemplateService.getById(printer.getTemplateId());
-            PrintTemplate template = templateId == null ? null : printTemplateService.getById(templateId);
-            if (template == null && "ADD_ITEMS".equals(printScene)) {
-                PrintTemplate sceneTemplate = printTemplateService.getTemplateByStore(orderVO.getStoreId(), printScene);
-                template = sceneTemplate != null && "ADD_ITEMS".equals(sceneTemplate.getPrintScene()) ? sceneTemplate
-                        : assigned != null ? assigned : sceneTemplate;
+            if (printer.getTemplateId() != null && template == null) {
+                return buildErrorResult("打印机绑定的模板不存在，请重新配置");
             }
-            if (template == null && assigned != null
-                    && ("ADD_ITEMS".equals(printScene)
-                        || assigned.getPrintScene() == null
-                        || "ORDER".equals(assigned.getPrintScene()))) template = assigned;
-            if (template == null) template = printTemplateService.getTemplateByStore(orderVO.getStoreId(), printScene);
+            if (template == null && templateId != null) template = printTemplateService.getById(templateId);
+            if (template == null) template = printTemplateService.getTemplateByStore(orderVO.getStoreId());
             if (template == null) {
                 return buildErrorResult("门店未配置可用打印模板");
             }
-            if ("ORDER".equals(printScene) && "ADD_ITEMS".equals(template.getPrintScene())) {
-                return buildErrorResult("加菜模板不能用于提交订单小票");
+            if (template.getEnabled() == StatusEnum.DISABLED) {
+                return buildErrorResult("打印机绑定的模板已禁用");
             }
             if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), orderVO.getStoreId())) {
                 return buildErrorResult("打印模板与订单不属于同一门店");
@@ -184,7 +178,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             fillCustomerForReceipt(orderVO);
             PaperWidthEnum paperWidth = printer.getPaperWidth() == null
                     ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
-            String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printScene,
+            String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printEvent,
                     paperWidth, ReceiptScanCode.forOrder(orderVO.getId()));
             log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
 
@@ -330,7 +324,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
         if (orderId == null || orderItemIds == null || orderItemIds.isEmpty()) {
             return buildErrorResult("订单ID或加菜项不能为空");
         }
-        log.info("打印加菜单：orderId={}, orderItemIds={}, printerId={}, templateId={}", orderId, orderItemIds, printerId, templateId);
+        log.info("打印新增菜品批次：orderId={}, orderItemIds={}, printerId={}, templateId={}", orderId, orderItemIds, printerId, templateId);
 
         RestaurantOrder restaurantOrder = restaurantOrderMapper.selectById(orderId);
         if (restaurantOrder == null) {

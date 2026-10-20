@@ -10,11 +10,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.restaurant.DTO.PrinterInfo;
+import org.hongtu.restaurant.DTO.PrintTemplate;
 import org.hongtu.restaurant.DAO.PrinterInfoMapper;
 import org.hongtu.restaurant.enums.PrinterStatusEnum;
 import org.hongtu.restaurant.enums.PrinterTypeEnum;
 import org.hongtu.restaurant.enums.PaperWidthEnum;
 import org.hongtu.restaurant.service.PrinterInfoService;
+import org.hongtu.restaurant.service.PrintTemplateService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.utils.FeieyunPrinterUtil;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
@@ -46,6 +48,9 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
     @Resource
     private StoreDataScopeService storeDataScopeService;
 
+    @Resource
+    private PrintTemplateService printTemplateService;
+
     /**
      * 添加打印机（本地数据库 + 飞鹅云）
      * 
@@ -58,6 +63,7 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> addPrinter(PrinterInfo printerInfo) {
         storeDataScopeService.checkStoreAccess(printerInfo.getStoreId());
+        validateBoundTemplate(printerInfo.getTemplateId(), printerInfo.getStoreId());
         Map<String, Object> result = new HashMap<>();
 
         // 1. 检查是否已存在
@@ -216,9 +222,28 @@ public class PrinterInfoServiceImpl extends ServiceImpl<PrinterInfoMapper, Print
             throw new RuntimeException("打印机不存在");
         }
 
+        // 旧接口省略模板时保留原绑定；换店后必须重新选择适用模板。
+        Long targetTemplateId = printerInfo.getTemplateId() == null
+                ? existing.getTemplateId() : printerInfo.getTemplateId();
+        validateBoundTemplate(targetTemplateId, printerInfo.getStoreId());
+
         org.hongtu.security.OperationPermission.requireChange("restaurant:printer:status", existing.getEnabled(), printerInfo.getEnabled());
         printerInfo.setUpdatedAt(LocalDateTime.now());
         return this.updateById(printerInfo);
+    }
+
+    /** 每台打印机固定绑定一个同门店或商户通用的启用模板。 */
+    private void validateBoundTemplate(Long templateId, Long storeId) {
+        if (templateId == null) {
+            throw new IllegalArgumentException("请选择打印机使用的打印模板");
+        }
+        PrintTemplate template = printTemplateService.getById(templateId);
+        if (template == null || template.getEnabled() != StatusEnum.NORMAL) {
+            throw new IllegalArgumentException("打印模板不存在或已禁用");
+        }
+        if (template.getStoreId() != null && !Objects.equals(template.getStoreId(), storeId)) {
+            throw new IllegalArgumentException("打印模板与打印机不属于同一门店");
+        }
     }
 
     /**

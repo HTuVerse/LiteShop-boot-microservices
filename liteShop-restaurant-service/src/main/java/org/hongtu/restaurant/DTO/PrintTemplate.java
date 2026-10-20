@@ -42,9 +42,6 @@ public class PrintTemplate implements Serializable {
      */
     private String templateName;
 
-    /** 模板用途：ORDER-提交订单，ADD_ITEMS-加菜；历史模板默认为 ORDER。 */
-    private String printScene;
-
     /**
      * 关联的门店ID（为空表示全局模板）
      */
@@ -107,6 +104,9 @@ public class PrintTemplate implements Serializable {
 
     /** 是否显示菜品金额：0-不显示，1-显示。 */
     private StatusEnum showDishAmount;
+
+    /** 是否显示订单合计：0-不显示，1-显示。厨房单可关闭。 */
+    private StatusEnum showOrderTotal;
 
     /**
      * 是否显示菜品规格：0-不显示，1-显示
