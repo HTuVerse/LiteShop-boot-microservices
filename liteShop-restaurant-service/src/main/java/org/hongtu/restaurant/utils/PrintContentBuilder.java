@@ -406,7 +406,8 @@ public class PrintContentBuilder {
         // ============ 二维码 ============
         if (template.getShowQrcode() == StatusEnum.NORMAL && scanCode != null && !scanCode.isBlank()) {
             content.append("<C>扫码完成出餐</C><BR><QR>").append(scanCode).append("</QR><BR>");
-        } else if (!addItems && template.getShowQrcode() != null && template.getShowQrcode() == StatusEnum.getByCode(1) &&
+        } else if (scanCode == null && !addItems && template.getShowQrcode() != null
+                && template.getShowQrcode() == StatusEnum.getByCode(1) &&
                 template.getQrcodeTemplate() != null && !template.getQrcodeTemplate().isEmpty()) {
             String qrcodeContent = template.getQrcodeTemplate()
                     .replace("{orderNo}", orderVO.getOrderNo())

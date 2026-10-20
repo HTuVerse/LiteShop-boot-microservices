@@ -137,7 +137,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
 
     private Map<String, Object> printOrderVO(RestaurantOrderVO orderVO, Long printerId, Long templateId,
                                               boolean manual) {
-        return printOrderVO(orderVO, printerId, templateId, manual, "ORDER", "receipt");
+        return printOrderVO(orderVO, printerId, templateId, manual, manual ? "MANUAL" : "ORDER", "receipt");
     }
 
     /** 按打印机绑定模板出单，并为每次加菜登记独立的打印任务。 */
@@ -206,7 +206,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
             PaperWidthEnum paperWidth = printer.getPaperWidth() == null
                     ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
             String scanCode = "ORDER".equals(printEvent) || "ITEM_TICKET".equals(printEvent)
-                    ? ReceiptScanCode.forOrder(orderVO.getId()) : null;
+                    ? ReceiptScanCode.forOrder(orderVO.getId()) : "";
             String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printEvent,
                     paperWidth, scanCode);
             log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
