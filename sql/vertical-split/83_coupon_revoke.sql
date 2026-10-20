@@ -46,5 +46,5 @@ INSERT INTO sys_role_permission (tenant_id, role_id, permission_id)
 SELECT g.tenant_id, g.role_id, g.permission_id
 FROM tmp_coupon_revoke_grants g
 WHERE NOT EXISTS (SELECT 1 FROM sys_role_permission rp
-  WHERE rp.tenant_id = g.tenant_id AND rp.role_id = g.role_id AND rp.permission_id = g.permission_id);
+  WHERE rp.tenant_id <=> g.tenant_id AND rp.role_id = g.role_id AND rp.permission_id = g.permission_id);
 DROP TEMPORARY TABLE tmp_coupon_revoke_grants;
