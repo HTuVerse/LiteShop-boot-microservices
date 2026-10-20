@@ -170,6 +170,9 @@ public class PrintTemplate implements Serializable {
      */
     private Integer printCopies;
 
+    /** 出单方式：0-整批一张，1-每个菜品明细一张。 */
+    private Integer itemTicketMode;
+
     /**
      * 是否为默认模板：0-否，1-是
      */

@@ -93,6 +93,9 @@ public class RestaurantOrderItem implements Serializable {
      */
     private Integer batchNo;
 
+    /** 本次下单的订单备注快照，与菜品口味备注分开。 */
+    private String batchOrderNote;
+
     /** 本批菜品确认提交时的用户快照，与加入购物车的人无关。 */
     private Long submittedByUserId;
     private String submittedByName;

@@ -66,7 +66,7 @@ public class PrintContentBuilder {
                 template.getShowPickupCode() == BooleanEnum.YES && orderVO.getPickupMode()== pickupModeEnum.NUMBERCALLING;
 
         return buildNormalContent(template, orderVO, isPickupCodeFocused, actualPaperWidth,
-                "ADD_ITEMS".equals(printEvent), scanCode);
+                "ADD_ITEMS".equals(printEvent) || printEvent.startsWith("ITEM_TICKET"), scanCode);
     }
 
     /** 使用演示订单生成与真实订单相同格式的小票指令，供在线预览和测试打印。 */
@@ -111,6 +111,7 @@ public class PrintContentBuilder {
         item.setUnitListPrice(new BigDecimal("44.00"));
         item.setUnitSellingPrice(new BigDecimal("40.00"));
         item.setQuantity(2);
+        item.setBatchOrderNote(order.getNote());
         item.setLinePayableAmount(new BigDecimal("80.00"));
         item.setDiscountAmount(new BigDecimal("8.00"));
         item.setSpecOptionsText("微辣");
@@ -248,7 +249,8 @@ public class PrintContentBuilder {
 
         // ============ 菜品列表 ============
         boolean showUnitPrice = template.getShowDishUnitPrice() != StatusEnum.DISABLED;
-        boolean showQuantity = template.getShowDishQuantity() != StatusEnum.DISABLED;
+        boolean showQuantity = Integer.valueOf(1).equals(template.getItemTicketMode())
+                || template.getShowDishQuantity() != StatusEnum.DISABLED;
         boolean showAmount = template.getShowDishAmount() != StatusEnum.DISABLED;
 
         // 每个金额字段独立控制，关闭的列把空间还给菜名。
@@ -270,10 +272,19 @@ public class PrintContentBuilder {
         List<RestaurantOrderVO.OrderItemVO> itemsByBatch = new ArrayList<>(items);
         itemsByBatch.sort(Comparator.comparingInt(PrintContentBuilder::batchNoOf));
         int previousBatchNo = 0;
+        String previousBatchNote = null;
         for (RestaurantOrderVO.OrderItemVO item : itemsByBatch) {
             int currentBatchNo = batchNoOf(item);
+            if (previousBatchNo != 0 && currentBatchNo != previousBatchNo) {
+                appendBatchNote(content, template, previousBatchNote);
+            }
             if (showBatchLabels && currentBatchNo != previousBatchNo) {
                 content.append("<BOLD>第").append(currentBatchNo).append("次下单</BOLD><BR>");
+            }
+            if (currentBatchNo != previousBatchNo) {
+                // 历史首次下单沿用订单备注；新订单读取提交时的批次快照。
+                previousBatchNote = item.getBatchOrderNote() == null && currentBatchNo == 1
+                        ? orderVO.getNote() : item.getBatchOrderNote();
             }
             previousBatchNo = currentBatchNo;
             String dishName = item.getDishName();
@@ -333,6 +344,7 @@ public class PrintContentBuilder {
                 content.append("  备注：").append(item.getNote()).append("<BR>");
             }
         }
+        appendBatchNote(content, template, previousBatchNote);
 
         // ============ 合计部分 ============
         if (template.getShowOrderTotal() != StatusEnum.DISABLED) {
@@ -371,12 +383,6 @@ public class PrintContentBuilder {
             content.append(buildDividerLine(paperWidth));
         }
 
-        // ============ 订单备注 ============
-        if (template.getShowOrderNote() != null && template.getShowOrderNote() == StatusEnum.getByCode(1) &&
-                orderVO.getNote() != null && !orderVO.getNote().isEmpty() && !"null".equals(orderVO.getNote())) {
-            content.append("订单备注：").append(orderVO.getNote()).append("<BR>");
-        }
-
         // ============ 支付信息 ============
         if (template.getShowPaymentInfo() != null
                 && template.getShowPaymentInfo() == StatusEnum.getByCode(1)) {
@@ -400,7 +406,7 @@ public class PrintContentBuilder {
         // ============ 二维码 ============
         if (template.getShowQrcode() == StatusEnum.NORMAL && scanCode != null && !scanCode.isBlank()) {
             content.append("<C>扫码完成出餐</C><BR><QR>").append(scanCode).append("</QR><BR>");
-        } else if (template.getShowQrcode() != null && template.getShowQrcode() == StatusEnum.getByCode(1) &&
+        } else if (!addItems && template.getShowQrcode() != null && template.getShowQrcode() == StatusEnum.getByCode(1) &&
                 template.getQrcodeTemplate() != null && !template.getQrcodeTemplate().isEmpty()) {
             String qrcodeContent = template.getQrcodeTemplate()
                     .replace("{orderNo}", orderVO.getOrderNo())
@@ -422,6 +428,13 @@ public class PrintContentBuilder {
     private static int batchNoOf(RestaurantOrderVO.OrderItemVO item) {
         Integer batchNo = item.getBatchNo();
         return batchNo == null || batchNo < 1 ? 1 : batchNo;
+    }
+
+    /** 把订单备注紧跟在所属批次菜品之后。 */
+    private static void appendBatchNote(StringBuilder content, PrintTemplate template, String note) {
+        if (template.getShowOrderNote() == StatusEnum.NORMAL && hasText(note) && !"null".equals(note)) {
+            content.append("订单备注：").append(note).append("<BR>");
+        }
     }
 
 

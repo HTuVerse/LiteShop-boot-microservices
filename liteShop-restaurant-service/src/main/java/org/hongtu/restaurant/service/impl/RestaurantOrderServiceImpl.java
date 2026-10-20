@@ -389,6 +389,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 orderItem.setUpdatedAt(LocalDateTime.now());
                 // 设置批次号和加菜时间
                 orderItem.setBatchNo(1); // 首次下单，批次号为1
+                orderItem.setBatchOrderNote(request.getNote());
                 orderItem.setSubmittedByUserId(order.getOperatorId());
                 orderItem.setSubmittedByName(order.getOperatorName());
                 orderItem.setAddTime(LocalDateTime.now());
@@ -1437,6 +1438,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
                 // 【核心】设置批次号和加菜时间
                 orderItem.setBatchNo(newBatchNo);
+                orderItem.setBatchOrderNote(request.getNote());
                 Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
                 orderItem.setSubmittedByUserId(submitterId);
                 orderItem.setSubmittedByName(resolveOperatorName(submitterId));
@@ -1745,6 +1747,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             orderItem.setCreatedAt(LocalDateTime.now());
             orderItem.setUpdatedAt(LocalDateTime.now());
             orderItem.setBatchNo(1);
+            orderItem.setBatchOrderNote(request.getNote());
             Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
             orderItem.setSubmittedByUserId(submitterId);
             orderItem.setSubmittedByName(resolveOperatorName(submitterId));
@@ -1930,6 +1933,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 orderItem.setCreatedAt(LocalDateTime.now());
                 orderItem.setUpdatedAt(LocalDateTime.now());
                 orderItem.setBatchNo(1); // 首次下单，批次号为1
+                orderItem.setBatchOrderNote(request.getNote());
                 Long submitterId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
                 orderItem.setSubmittedByUserId(submitterId);
                 orderItem.setSubmittedByName(resolveOperatorName(submitterId));

@@ -241,6 +241,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         newTemplate.setFontSize(sourceTemplate.getFontSize());
         newTemplate.setPrintDensity(sourceTemplate.getPrintDensity());
         newTemplate.setPrintCopies(sourceTemplate.getPrintCopies());
+        newTemplate.setItemTicketMode(sourceTemplate.getItemTicketMode());
         newTemplate.setIsDefault(BooleanEnum.NO); // 复制的模板不设为默认
         newTemplate.setEnabled(StatusEnum.NORMAL);
         newTemplate.setRemark("从模板【" + sourceTemplate.getTemplateName() + "】复制");
@@ -304,6 +305,7 @@ public class PrintTemplateServiceImpl extends ServiceImpl<PrintTemplateMapper, P
         template.setFontSize(0);
         template.setPrintDensity(8);
         template.setPrintCopies(1);
+        template.setItemTicketMode(0);
         template.setIsDefault(BooleanEnum.YES);
         template.setEnabled(StatusEnum.NORMAL);
         return template;

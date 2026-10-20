@@ -21,6 +21,7 @@ import org.hongtu.restaurant.utils.FeieyunPrinterUtil;
 import org.hongtu.restaurant.utils.PrintContentBuilder;
 import org.hongtu.restaurant.utils.ReceiptScanCode;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
+import org.hongtu.utils.BeanCopyUtils;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -174,12 +176,39 @@ public class OrderPrintServiceImpl implements OrderPrintService {
                 return buildErrorResult("打印模板与订单不属于同一门店");
             }
 
+            // 一菜一票按订单明细拆分；相同菜品的数量仍在同一张票上显示。
+            if (Integer.valueOf(1).equals(template.getItemTicketMode()) && orderVO.getItems() != null
+                    && !orderVO.getItems().isEmpty() && !jobSuffix.contains(":item:")) {
+                Map<String, Object> firstResult = null;
+                int ticketCount = 0;
+                List<RestaurantOrderVO.OrderItemVO> ticketItems = orderVO.getItems().stream()
+                        .sorted(Comparator.comparingInt(item -> item.getBatchNo() == null ? 1 : item.getBatchNo()))
+                        .toList();
+                for (RestaurantOrderVO.OrderItemVO item : ticketItems) {
+                    RestaurantOrderVO itemOrderVO = BeanCopyUtils.copyBean(orderVO, RestaurantOrderVO.class);
+                    itemOrderVO.setItems(List.of(item));
+                    boolean firstBatchTicket = "ORDER".equals(printEvent) && ticketCount == 0
+                            && (item.getBatchNo() == null || item.getBatchNo() == 1);
+                    String itemEvent = "ADD_ITEMS".equals(printEvent) ? "ADD_ITEMS"
+                            : firstBatchTicket ? "ITEM_TICKET" : "ITEM_TICKET_NO_QR";
+                    Map<String, Object> result = printOrderVO(itemOrderVO, printerId, templateId, manual,
+                            itemEvent, jobSuffix + ":item:" + item.getId());
+                    if (!Boolean.TRUE.equals(result.get("success"))) return result;
+                    if (firstResult == null) firstResult = result;
+                    ticketCount++;
+                }
+                firstResult.put("ticketCount", ticketCount);
+                return firstResult;
+            }
+
             // 3. 构建打印内容
             fillCustomerForReceipt(orderVO);
             PaperWidthEnum paperWidth = printer.getPaperWidth() == null
                     ? PaperWidthEnum.MM_58 : printer.getPaperWidth();
+            String scanCode = "ORDER".equals(printEvent) || "ITEM_TICKET".equals(printEvent)
+                    ? ReceiptScanCode.forOrder(orderVO.getId()) : null;
             String printContent = PrintContentBuilder.buildOrderContent(template, orderVO, printEvent,
-                    paperWidth, ReceiptScanCode.forOrder(orderVO.getId()));
+                    paperWidth, scanCode);
             log.debug("打印内容已生成: orderId={}, contentLength={}", orderVO.getId(), printContent.length());
 
             // 4. 调用飞鹅打印接口
