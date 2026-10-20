@@ -18,6 +18,8 @@ import java.math.RoundingMode;
 import java.nio.charset.Charset;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -139,13 +141,6 @@ public class PrintContentBuilder {
             // 小票机仅支持预先写入设备的 LOGO，图片 URL 的 IMG 指令属于标签机接口。
             content.append("<LOGO><BR>");
         }
-
-        // 同一模板可打印各次下单；标题由订单项批次号生成，避免复制模板。
-        int batchNo = orderVO.getItems() == null ? 1 : orderVO.getItems().stream()
-                .map(RestaurantOrderVO.OrderItemVO::getBatchNo)
-                .filter(number -> number != null && number > 0)
-                .min(Integer::compareTo).orElse(1);
-        content.append("<C><BOLD>第").append(batchNo).append("次下单</BOLD></C><BR>");
 
         // ============ 店铺名称 ============
         String storeName = orderVO.getStoreName();
@@ -270,8 +265,17 @@ public class PrintContentBuilder {
 
         // 菜品明细
         List<RestaurantOrderVO.OrderItemVO> items = orderVO.getItems();
-
-        for (RestaurantOrderVO.OrderItemVO item : items) {
+        // 只有发生过后续下单时才显示批次，且标记紧挨该批第一道菜。
+        boolean showBatchLabels = items.stream().anyMatch(item -> batchNoOf(item) > 1);
+        List<RestaurantOrderVO.OrderItemVO> itemsByBatch = new ArrayList<>(items);
+        itemsByBatch.sort(Comparator.comparingInt(PrintContentBuilder::batchNoOf));
+        int previousBatchNo = 0;
+        for (RestaurantOrderVO.OrderItemVO item : itemsByBatch) {
+            int currentBatchNo = batchNoOf(item);
+            if (showBatchLabels && currentBatchNo != previousBatchNo) {
+                content.append("<BOLD>第").append(currentBatchNo).append("次下单</BOLD><BR>");
+            }
+            previousBatchNo = currentBatchNo;
             String dishName = item.getDishName();
             // 小票单价保留下单时的标价，优惠只体现在本行应付和合计中。
             BigDecimal price = item.getUnitListPrice() != null
@@ -412,6 +416,12 @@ public class PrintContentBuilder {
         content.append("<BR>");
 
         return content.toString();
+    }
+
+    /** 历史订单项没有批次号时按首次下单处理。 */
+    private static int batchNoOf(RestaurantOrderVO.OrderItemVO item) {
+        Integer batchNo = item.getBatchNo();
+        return batchNo == null || batchNo < 1 ? 1 : batchNo;
     }
 
 
