@@ -102,10 +102,12 @@ public class PrintContentBuilder {
         order.setNote("少油少盐");
         order.setServiceFee(BigDecimal.ZERO);
         order.setDiscountAmount(new BigDecimal("8.00"));
-        order.setTotalAmount(new BigDecimal("80.00"));
+        order.setTotalAmount(new BigDecimal("88.00"));
+        order.setActualAmount(new BigDecimal("80.00"));
         RestaurantOrderVO.OrderItemVO item = new RestaurantOrderVO.OrderItemVO();
         item.setDishName("示例菜品");
-        item.setUnitSellingPrice(new BigDecimal("44.00"));
+        item.setUnitListPrice(new BigDecimal("44.00"));
+        item.setUnitSellingPrice(new BigDecimal("40.00"));
         item.setQuantity(2);
         item.setLinePayableAmount(new BigDecimal("80.00"));
         item.setDiscountAmount(new BigDecimal("8.00"));
@@ -271,7 +273,9 @@ public class PrintContentBuilder {
 
         for (RestaurantOrderVO.OrderItemVO item : items) {
             String dishName = item.getDishName();
-            BigDecimal price = item.getUnitSellingPrice();
+            // 小票单价保留下单时的标价，优惠只体现在本行应付和合计中。
+            BigDecimal price = item.getUnitListPrice() != null
+                    ? item.getUnitListPrice() : item.getUnitSellingPrice();
             Integer quantity = item.getQuantity();
             BigDecimal itemTotal = item.getLinePayableAmount();
             BigDecimal discountPrice = item.getDiscountAmount();
@@ -330,20 +334,36 @@ public class PrintContentBuilder {
         if (template.getShowOrderTotal() != StatusEnum.DISABLED) {
             content.append(buildDashLine(paperWidth));
 
+            BigDecimal originalAmount = addItems ? items.stream()
+                    .map(item -> {
+                        BigDecimal linePayable = item.getLinePayableAmount() == null
+                                ? BigDecimal.ZERO : item.getLinePayableAmount();
+                        BigDecimal lineDiscount = item.getDiscountAmount() == null
+                                ? BigDecimal.ZERO : item.getDiscountAmount();
+                        return linePayable.add(lineDiscount);
+                    })
+                    .reduce(BigDecimal.ZERO, BigDecimal::add) : orderVO.getTotalAmount();
+            content.append("<RIGHT>").append(addItems ? "本次原价：" : "商品金额：")
+                    .append(formatPrice(originalAmount)).append("元</RIGHT><BR>");
             // 后续批次只计算本次新增菜品，不重复打印整单费用。
             if (!addItems && orderVO.getServiceFee() != null && orderVO.getServiceFee().compareTo(BigDecimal.ZERO) > 0) {
                 content.append("<RIGHT>服务费：").append(formatPrice(orderVO.getServiceFee())).append("元</RIGHT><BR>");
             }
-            if (!addItems && orderVO.getDiscountAmount() != null && orderVO.getDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
-                content.append("<RIGHT>优惠：-").append(formatPrice(orderVO.getDiscountAmount())).append("元</RIGHT><BR>");
+            BigDecimal discount = addItems ? items.stream()
+                    .map(RestaurantOrderVO.OrderItemVO::getDiscountAmount)
+                    .filter(java.util.Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add) : orderVO.getDiscountAmount();
+            if (discount != null && discount.compareTo(BigDecimal.ZERO) > 0) {
+                content.append("<RIGHT>优惠：-").append(formatPrice(discount)).append("元</RIGHT><BR>");
             }
 
-            BigDecimal total = addItems ? items.stream()
+            BigDecimal payable = addItems ? items.stream()
                     .map(RestaurantOrderVO.OrderItemVO::getLinePayableAmount)
                     .filter(java.util.Objects::nonNull)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add) : orderVO.getTotalAmount();
-            content.append("<RIGHT><BOLD>").append(addItems ? "本次合计：" : "总计：")
-                    .append(formatPrice(total)).append("元</BOLD></RIGHT><BR>");
+                    .reduce(BigDecimal.ZERO, BigDecimal::add) : orderVO.getActualAmount();
+            if (payable == null) payable = orderVO.getTotalAmount();
+            content.append("<RIGHT><BOLD>").append(addItems ? "本次应付：" : "应付金额：")
+                    .append(formatPrice(payable)).append("元</BOLD></RIGHT><BR>");
             content.append(buildDividerLine(paperWidth));
         }
 
