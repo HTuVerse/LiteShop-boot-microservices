@@ -25,8 +25,16 @@ public interface CouponMapper extends BaseMapper<Coupon> {
      * @return 影响行数，大于0表示扣减成功
      */
     @Update("UPDATE coupon SET remain_count = remain_count - #{count} " +
-            "WHERE id = #{couponId} AND remain_count >= #{count}")
+            "WHERE id = #{couponId} AND status = 1 AND recall_time IS NULL AND remain_count >= #{count}")
     int decreaseStock(@Param("couponId") Long couponId, @Param("count") Integer count);
+
+    /** 锁定模板并永久停止发券；与扣库存语句争用同一模板行。 */
+    @Update("UPDATE coupon SET status = 0, recall_time = NOW() WHERE id = #{couponId} AND recall_time IS NULL")
+    int recallTemplate(@Param("couponId") Long couponId);
+
+    /** 订单取消返券时锁定模板，避免与模板批量回收交错。 */
+    @org.apache.ibatis.annotations.Select("SELECT * FROM coupon WHERE id = #{couponId} FOR UPDATE")
+    Coupon selectForUpdate(@Param("couponId") Long couponId);
 
     /**
      * 恢复优惠券库存
@@ -41,6 +49,7 @@ public interface CouponMapper extends BaseMapper<Coupon> {
     /** 按旧库存条件原子调整可发库存及总量，保持已发放数量不变。 */
     @Update("UPDATE coupon SET remain_count = remain_count + #{delta}, total_count = total_count + #{delta} " +
             "WHERE id = #{couponId} AND remain_count = #{beforeCount} " +
+            "AND recall_time IS NULL " +
             "AND remain_count + #{delta} >= 0 AND total_count + #{delta} >= 0")
     int adjustStock(@Param("couponId") Long couponId, @Param("beforeCount") Integer beforeCount,
                     @Param("delta") Integer delta);

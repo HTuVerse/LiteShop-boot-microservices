@@ -32,6 +32,7 @@ CREATE TABLE `coupon` (
   `start_time` datetime NULL DEFAULT NULL COMMENT '有效期开始',
   `end_time` datetime NULL DEFAULT NULL COMMENT '有效期结束',
   `status` tinyint NOT NULL DEFAULT 1 COMMENT '状态(0:下架,1:上架)',
+  `recall_time` datetime NULL COMMENT '模板批量回收时间；非空时永久停止发放',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `stackable` tinyint NULL DEFAULT 0 COMMENT '是否可叠加(0不可,1可；还需存在明确配对)',
   `exclusive_group` int NULL DEFAULT NULL COMMENT '互斥组ID(同组互斥)',
@@ -92,7 +93,7 @@ CREATE TABLE `user_coupon` (
   `user_id` bigint NOT NULL COMMENT '用户ID',
   `coupon_id` bigint NOT NULL COMMENT '优惠券ID',
   `code` varchar(20) NULL DEFAULT NULL COMMENT '优惠券唯一码',
-  `status` tinyint NOT NULL DEFAULT 0 COMMENT '状态(0:未生效,1:未使用,2:已使用,3:已过期)',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '状态(0:未生效,1:未使用,2:已使用,3:已过期,4:已回收)',
   `obtain_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '领取时间',
   `use_time` datetime NULL DEFAULT NULL COMMENT '使用时间',
   `start_time` datetime NULL DEFAULT NULL COMMENT '开始时间',
@@ -107,6 +108,23 @@ CREATE TABLE `user_coupon` (
   INDEX `idx_tenant_status_expire` (`tenant_id`, `status`, `expire_time`),
   INDEX `idx_tenant_status_start` (`tenant_id`, `status`, `start_time`)
 ) ENGINE = InnoDB COMMENT = '用户优惠券关联表';
+
+-- 每张回收券的操作记录，管理员可追溯批次、原因和操作人。
+DROP TABLE IF EXISTS `coupon_revoke_record`;
+CREATE TABLE `coupon_revoke_record` (
+  `id` bigint NOT NULL COMMENT '回收记录ID',
+  `user_coupon_id` bigint NOT NULL COMMENT '用户券ID',
+  `coupon_id` bigint NOT NULL COMMENT '券模板ID',
+  `user_id` bigint NOT NULL COMMENT '持券用户ID',
+  `operator_id` bigint NULL COMMENT '操作管理员ID；系统取消订单回收时为空',
+  `reason` varchar(200) NOT NULL COMMENT '回收原因',
+  `batch_id` varchar(36) NULL COMMENT '模板批量回收批次号',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '回收时间',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tenant_user_coupon` (`tenant_id`, `user_coupon_id`),
+  KEY `idx_tenant_coupon_time` (`tenant_id`, `coupon_id`, `create_time`)
+) ENGINE=InnoDB COMMENT='用户券回收审计记录';
 
 -- ----------------------------
 -- 核销记录

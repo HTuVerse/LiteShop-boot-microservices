@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
+import org.hongtu.DAO.CouponRevokeRecordMapper;
 import org.hongtu.DAO.CouponStackPairMapper;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DAO.VerifyRecordMapper;
@@ -55,6 +56,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
     CouponStackPairMapper stackPairMapper;
     @Resource
     VerifyRecordMapper verifyRecordMapper;
+    @Resource
+    CouponRevokeRecordMapper revokeRecordMapper;
 
     // ==================== 用户优惠券查询 ====================
 
@@ -75,6 +78,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         LambdaQueryWrapper<UserCoupon> lambdaQuery = new LambdaQueryWrapper<>();
         // 只查询当前用户的优惠券
         lambdaQuery.eq(UserCoupon::getUserId, userId);
+        // 顾客及收银员共用此接口；已回收券永不进入用户端列表和历史。
+        lambdaQuery.ne(UserCoupon::getStatus, CouponStatusEnum.REVOKED);
         // 更新优惠券状态（如果已过期但状态未更新）
         LocalDateTime now = LocalDateTime.now();
         // 如果传入了状态参数，则按状态筛选
@@ -174,6 +179,101 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         return Result.success(voPage);
     }
 
+    /** 管理员分页查询模板的发放实例，保留已回收记录用于追溯。 */
+    @Override
+    public Result getIssuedCoupons(Long couponId, Long userId, Integer status, Integer currentPage, Integer pageSize) {
+        if (couponId == null || currentPage == null || currentPage < 1 || pageSize == null || pageSize < 1 || pageSize > 100
+                || (status != null && CouponStatusEnum.getByCode(status) == null)) {
+            return Result.error("查询参数不正确");
+        }
+        if (couponMapper.selectById(couponId) == null) return Result.error("优惠券模板不存在");
+        LambdaQueryWrapper<UserCoupon> query = new LambdaQueryWrapper<UserCoupon>()
+                .eq(UserCoupon::getCouponId, couponId)
+                .eq(userId != null, UserCoupon::getUserId, userId)
+                .eq(status != null, UserCoupon::getStatus, status)
+                .orderByDesc(UserCoupon::getObtainTime);
+        return Result.success(userCouponMapper.selectPage(new Page<>(currentPage, pageSize), query));
+    }
+
+    /** 只统计尚未使用且当前仍在有效期的券。 */
+    @Override
+    public Result countRevocableCoupons(Long couponId) {
+        if (couponId == null || couponMapper.selectById(couponId) == null) return Result.error("优惠券模板不存在");
+        Long count = userCouponMapper.selectCount(revocableQuery(couponId));
+        return Result.success(count);
+    }
+
+    /** 按回收时间倒序返回审计记录，供后台追溯原因和操作人。 */
+    @Override
+    public Result getRevokeRecords(Long couponId, Integer currentPage, Integer pageSize) {
+        if (couponId == null || currentPage == null || currentPage < 1 || pageSize == null || pageSize < 1 || pageSize > 100) {
+            return Result.error("查询参数不正确");
+        }
+        if (couponMapper.selectById(couponId) == null) return Result.error("优惠券模板不存在");
+        return Result.success(revokeRecordMapper.selectPage(new Page<>(currentPage, pageSize),
+                new LambdaQueryWrapper<CouponRevokeRecord>().eq(CouponRevokeRecord::getCouponId, couponId)
+                        .orderByDesc(CouponRevokeRecord::getCreateTime)));
+    }
+
+    private LambdaQueryWrapper<UserCoupon> revocableQuery(Long couponId) {
+        return new LambdaQueryWrapper<UserCoupon>()
+                .eq(UserCoupon::getCouponId, couponId)
+                .in(UserCoupon::getStatus, CouponStatusEnum.NOT_EFFECTIVE, CouponStatusEnum.NOT_USE)
+                .and(q -> q.isNull(UserCoupon::getExpireTime).or().gt(UserCoupon::getExpireTime, LocalDateTime.now()));
+    }
+
+    /** 单张回收采用状态条件更新，和核销 CAS 只能有一方成功。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result revokeUserCoupon(Long userCouponId, String reason, Long operatorId) {
+        String error = validateRevokeReason(reason);
+        if (error != null || userCouponId == null) return Result.error(error == null ? "用户券ID不能为空" : error);
+        UserCoupon item = userCouponMapper.selectById(userCouponId);
+        if (item == null) return Result.error("用户券不存在");
+        if (userCouponMapper.casRevokeCoupon(userCouponId) != 1) return Result.error("仅可回收未使用且未过期的券，请刷新后重试");
+        saveRevokeRecord(item, operatorId, reason.trim(), null);
+        return Result.success("回收成功");
+    }
+
+    /** 模板回收先锁定模板并停止发券，再逐张 CAS 回收并写入审计记录。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result revokeTemplateCoupons(Long couponId, String reason, Long operatorId) {
+        String error = validateRevokeReason(reason);
+        if (error != null || couponId == null) return Result.error(error == null ? "优惠券模板ID不能为空" : error);
+        Coupon template = couponMapper.selectById(couponId);
+        if (template == null) return Result.error("优惠券模板不存在");
+        if (couponMapper.recallTemplate(couponId) != 1) return Result.error("该模板已批量回收，请刷新后重试");
+        List<UserCoupon> items = userCouponMapper.selectList(revocableQuery(couponId));
+        String batchId = UUID.randomUUID().toString();
+        int revoked = 0;
+        for (UserCoupon item : items) {
+            if (userCouponMapper.casRevokeCoupon(item.getId()) == 1) {
+                saveRevokeRecord(item, operatorId, reason.trim(), batchId);
+                revoked++;
+            }
+        }
+        return Result.success("已回收 " + revoked + " 张未使用券，模板已停止发放", Map.of("revokedCount", revoked, "batchId", batchId));
+    }
+
+    private String validateRevokeReason(String reason) {
+        if (!StringUtils.hasText(reason)) return "请填写回收原因";
+        return reason.trim().length() > 200 ? "回收原因不能超过200字" : null;
+    }
+
+    private void saveRevokeRecord(UserCoupon item, Long operatorId, String reason, String batchId) {
+        CouponRevokeRecord record = new CouponRevokeRecord();
+        record.setUserCouponId(item.getId());
+        record.setCouponId(item.getCouponId());
+        record.setUserId(item.getUserId());
+        record.setOperatorId(operatorId);
+        record.setReason(reason);
+        record.setBatchId(batchId);
+        record.setCreateTime(LocalDateTime.now());
+        record.setTenantId(org.hongtu.tenant.TenantContext.getTenantId());
+        revokeRecordMapper.insert(record);
+    }
+
     // ==================== 优惠券发放 ====================
 
     /**
@@ -204,7 +304,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                 return Result.error("优惠券不存在");
             }
             // 检查优惠券是否上架可用
-            if (coupon.getStatus() != OnOrOffShelfEnum.ON_SHELF) {
+            if (coupon.getRecallTime() != null || coupon.getStatus() != OnOrOffShelfEnum.ON_SHELF) {
                 log.warn("发放优惠券失败：优惠券未上架，couponId={}", couponId);
                 return Result.error("优惠券未上架，不可发放");
             }
@@ -320,8 +420,8 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
      */
     private CouponStatusEnum calculateCouponStatus(UserCoupon userCoupon, LocalDateTime now) {
         // 已使用的状态不变
-        if (userCoupon.getStatus() == CouponStatusEnum.USED) {
-            return CouponStatusEnum.USED;
+        if (userCoupon.getStatus() == CouponStatusEnum.USED || userCoupon.getStatus() == CouponStatusEnum.REVOKED) {
+            return userCoupon.getStatus();
         }
         // 检查是否已过期
         if (userCoupon.getExpireTime() != null && userCoupon.getExpireTime().isBefore(now)) {
@@ -371,9 +471,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             // 更新状态为已过期
             int updatedCount = 0;
             for (UserCoupon userCoupon : userCoupons) {
-                userCoupon.setStatus(CouponStatusEnum.OUT_OF_DATE);
-                userCouponMapper.updateById(userCoupon);
-                updatedCount++;
+                updatedCount += userCouponMapper.casExpireCoupon(userCoupon.getId());
             }
             log.info("用户优惠券过期处理完成：userId={}, couponId={}, updatedCount={}", userId, couponId, updatedCount);
             return Result.success("已过期 " + updatedCount + " 张优惠券");
@@ -451,8 +549,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         // 3. 校验是否过期
         if (userCoupon.getExpireTime() != null && userCoupon.getExpireTime().isBefore(LocalDateTime.now())) {
             // 顺便更新为过期状态
-            userCoupon.setStatus(CouponStatusEnum.OUT_OF_DATE);
-            userCouponMapper.updateById(userCoupon);
+            userCouponMapper.casExpireCoupon(userCouponId);
             throw new BusinessException(400, "优惠券已过期，无法使用");
         }
 
@@ -463,6 +560,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
 
         Coupon template = couponMapper.selectById(userCoupon.getCouponId());
         if (template == null) throw new BusinessException(400, "优惠券模板不存在");
+        if (template.getRecallTime() != null) throw new BusinessException(400, "优惠券已回收，无法使用");
         if (org.hongtu.utils.CouponUnavailableDay.matches(
                 template.getUnavailableDates(), template.getUnavailableHolidays(), LocalDateTime.now().toLocalDate())) {
             throw new BusinessException(400, "优惠券今天不可使用");
@@ -528,10 +626,16 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             throw new BusinessException(409, "优惠券状态与核销记录不一致，拒绝返还");
         }
 
-        // 3. 【CAS乐观锁】判断是否已过期，决定恢复后的状态
+        // 锁定模板，使取消订单返券与模板批量回收按同一顺序生效。
+        Coupon template = couponMapper.selectForUpdate(userCoupon.getCouponId());
+        if (template == null) throw new BusinessException(404, "优惠券模板不存在，无法返还");
+        // 3. 【CAS乐观锁】判断是否已过期或模板已回收，决定恢复后的状态
         int newStatus;
         String statusDesc;
-        if (userCoupon.getExpireTime() != null && userCoupon.getExpireTime().isBefore(LocalDateTime.now())) {
+        if (template.getRecallTime() != null) {
+            newStatus = 4; // REVOKED
+            statusDesc = "已回收";
+        } else if (userCoupon.getExpireTime() != null && userCoupon.getExpireTime().isBefore(LocalDateTime.now())) {
             newStatus = 3; // OUT_OF_DATE
             statusDesc = "已过期";
         } else {
@@ -541,6 +645,9 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         int updateRows = userCouponMapper.casRestoreCoupon(userCouponId, newStatus);
         if (updateRows <= 0) {
             throw new BusinessException(409, "优惠券状态已变化，返还失败");
+        }
+        if (newStatus == 4) {
+            saveRevokeRecord(userCoupon, null, "模板已批量回收，取消订单时同步回收返还券", null);
         }
 
         // 3.5 重置券码：避免同一张券再次核销时与 verify_record 表 verify_code 唯一索引冲突（历史记录仍保留原码）

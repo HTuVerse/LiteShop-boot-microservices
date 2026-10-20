@@ -61,6 +61,47 @@ public class UserCouponController {
         return userCouponService.getUserCoupons(currentPage, pageSize, "最近领取", userId, null);
     }
 
+    /** 管理员查看指定模板的发放记录，可按用户及状态筛选。 */
+    @GetMapping("/admin/issued")
+    @SaCheckPermission(value = "marketing:coupon", orRole = "SUPER_ADMIN")
+    public Result getIssuedCoupons(@RequestParam Long couponId,
+                                   @RequestParam(required = false) Long userId,
+                                   @RequestParam(required = false) Integer status,
+                                   @RequestParam(defaultValue = "1") Integer currentPage,
+                                   @RequestParam(defaultValue = "10") Integer pageSize) {
+        return userCouponService.getIssuedCoupons(couponId, userId, status, currentPage, pageSize);
+    }
+
+    /** 管理员回收前查看模板当前可回收数量。 */
+    @GetMapping("/admin/revocable-count")
+    @SaCheckPermission(value = "marketing:coupon", orRole = "SUPER_ADMIN")
+    public Result countRevocableCoupons(@RequestParam Long couponId) {
+        return userCouponService.countRevocableCoupons(couponId);
+    }
+
+    /** 管理员查看模板回收审计记录。 */
+    @GetMapping("/admin/revoke-records")
+    @SaCheckPermission(value = "marketing:coupon", orRole = "SUPER_ADMIN")
+    public Result getRevokeRecords(@RequestParam Long couponId,
+                                   @RequestParam(defaultValue = "1") Integer currentPage,
+                                   @RequestParam(defaultValue = "10") Integer pageSize) {
+        return userCouponService.getRevokeRecords(couponId, currentPage, pageSize);
+    }
+
+    /** 管理员回收一张用户券，理由写入审计记录。 */
+    @PostMapping("/admin/revoke-one")
+    @SaCheckPermission(value = "marketing:coupon:revoke", orRole = "SUPER_ADMIN")
+    public Result revokeUserCoupon(@RequestParam Long userCouponId, @RequestParam String reason) {
+        return userCouponService.revokeUserCoupon(userCouponId, reason, StpUtil.getLoginIdAsLong());
+    }
+
+    /** 管理员回收某模板全部未使用券，模板永久停止发放。 */
+    @PostMapping("/admin/revoke-template")
+    @SaCheckPermission(value = "marketing:coupon:revoke", orRole = "SUPER_ADMIN")
+    public Result revokeTemplateCoupons(@RequestParam Long couponId, @RequestParam String reason) {
+        return userCouponService.revokeTemplateCoupons(couponId, reason, StpUtil.getLoginIdAsLong());
+    }
+
     /**
      * 发送优惠券给用户（管理员接口）
      * @param userId 用户ID

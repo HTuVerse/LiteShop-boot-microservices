@@ -68,10 +68,10 @@ public class VerifyRecordServiceImpl extends ServiceImpl<VerifyRecordMapper, Ver
         LambdaQueryWrapper<UserCoupon> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(UserCoupon::getCode, couponCode);
         UserCoupon userCoupon = userCouponMapper.selectOne(queryWrapper);
-        // 更新优惠券状态为已使用
-        userCoupon.setStatus(CouponStatusEnum.USED);
-        userCoupon.setUseTime(LocalDateTime.now());
-        userCouponMapper.updateById(userCoupon);
+        // 条件更新保证扫码核销不会覆盖同时发生的回收操作。
+        if (userCoupon == null || userCouponMapper.casVerifyCoupon(userCoupon.getId(), LocalDateTime.now()) != 1) {
+            return Result.error("优惠券状态已变更，请刷新后重试");
+        }
         // 创建核销记录
         VerifyRecord verifyRecord = new VerifyRecord();
         verifyRecord.setUserCouponId(userCoupon.getId());
@@ -187,11 +187,16 @@ public class VerifyRecordServiceImpl extends ServiceImpl<VerifyRecordMapper, Ver
         if (userCoupon.getStatus() == CouponStatusEnum.NOT_EFFECTIVE) {
             return "优惠券还未生效";
         }
+        if (userCoupon.getStatus() == CouponStatusEnum.REVOKED) {
+            return "优惠券已回收";
+        }
+        if (userCoupon.getStatus() != CouponStatusEnum.NOT_USE) {
+            return "优惠券状态不可核销";
+        }
         // 实时检查是否过期
         if (userCoupon.getExpireTime() != null && userCoupon.getExpireTime().isBefore(LocalDateTime.now())) {
             // 更新状态
-            userCoupon.setStatus(CouponStatusEnum.OUT_OF_DATE);
-            userCouponMapper.updateById(userCoupon);
+            userCouponMapper.casExpireCoupon(userCoupon.getId());
             return "优惠券已过期";
         }
         // 实时检查是否生效

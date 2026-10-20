@@ -146,6 +146,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (existCoupon == null) {
             return Result.error("优惠券不存在");
         }
+        if (existCoupon.getRecallTime() != null) return Result.error("已批量回收的模板不可编辑");
         CouponTypeEnum targetType = coupon.getType() == null ? existCoupon.getType() : coupon.getType();
         if (targetType.needDishItems()
                 && (coupon.getDishItems() == null || coupon.getDishItems().isEmpty())) {
@@ -201,6 +202,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon == null) {
             return Result.error("优惠券不存在");
         }
+        if (coupon.getRecallTime() != null) return Result.error("已批量回收的模板须保留审计记录，不可删除");
         // 检查是否有用户持有该优惠券
         LambdaQueryWrapper<UserCoupon> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(UserCoupon::getCouponId, id)
@@ -370,6 +372,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         }
         Coupon coupon = getById(couponId);
         if (coupon == null) return Result.error("优惠券不存在");
+        if (coupon.getRecallTime() != null) return Result.error("已批量回收的模板不可调整库存");
         long after = (long) coupon.getRemainCount() + delta;
         long totalAfter = (long) coupon.getTotalCount() + delta;
         if (after < 0 || totalAfter < 0 || after > Integer.MAX_VALUE || totalAfter > Integer.MAX_VALUE)
@@ -411,6 +414,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon == null) {
             return Result.error("优惠券不存在");
         }
+        if (coupon.getRecallTime() != null) return Result.error("已批量回收的模板不可重新上架");
         // 获取当前状态，切换为相反状态
         OnOrOffShelfEnum currentStatus = coupon.getStatus();
         OnOrOffShelfEnum targetStatus = (currentStatus == OnOrOffShelfEnum.ON_SHELF)
@@ -429,6 +433,7 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         // 仅更新状态，不能用读出的旧库存覆盖同时进行的发券或补库。
         boolean updated = baseMapper.update(null, new LambdaUpdateWrapper<Coupon>()
                 .eq(Coupon::getId, id).eq(Coupon::getStatus, currentStatus)
+                .isNull(Coupon::getRecallTime)
                 .set(Coupon::getStatus, targetStatus)) == 1;
         if (updated) {
             String message = (targetStatus == OnOrOffShelfEnum.ON_SHELF) ? "上架成功" : "下架成功";

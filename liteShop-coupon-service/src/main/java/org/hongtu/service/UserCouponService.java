@@ -29,6 +29,21 @@ public interface UserCouponService extends IService<UserCoupon> {
      */
     Result getUserCoupons(Integer currentPage, Integer pageSize, String searchKey, Long userId, CouponStatusEnum status);
 
+    /** 管理员按券模板查询发放记录，包含已回收状态。 */
+    Result getIssuedCoupons(Long couponId, Long userId, Integer status, Integer currentPage, Integer pageSize);
+
+    /** 预览指定模板当前可回收的未使用券数量。 */
+    Result countRevocableCoupons(Long couponId);
+
+    /** 管理员分页查看模板回收审计记录。 */
+    Result getRevokeRecords(Long couponId, Integer currentPage, Integer pageSize);
+
+    /** 回收单张尚未使用的用户券。 */
+    Result revokeUserCoupon(Long userCouponId, String reason, Long operatorId);
+
+    /** 回收指定模板的全部未使用券并永久停止继续发放。 */
+    Result revokeTemplateCoupons(Long couponId, String reason, Long operatorId);
+
     /**
      * 发送优惠券给用户
      * @param userId 用户ID

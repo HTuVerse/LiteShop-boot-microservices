@@ -62,6 +62,15 @@ public interface UserCouponMapper extends BaseMapper<UserCoupon> {
             "WHERE id = #{id} AND status = 1")
     int casVerifyCoupon(@Param("id") Long id, @Param("useTime") LocalDateTime useTime);
 
+    /** 仅回收尚未使用的券，避免覆盖并发核销和过期更新。 */
+    @Update("UPDATE user_coupon SET status = 4 WHERE id = #{id} AND status IN (0, 1) " +
+            "AND (expire_time IS NULL OR expire_time > NOW())")
+    int casRevokeCoupon(@Param("id") Long id);
+
+    /** 仅将仍未使用且已到期的券标记过期。 */
+    @Update("UPDATE user_coupon SET status = 3 WHERE id = #{id} AND status IN (0, 1)")
+    int casExpireCoupon(@Param("id") Long id);
+
     /**
      * CAS乐观锁返还优惠券（从已使用恢复为未使用）
      * @param id 用户优惠券ID

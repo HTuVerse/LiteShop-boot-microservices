@@ -31,7 +31,9 @@ public enum CouponStatusEnum {
     /**
      * 已过期
      */
-    OUT_OF_DATE(3, "已过期");
+    OUT_OF_DATE(3, "已过期"),
+    /** 管理员回收，顾客端不展示。 */
+    REVOKED(4, "已回收");
 
     @EnumValue
     private final Integer code;

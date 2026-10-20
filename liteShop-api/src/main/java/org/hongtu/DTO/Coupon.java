@@ -126,6 +126,9 @@ public class Coupon implements Serializable {
      */
     private OnOrOffShelfEnum status;
 
+    /** 模板批量回收时间；非空时禁止再次发放或上架。 */
+    private LocalDateTime recallTime;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime createTime;
 
