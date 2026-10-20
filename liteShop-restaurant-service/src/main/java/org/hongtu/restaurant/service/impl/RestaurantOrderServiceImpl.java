@@ -214,6 +214,16 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
         }
 
+        StoreInfo storeInfo = storeInfoMapper.selectById(request.getStoreId());
+        if (storeInfo == null) {
+            throw new BusinessException("门店不存在");
+        }
+        // 桌位线下支付由收银台按最终订单金额选券；顾客下单和代客下单都不能提前占用优惠券。
+        if (lockedSession != null && storeInfo.getPaymentMode() == PaymentModeEnum.OFFLINE
+                && request.getUserCouponIds() != null && !request.getUserCouponIds().isEmpty()) {
+            throw new BusinessException("桌位线下支付的优惠券请在收银台结账时使用");
+        }
+
         // 1. 仅校验菜品及规格；所有价格均由服务端统一试价覆盖。
         validateCreateOrderCartItems(request.getStoreId(), request.getCartItems());
         PricingQuoteVO pricingQuote = quoteCreateItems(request.getStoreId(), request.getUserId(), request.getCartItems(),
@@ -280,10 +290,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 7. 创建订单主表
         RestaurantOrder order = new RestaurantOrder();
-        StoreInfo storeInfo = storeInfoMapper.selectById(request.getStoreId());
-        if (storeInfo == null) {
-            throw new BusinessException("门店不存在");
-        }
         // 自取统一线上支付；扫码堂食才采用门店配置的线上或线下支付模式。
         PaymentModeEnum orderPaymentMode = request.getOrderType() == SceneTypeEnum.DELIVERY
                 ? PaymentModeEnum.ONLINE : storeInfo.getPaymentMode();
