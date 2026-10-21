@@ -32,6 +32,7 @@ public class ResourceReferenceService {
     private final JdbcTemplate jdbc;
     private final FileUploadMapper files;
     private final StorageManager storage;
+    private final ResourceLibraryAccess libraryAccess;
 
     /** 在业务写入前锁定并登记所有资源；外部 URL 保持原值且不建引用。 */
     @Transactional(rollbackFor = Exception.class)
@@ -60,7 +61,9 @@ public class ResourceReferenceService {
             if (file == null) throw new IllegalArgumentException("资源不存在：" + id);
             if (!"ACTIVE".equals(state) || !"PUBLIC".equals(storage.visibility(file)))
                 throw new IllegalStateException("资源正在删除或不是公开资源：" + id);
-            if (!Long.valueOf(0).equals(file.getTenantId()) && !request.tenantId().equals(file.getTenantId()))
+            if (!Long.valueOf(0).equals(file.getTenantId())
+                    && (libraryAccess.permissionsFor(file.getTenantId(), request.tenantId())
+                        & ResourceLibraryAccess.SELECT) == 0)
                 throw new SecurityException("不能引用其他租户的资源");
             String publicUrl = storage.publicUrl(file);
             if (publicUrl == null || publicUrl.isBlank())
@@ -219,7 +222,7 @@ public class ResourceReferenceService {
         return matched;
     }
 
-    /** 回填预览和旧客户端 URL 输入共用同一套安全匹配规则。 */
+    /** 回填预览和旧客户端 URL 输入共用选用权限校验。 */
     public Long matchForTenant(Long tenantId, String url) {
         if (tenantId == null || tenantId < 0) return null;
         Long id = matchExactPublicUrl(url);
@@ -227,7 +230,9 @@ public class ResourceReferenceService {
         FileUpload file = files.findAcrossTenants(id);
         if (file == null || !"ACTIVE".equals(file.getDeletionState())
                 || !"PUBLIC".equals(storage.visibility(file))) return null;
-        return Long.valueOf(0).equals(file.getTenantId()) || tenantId.equals(file.getTenantId()) ? id : null;
+        return Long.valueOf(0).equals(file.getTenantId())
+                || (libraryAccess.permissionsFor(file.getTenantId(), tenantId) & ResourceLibraryAccess.SELECT) != 0
+                ? id : null;
     }
 
     private void validate(ResourceBindingRequest request) {

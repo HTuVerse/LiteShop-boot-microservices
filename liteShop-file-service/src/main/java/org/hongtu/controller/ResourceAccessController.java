@@ -27,6 +27,7 @@ import java.util.Objects;
 public class ResourceAccessController {
     private final FileUploadMapper files;
     private final StorageManager storage;
+    private final ResourceLibraryAccess libraryAccess;
 
     /** 内部权益服务查询当前租户已使用容量。 */
     @GetMapping("/inner/file-upload/resources/used-bytes")
@@ -92,7 +93,10 @@ public class ResourceAccessController {
     private boolean canReadPrivate(FileUpload file) {
         return StpUtil.isLogin() && (StpUtil.hasRole("SUPER_ADMIN")
                 || (Objects.equals(file.getTenantId(), TenantContext.getTenantIdOrNull())
-                    && Objects.equals(file.getUploaderId(), StpUtil.getLoginIdAsLong())));
+                    && Objects.equals(file.getUploaderId(), StpUtil.getLoginIdAsLong()))
+                || ((StpUtil.hasRole("ADMIN") || StpUtil.hasRole("SUPER_ADMIN"))
+                    && (libraryAccess.permissionsFor(file.getTenantId())
+                        & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT)) != 0));
     }
 
     /** 私有链接的 expiresAt 仅描述本次授权，不能写入业务数据库。 */

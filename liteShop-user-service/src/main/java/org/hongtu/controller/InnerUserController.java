@@ -201,6 +201,13 @@ public class InnerUserController {
         return Result.success(tenantIds);
     }
 
+    @GetMapping("/tenants/resource-library")
+    public Result<List<org.hongtu.api.dto.TenantResourceLibraryDTO>> resourceLibraryTenants() {
+        return Result.success(TenantIgnore.get(() -> tenantService.list().stream()
+                .map(tenant -> new org.hongtu.api.dto.TenantResourceLibraryDTO(
+                        tenant.getId(), tenant.getTenantName())).toList()));
+    }
+
     @GetMapping("/tenants/{tenantId}/active")
     public Result<Boolean> isTenantActive(@PathVariable Long tenantId) {
         if (tenantId == null || tenantId <= 0) {

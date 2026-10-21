@@ -12,6 +12,7 @@ import org.hongtu.api.dto.AiAdvisorSessionDTO;
 import org.hongtu.api.dto.AiPageDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
 import org.hongtu.api.dto.UserBasicDTO;
+import org.hongtu.api.dto.TenantResourceLibraryDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -94,6 +95,10 @@ public interface UserFeignClient {
     /** 定时任务使用：查询所有当前有效的租户ID。 */
     @GetMapping("/inner/user/tenants/active-ids")
     Result<List<Long>> getActiveTenantIds();
+
+    /** 平台资源库的租户根目录名称，包含尚未上传资源的租户。 */
+    @GetMapping("/inner/user/tenants/resource-library")
+    Result<List<TenantResourceLibraryDTO>> getResourceLibraryTenants();
 
     /** 请求入口使用：校验租户状态、有效期及有效套餐。 */
     @GetMapping("/inner/user/tenants/{tenantId}/active")
