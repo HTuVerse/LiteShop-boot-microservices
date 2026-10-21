@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.hongtu.DAO.FileUploadMapper;
 import org.hongtu.DTO.FileUpload;
 import org.hongtu.Result.Result;
+import org.hongtu.storage.ResourceLibraryAccess;
 import org.hongtu.storage.StorageManager;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.core.io.InputStreamResource;

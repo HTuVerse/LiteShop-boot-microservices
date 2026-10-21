@@ -6,6 +6,7 @@ import org.hongtu.api.dto.TenantResourceLibraryDTO;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,7 +39,7 @@ public class ResourceLibraryAccess {
             settings.put(((Number) row.get("tenant_id")).longValue(), row);
         Map<Long, List<Grant>> grants = new HashMap<>();
         jdbc.query("SELECT tenant_id,grantee_tenant_id,permissions FROM resource_library_root_grant",
-                rs -> grants.computeIfAbsent(rs.getLong(1), ignored -> new ArrayList<>())
+                (RowCallbackHandler) rs -> grants.computeIfAbsent(rs.getLong(1), ignored -> new ArrayList<>())
                         .add(new Grant(rs.getLong(2), rs.getInt(3))));
         return tenants.stream().map(tenant -> {
                     Map<String, Object> setting = settings.get(tenant.id());
