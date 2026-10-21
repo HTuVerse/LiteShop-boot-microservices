@@ -59,6 +59,11 @@ public class MallExchangeService {
             MallOrder repeated = findByKey(tenantId, userId, request.getRequestKey());
             if (repeated != null) return process(repeated.getId());
             throw duplicate;
+        } catch (BusinessException rejected) {
+            // 仅剩一件时，并发重复请求可能在扣库存处等待首单提交后看到零库存。
+            MallOrder repeated = findByKey(tenantId, userId, request.getRequestKey());
+            if (repeated != null) return process(repeated.getId());
+            throw rejected;
         }
     }
 

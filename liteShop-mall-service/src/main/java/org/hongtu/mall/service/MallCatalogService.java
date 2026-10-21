@@ -13,6 +13,7 @@ import org.hongtu.tenant.TenantContext;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -70,8 +71,12 @@ public class MallCatalogService {
     }
 
     /** 有兑换历史的商品只能下架，保留历史快照。 */
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         get(id);
+        // 与兑换扣库存串行化，避免查无订单后删除正在兑换的商品。
+        jdbc.queryForObject("SELECT id FROM mall_product WHERE id=? AND tenant_id=? FOR UPDATE", Long.class,
+                id, TenantContext.getTenantId());
         Long orders = jdbc.queryForObject("SELECT COUNT(*) FROM mall_exchange_order WHERE tenant_id=? AND product_id=?", Long.class,
                 TenantContext.getTenantId(), id);
         if (orders != null && orders > 0) {
