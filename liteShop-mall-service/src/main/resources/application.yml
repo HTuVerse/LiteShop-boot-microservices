@@ -1,0 +1,7 @@
+server:
+  port: 9010
+spring:
+  application:
+    name: liteShop-mall-service
+  config:
+    import: "classpath:liteshop-nacos.yml"

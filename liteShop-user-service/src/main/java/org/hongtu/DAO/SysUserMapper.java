@@ -18,6 +18,10 @@ import org.hongtu.DTO.SysUser;
 @Mapper
 public interface SysUserMapper extends BaseMapper<SysUser> {
 
+    /** 锁定本租户用户积分行，保证积分流水前后余额准确。 */
+    @Select("SELECT * FROM sys_user WHERE id = #{userId} AND tenant_id = #{tenantId} FOR UPDATE")
+    SysUser lockMallPointsUser(@Param("tenantId") Long tenantId, @Param("userId") Long userId);
+
     /**
      * 根据唯一标识符（openId）查询用户id
      *
@@ -55,6 +59,14 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
      */
     @Update("UPDATE sys_user SET points = points - #{points}, update_time = NOW() WHERE id = #{userId}")
     int subUserPoints(@Param("userId") Long userId, @Param("points") Integer points);
+
+    /** 兑换扣减：同时校验租户和余额，避免并发超扣。 */
+    @Update("UPDATE sys_user SET points = points - #{points}, update_time = NOW() WHERE id = #{userId} AND tenant_id = #{tenantId} AND points >= #{points}")
+    int deductMallPoints(@Param("tenantId") Long tenantId, @Param("userId") Long userId, @Param("points") Integer points);
+
+    /** 兑换失败补偿积分。 */
+    @Update("UPDATE sys_user SET points = points + #{points}, update_time = NOW() WHERE id = #{userId} AND tenant_id = #{tenantId}")
+    int refundMallPoints(@Param("tenantId") Long tenantId, @Param("userId") Long userId, @Param("points") Integer points);
 
     /** 并发安全地扣减余额，余额不足时不更新。 */
     @Update("UPDATE sys_user SET surplus_money = COALESCE(surplus_money, 0) - #{amount}, update_time = NOW() " +

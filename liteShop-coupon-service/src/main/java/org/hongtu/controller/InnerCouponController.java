@@ -11,6 +11,7 @@ import org.hongtu.DTO.UserCoupon;
 import org.hongtu.Result.Result;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.UserCouponService;
+import org.hongtu.service.MallCouponIssueService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -44,6 +45,17 @@ public class InnerCouponController {
 
     @Resource
     private CouponDishItemService couponDishItemService;
+
+    @Resource
+    private MallCouponIssueService mallCouponIssueService;
+
+    /** 积分兑换按订单幂等发券。 */
+    @PostMapping("/mall-issue")
+    public Result<Long> issueMallCoupon(@RequestParam("userId") Long userId,
+                                         @RequestParam("couponId") Long couponId,
+                                         @RequestParam("orderId") Long orderId) {
+        return Result.success(mallCouponIssueService.issue(userId, couponId, orderId));
+    }
 
     /**
      * 下单核销用户优惠券（失败抛异常，由全局异常处理器返回错误 Result）

@@ -20,6 +20,10 @@ spring:
               uri: lb://liteShop-coupon-service
               predicates:
                 - Path=/coupon/**,/user-coupon/**,/verify-record/**
+            - id: mall-service
+              uri: lb://liteShop-mall-service
+              predicates:
+                - Path=/points-mall/**
             - id: lottery-service
               uri: lb://liteShop-lottery-service
               predicates:

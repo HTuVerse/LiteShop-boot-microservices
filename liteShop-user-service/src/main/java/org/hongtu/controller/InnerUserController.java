@@ -11,12 +11,14 @@ import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.SysTenant;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.MallPointsChangeDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
 import org.hongtu.api.dto.UserBasicDTO;
 import org.hongtu.service.SysUserService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.impl.InnerBalanceService;
+import org.hongtu.service.impl.MallPointsAccountService;
 import org.hongtu.saas.service.SaasSubscriptionService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
@@ -58,6 +60,9 @@ public class InnerUserController {
 
     @Resource
     private InnerBalanceService innerBalanceService;
+
+    @Resource
+    private MallPointsAccountService mallPointsAccountService;
 
     @Resource
     private SysUserStoreService userStoreService;
@@ -140,6 +145,12 @@ public class InnerUserController {
             return Result.error(result.getMsg());
         }
         return Result.success(points);
+    }
+
+    /** 兑换订单积分变动，按订单和动作幂等。 */
+    @PostMapping("/points/mall-change")
+    public Result<Integer> changeMallPoints(@RequestBody MallPointsChangeDTO dto) {
+        return Result.success(mallPointsAccountService.change(dto));
     }
 
     /**

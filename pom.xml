@@ -19,6 +19,7 @@
         <module>liteShop-gateway</module>
         <module>liteShop-user-service</module>
         <module>liteShop-coupon-service</module>
+        <module>liteShop-mall-service</module>
         <module>liteShop-lottery-service</module>
         <module>liteShop-restaurant-service</module>
         <module>liteShop-pay-service</module>

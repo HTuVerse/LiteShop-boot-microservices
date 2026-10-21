@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: ${MYSQL_URL_MALL:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/liteshop_mall?useSSL=false&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2b8}
+
+lite-shop:
+  config-loaded: true

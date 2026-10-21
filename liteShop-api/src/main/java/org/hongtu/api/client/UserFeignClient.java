@@ -3,6 +3,7 @@ package org.hongtu.api.client;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.MallPointsChangeDTO;
 import org.hongtu.api.dto.EntitlementDecisionDTO;
 import org.hongtu.api.dto.EntitlementMutationDTO;
 import org.hongtu.api.dto.AiGenerationDTO;
@@ -60,6 +61,10 @@ public interface UserFeignClient {
     Result<Integer> addUserPointsIdempotent(@RequestParam("userId") Long userId,
                                             @RequestParam("points") Integer points,
                                             @RequestParam("idempotencyKey") String idempotencyKey);
+
+    /** 商城兑换积分扣减及失败补偿，按订单和动作幂等。 */
+    @PostMapping("/inner/user/points/mall-change")
+    Result<Integer> changeMallPoints(@RequestBody MallPointsChangeDTO dto);
 
     /**
      * 余额变动（扣减/退款/充值），user-service 本地事务保证原子性

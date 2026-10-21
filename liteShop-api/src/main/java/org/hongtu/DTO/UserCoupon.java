@@ -46,6 +46,9 @@ public class UserCoupon implements Serializable {
      */
     private Long couponId;
 
+    /** 积分兑换来源订单，同租户内唯一；普通发券为空。 */
+    private Long sourceOrderId;
+
     /**
      * 优惠券唯一码
      */

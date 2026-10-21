@@ -53,6 +53,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
             "/msg/sendSmsCode",
             "/msg/sendEmailCode",
             "/user/wxLogin",
+            "/points-mall/products",
             "/images/**",  // 图片资源路径
             "/favicon.ico",
             "/inner/**"    // 服务间内部接口（外部访问已在网关层拦截）

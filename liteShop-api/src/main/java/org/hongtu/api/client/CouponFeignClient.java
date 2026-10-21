@@ -63,4 +63,10 @@ public interface CouponFeignClient {
      */
     @GetMapping("/inner/coupon/dish-items")
     Result<List<CouponDishItem>> getItemsByCouponId(@RequestParam("couponId") Long couponId);
+
+    /** 按兑换订单幂等发券，返回用户券ID。 */
+    @PostMapping("/inner/coupon/mall-issue")
+    Result<Long> issueMallCoupon(@RequestParam("userId") Long userId,
+                                 @RequestParam("couponId") Long couponId,
+                                 @RequestParam("orderId") Long orderId);
 }
