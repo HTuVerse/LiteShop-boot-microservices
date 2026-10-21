@@ -963,6 +963,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     .amount(amount)
                     .type(3)
                     .orderNo(orderNo + "_COMPENSATE")
+                    .sourceOrderNo(orderNo)
                     .operateUserId(userId)
                     .build());
             log.info("余额扣款补偿成功: userId={}, amount={}, orderNo={}", userId, amount, orderNo);
@@ -3892,7 +3893,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             Long operatorId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : order.getUserId();
             changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
                     .userId(order.getUserId()).amount(refund.getAmount()).type(3)
-                    .orderNo(refund.getRefundNo()).operateUserId(operatorId).build());
+                    .orderNo(refund.getRefundNo()).sourceOrderNo(order.getOrderNo())
+                    .operateUserId(operatorId).build());
         }
         if (orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.SUCCEEDED.getCode(), refund.getChannelRefundId()) != 1) {
             OrderRefund current = orderRefundMapper.selectById(refundId);

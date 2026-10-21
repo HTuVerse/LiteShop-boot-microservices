@@ -45,6 +45,12 @@ public class UserSurplusRecord implements Serializable {
      */
     private BigDecimal amount;
 
+    /** 本次消费或退款涉及的赠送余额，单位元。 */
+    private BigDecimal giftAmount;
+
+    /** 退款对应的原余额支付订单号。 */
+    private String sourceOrderNo;
+
     /**
      * 变动后余额
      */

@@ -3,6 +3,7 @@ package org.hongtu;
 import org.hongtu.api.client.RestaurantFeignClient;
 import org.hongtu.api.client.ConfigFeignClient;
 import org.hongtu.api.client.FileResourceClient;
+import org.hongtu.api.client.PayFeignClient;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
@@ -16,7 +17,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  */
 @SpringBootApplication(scanBasePackages = "org.hongtu")
 @EnableDiscoveryClient
-@EnableFeignClients(clients = {RestaurantFeignClient.class, ConfigFeignClient.class, FileResourceClient.class})
+@EnableFeignClients(clients = {RestaurantFeignClient.class, ConfigFeignClient.class, FileResourceClient.class, PayFeignClient.class})
 @EnableAspectJAutoProxy
 @EnableScheduling
 public class UserServiceApplication {

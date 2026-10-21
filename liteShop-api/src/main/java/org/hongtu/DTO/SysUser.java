@@ -143,6 +143,10 @@ public class SysUser implements Serializable {
     @TableField("surplus_money")
     private BigDecimal surplusMoney;
 
+    /** 可用赠送余额，已包含在 surplusMoney 中。 */
+    @TableField("gift_money")
+    private BigDecimal giftMoney;
+
     /**
      * 头像地址
      */

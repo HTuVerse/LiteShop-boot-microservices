@@ -40,6 +40,9 @@ public class BalanceChangeDTO implements Serializable {
      */
     private String orderNo;
 
+    /** 退款关联的原余额支付订单号，用于恢复原付款的本金与赠送比例。 */
+    private String sourceOrderNo;
+
     /**
      * 操作人用户ID（收银台场景为操作管理员）
      */

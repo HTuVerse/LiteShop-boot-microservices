@@ -69,7 +69,10 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
     int refundMallPoints(@Param("tenantId") Long tenantId, @Param("userId") Long userId, @Param("points") Integer points);
 
     /** 并发安全地扣减余额，余额不足时不更新。 */
-    @Update("UPDATE sys_user SET surplus_money = COALESCE(surplus_money, 0) - #{amount}, update_time = NOW() " +
+    // 按付款前的余额占比分摊。余额全额支付时直接扣尽赠送部分，消除逐分取整的尾差。
+    @Update("UPDATE sys_user SET gift_money = gift_money - CASE WHEN #{amount} = surplus_money THEN gift_money " +
+            "ELSE ROUND(#{amount} * gift_money / surplus_money, 2) END, " +
+            "surplus_money = COALESCE(surplus_money, 0) - #{amount}, update_time = NOW() " +
             "WHERE id = #{userId} AND COALESCE(surplus_money, 0) >= #{amount}")
     int deductBalance(@Param("userId") Long userId, @Param("amount") java.math.BigDecimal amount);
 
@@ -77,5 +80,19 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
     @Update("UPDATE sys_user SET surplus_money = COALESCE(surplus_money, 0) + #{amount}, update_time = NOW() " +
             "WHERE id = #{userId}")
     int addBalance(@Param("userId") Long userId, @Param("amount") java.math.BigDecimal amount);
+
+    /** 余额退款时按原消费拆分恢复本金和赠送金额。 */
+    @Update("UPDATE sys_user SET surplus_money = COALESCE(surplus_money, 0) + #{amount}, " +
+            "gift_money = COALESCE(gift_money, 0) + #{gift}, update_time = NOW() " +
+            "WHERE id = #{userId} AND tenant_id = #{tenantId}")
+    int refundBalance(@Param("tenantId") Long tenantId, @Param("userId") Long userId,
+                      @Param("amount") java.math.BigDecimal amount, @Param("gift") java.math.BigDecimal gift);
+
+    /** 储值本金和赠送部分在同一行原子增加。 */
+    @Update("UPDATE sys_user SET surplus_money = COALESCE(surplus_money, 0) + #{amount} + #{bonus}, " +
+            "gift_money = COALESCE(gift_money, 0) + #{bonus}, update_time = NOW() " +
+            "WHERE id = #{userId} AND tenant_id = #{tenantId}")
+    int creditWallet(@Param("tenantId") Long tenantId, @Param("userId") Long userId,
+                     @Param("amount") java.math.BigDecimal amount, @Param("bonus") java.math.BigDecimal bonus);
 
 }
