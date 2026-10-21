@@ -9,6 +9,7 @@ import org.hongtu.exception.BusinessException;
 import org.hongtu.mall.dto.MallOrder;
 import org.hongtu.params.WeChatPayTradeParam;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.util.Map;
@@ -18,6 +19,15 @@ import java.util.Map;
 public class MallPaymentGateway {
     @Resource private PayFeignClient payClient;
     @Resource private ConfigFeignClient configClient;
+
+    /** 仅供过期订单任务判断能否安全查询渠道，账户不可用时保留订单等待配置恢复。 */
+    public boolean hasUsableWeChatAccount(Long tenantId) {
+        TenantPaymentRuntimeDTO account = FeignResultUtil.unwrap(configClient.paymentAccount(tenantId, "WECHAT"));
+        return account != null && Boolean.TRUE.equals(account.getEnabled())
+                && StringUtils.hasText(account.getAppId()) && StringUtils.hasText(account.getPrivateKey())
+                && StringUtils.hasText(account.getMchId()) && StringUtils.hasText(account.getMchSerialNo())
+                && StringUtils.hasText(account.getApiV3Key());
+    }
 
     /** 使用餐饮支付账户配置的公网域名，构造商城自己的回调地址。 */
     private String notifyUrl(Long tenantId, boolean refund) {

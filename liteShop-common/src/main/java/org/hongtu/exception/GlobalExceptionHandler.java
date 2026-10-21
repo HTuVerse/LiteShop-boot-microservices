@@ -40,7 +40,8 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(BusinessException.class)
     public Result<Void> handleBusinessException(BusinessException e) {
-        logger.error("业务异常: {}", e.getMessage());
+        // 业务规则拒绝属于预期结果，响应仍保留原错误码和提示。
+        logger.debug("业务异常: {}", e.getMessage());
         return Result.error(e.getCode(), e.getMessage());
     }
 

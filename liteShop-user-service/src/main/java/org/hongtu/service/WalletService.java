@@ -24,6 +24,7 @@ import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.net.URI;
@@ -214,13 +215,31 @@ public class WalletService {
             try { TenantScope.run(tenantId, () -> credit(id)); }
             catch (Exception failure) { log.warn("储值订单入账待重试，orderId={}", id, failure); }
         }
-        List<Map<String, Object>> expired = jdbc.queryForList("SELECT id,tenant_id FROM wallet_recharge_order WHERE status='UNPAID' AND expires_at<NOW() ORDER BY expires_at LIMIT 100");
-        for (Map<String, Object> row : expired) {
-            Long id = ((Number) row.get("id")).longValue();
-            Long tenantId = ((Number) row.get("tenant_id")).longValue();
-            try { TenantScope.run(tenantId, () -> closeExpired(id)); }
-            catch (Exception failure) { log.warn("过期储值订单关单待重试，orderId={}", id, failure); }
+        // 按租户筛选，未配置账户的历史订单不会反复调用支付服务，也不会占满全局前 100 条。
+        List<Long> tenantIds = jdbc.queryForList("SELECT DISTINCT tenant_id FROM wallet_recharge_order WHERE status='UNPAID' AND expires_at<NOW()", Long.class);
+        for (Long tenantId : tenantIds) {
+            try {
+                TenantScope.run(tenantId, () -> {
+                    if (!hasUsableWeChatAccount(tenantId)) return;
+                    List<Long> expired = jdbc.queryForList("SELECT id FROM wallet_recharge_order WHERE tenant_id=? AND status='UNPAID' AND expires_at<NOW() ORDER BY expires_at LIMIT 100", Long.class, tenantId);
+                    for (Long id : expired) {
+                        try { closeExpired(id); }
+                        catch (Exception failure) { log.warn("过期储值订单关单待重试，orderId={}", id, failure); }
+                    }
+                });
+            } catch (Exception failure) {
+                log.warn("查询租户支付账户失败，tenantId={}", tenantId, failure);
+            }
         }
+    }
+
+    /** 未启用或商户参数不完整时不查询渠道，避免周期性业务异常。 */
+    private boolean hasUsableWeChatAccount(Long tenantId) {
+        TenantPaymentRuntimeDTO account = FeignResultUtil.unwrap(config.paymentAccount(tenantId, "WECHAT"));
+        return account != null && Boolean.TRUE.equals(account.getEnabled())
+                && StringUtils.hasText(account.getAppId()) && StringUtils.hasText(account.getPrivateKey())
+                && StringUtils.hasText(account.getMchId()) && StringUtils.hasText(account.getMchSerialNo())
+                && StringUtils.hasText(account.getApiV3Key());
     }
 
     /** 关单前先查渠道；支付与过期竞态时以微信的最终结果为准。 */

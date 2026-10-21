@@ -333,6 +333,8 @@ public class MallExchangeService {
 
     /** 退款请求结果未知时主动查单，仍使用相同商户退款单号。 */
     private boolean ensureCashRefund(MallOrder order) {
+        // 商户配置被停用后无法确认退款，等待恢复配置后继续处理。
+        if (!paymentGateway.hasUsableWeChatAccount(order.getTenantId())) return false;
         try {
             if (refundSucceeded(order, paymentGateway.refund(order))) return true;
         } catch (Exception unknown) {
@@ -350,17 +352,30 @@ public class MallExchangeService {
     /** 恢复结果不明的订单。 */
     @Scheduled(fixedDelay = 30000)
     public void retryPending() {
-        List<Map<String, Object>> pending = jdbc.queryForList("SELECT id,tenant_id,status FROM mall_exchange_order WHERE (status IN ('PENDING','PROCESSING','SPENT','PAID','REFUNDING','LATE_REFUND') AND (processing_until IS NULL OR processing_until < NOW())) OR (status='WAIT_PAY' AND expires_at<NOW()) ORDER BY created_at LIMIT 100");
+        List<Map<String, Object>> pending = jdbc.queryForList("SELECT id,tenant_id FROM mall_exchange_order WHERE status IN ('PENDING','PROCESSING','SPENT','PAID','REFUNDING','LATE_REFUND') AND (processing_until IS NULL OR processing_until < NOW()) ORDER BY created_at LIMIT 100");
         for (Map<String, Object> row : pending) {
             Long id = ((Number) row.get("id")).longValue();
             Long tenantId = ((Number) row.get("tenant_id")).longValue();
             try {
-                TenantScope.run(tenantId, () -> {
-                    if ("WAIT_PAY".equals(row.get("status"))) cancel(id, null);
-                    else process(id);
-                });
+                TenantScope.run(tenantId, () -> process(id));
             } catch (Exception ex) {
                 log.warn("重试兑换订单失败，orderId={}", id, ex);
+            }
+        }
+        // 无账户的到期订单保留原状态；不能在无法查渠道时断定未支付。
+        List<Long> tenantIds = jdbc.queryForList("SELECT DISTINCT tenant_id FROM mall_exchange_order WHERE status='WAIT_PAY' AND expires_at<NOW()", Long.class);
+        for (Long tenantId : tenantIds) {
+            try {
+                TenantScope.run(tenantId, () -> {
+                    if (!paymentGateway.hasUsableWeChatAccount(tenantId)) return;
+                    List<Long> expired = jdbc.queryForList("SELECT id FROM mall_exchange_order WHERE tenant_id=? AND status='WAIT_PAY' AND expires_at<NOW() ORDER BY created_at LIMIT 100", Long.class, tenantId);
+                    for (Long id : expired) {
+                        try { cancel(id, null); }
+                        catch (Exception ex) { log.warn("过期兑换订单关单待重试，orderId={}", id, ex); }
+                    }
+                });
+            } catch (Exception ex) {
+                log.warn("查询租户支付账户失败，tenantId={}", tenantId, ex);
             }
         }
     }
