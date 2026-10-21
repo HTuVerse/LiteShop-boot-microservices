@@ -220,16 +220,30 @@ public class SysPermissionServiceImpl extends ServiceImpl<SysPermissionMapper, S
         if (userId == null) {
             return Result.error("用户ID不能为空");
         }
-        // 查询用户的菜单权限
-        List<SysPermission> menuPermissions = TenantContext.isSuperAdmin()
+        // 超级管理员进入租户工作台时拥有全部启用的租户菜单，无需加入租户 ADMIN 角色。
+        boolean superAdmin = TenantContext.isSuperAdmin();
+        List<SysPermission> menuPermissions = superAdmin
                 ? TenantIgnore.get(() -> baseMapper.selectMenuPermissionsByUserId(userId))
                 : baseMapper.selectMenuPermissionsByUserId(userId);
+        List<SysPermission> allPermissions = superAdmin
+                ? TenantIgnore.get(() -> baseMapper.selectAllPermissions())
+                : baseMapper.selectAllPermissions();
+        if (superAdmin && TenantContext.hasTenant()) {
+            Map<Long, SysPermission> available = new java.util.LinkedHashMap<>();
+            if (menuPermissions != null) menuPermissions.forEach(permission -> available.put(permission.getId(), permission));
+            allPermissions.stream()
+                    .filter(permission -> permission.getPermissionType() == PermissionTypeEnum.MENU)
+                    .filter(permission -> permission.getStatus() == StatusEnum.NORMAL)
+                    .filter(permission -> permission.getMenuScope() != MenuScopeEnum.PLATFORM)
+                    .forEach(permission -> available.put(permission.getId(), permission));
+            menuPermissions = new ArrayList<>(available.values());
+        }
         if (menuPermissions == null || menuPermissions.isEmpty()) {
             return Result.success(new ArrayList<>());
         }
         // 构建菜单路由树
         List<MenuRouteVO> menuRoutes = buildMenuRouteTree(
-                PermissionHierarchy.navigation(menuPermissions, baseMapper.selectAllPermissions()), 0L);
+                PermissionHierarchy.navigation(menuPermissions, allPermissions), 0L);
 
         return Result.success(menuRoutes);
     }
