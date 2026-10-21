@@ -96,7 +96,7 @@ public class ResourceAccessController {
                 || (Objects.equals(file.getTenantId(), TenantContext.getTenantIdOrNull())
                     && Objects.equals(file.getUploaderId(), StpUtil.getLoginIdAsLong()))
                 || ((StpUtil.hasRole("ADMIN") || StpUtil.hasRole("SUPER_ADMIN"))
-                    && (libraryAccess.permissionsFor(file.getTenantId())
+                    && (libraryAccess.permissionsForFolder(file.getTenantId(), file.getFolderId())
                         & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT)) != 0));
     }
 

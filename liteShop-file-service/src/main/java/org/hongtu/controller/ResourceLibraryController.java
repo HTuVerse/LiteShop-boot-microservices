@@ -33,6 +33,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.ContentDisposition;
 
 import java.util.List;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.nio.charset.StandardCharsets;
 
 /** 平台和租户共用的资源库；租户范围由服务端会话确定。 */
@@ -63,15 +68,21 @@ public class ResourceLibraryController {
                                          @RequestParam(required = false) String purpose) {
         requireManager();
         if (currentPage < 1 || pageSize < 1 || pageSize > 100) return Result.error("分页参数不合法");
+        if (folderId != null && folderId < 0) return Result.error("文件夹参数不合法");
         Long owner = tenantId == null ? libraryTenantId() : tenantId;
         int required = "SELECT".equals(purpose) ? ResourceLibraryAccess.SELECT : ResourceLibraryAccess.VIEW;
-        if ((access.permissionsFor(owner) & required) != required) {
-            if (!"SELECT".equals(purpose) && (access.permissionsFor(owner) & ResourceLibraryAccess.UPLOAD) != 0)
-                return Result.success(new Page<>(currentPage, pageSize));
-            throw new SecurityException("无权查看该租户资源库");
-        }
+        int rootPermissions = access.permissionsForFolder(owner, null);
         if (folderId != null && folderId > 0 && !owner.equals(folderOwner(folderId)))
             return Result.error("文件夹不属于所选资源库");
+        if (folderId != null && folderId > 0
+                && (access.permissionsForFolder(owner, folderId) & required) != required)
+            return Result.success(new Page<>(currentPage, pageSize));
+        if (folderId != null && folderId == 0 && (rootPermissions & required) != required)
+            return Result.success(new Page<>(currentPage, pageSize));
+        List<Long> allowed = folderId == null
+                ? access.allowedFolders(owner, TenantContext.getTenantIdOrNull(), required) : List.of();
+        if (folderId == null && (rootPermissions & required) != required && allowed.isEmpty())
+            return Result.success(new Page<>(currentPage, pageSize));
         LambdaQueryWrapper<FileUpload> query = new LambdaQueryWrapper<FileUpload>()
                 .like(keyword != null && !keyword.isBlank(), FileUpload::getOriginalFileName, keyword == null ? "" : keyword.trim())
                 .eq(FileUpload::getTenantId, owner)
@@ -83,6 +94,12 @@ public class ResourceLibraryController {
                 .and("file".equals(type), part -> part.isNull(FileUpload::getContentType)
                         .or().notLikeRight(FileUpload::getContentType, "image/"))
                 .orderByDesc(FileUpload::getCreatedAt, FileUpload::getId);
+        if (folderId == null && (rootPermissions & required) == required && !allowed.isEmpty())
+            query.and(part -> part.isNull(FileUpload::getFolderId).or().in(FileUpload::getFolderId, allowed));
+        else if (folderId == null && (rootPermissions & required) == required)
+            query.isNull(FileUpload::getFolderId);
+        else if (folderId == null)
+            query.in(FileUpload::getFolderId, allowed);
         Page<FileUpload> page = new Page<>(currentPage, pageSize);
         inOwner(owner, () -> files.page(page, query));
         String deliveryBase = storage.currentSettings().getPublicDeliveryBaseUrl();
@@ -95,11 +112,30 @@ public class ResourceLibraryController {
     public Result<List<ResourceFolder>> folders(@RequestParam(required = false) Long tenantId) {
         requireManager();
         Long owner = tenantId == null ? libraryTenantId() : tenantId;
-        if ((access.permissionsFor(owner) & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT
-                | ResourceLibraryAccess.EDIT | ResourceLibraryAccess.UPLOAD)) == 0)
+        if (access.permissionsFor(owner) == 0 && !access.hasFolderAccess(owner,
+                TenantContext.getTenantIdOrNull(), ResourceLibraryAccess.VIEW)
+                && !access.hasFolderAccess(owner, TenantContext.getTenantIdOrNull(), ResourceLibraryAccess.UPLOAD))
             throw new SecurityException("无权访问该租户资源库");
-        return Result.success(inOwner(owner, () -> folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
-                .eq(ResourceFolder::getTenantId, owner).orderByAsc(ResourceFolder::getName))));
+        List<ResourceFolder> all = inOwner(owner, () -> folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
+                .eq(ResourceFolder::getTenantId, owner).orderByAsc(ResourceFolder::getName)));
+        if (access.platform() || owner.equals(TenantContext.getTenantIdOrNull())) {
+            all.forEach(folder -> { folder.setMyPermissions(15); folder.setNavigationOnly(false); });
+            return Result.success(all);
+        }
+        Map<Long, ResourceFolder> byId = all.stream().collect(Collectors.toMap(ResourceFolder::getId, Function.identity()));
+        Set<Long> visible = new HashSet<>();
+        for (ResourceFolder folder : all) {
+            int bits = access.permissionsForFolder(owner, folder.getId());
+            folder.setMyPermissions(bits);
+            folder.setNavigationOnly(bits == 0);
+            if (bits == 0) continue;
+            Long current = folder.getId();
+            while (current != null && visible.add(current)) {
+                ResourceFolder ancestor = byId.get(current);
+                current = ancestor == null ? null : ancestor.getParentId();
+            }
+        }
+        return Result.success(all.stream().filter(folder -> visible.contains(folder.getId())).toList());
     }
 
     @GetMapping("/roots")
@@ -115,6 +151,21 @@ public class ResourceLibraryController {
         return Result.success(access.configure(tenantId, body.mode(), body.permissions(), body.grants()));
     }
 
+    @GetMapping("/folders/{id}/access")
+    public Result<ResourceLibraryAccess.FolderAccess> folderAccess(@PathVariable Long id) {
+        requireManager();
+        Long owner = folderOwner(id);
+        if (!access.platform()) throw new SecurityException("仅平台管理员可配置文件夹权限");
+        return Result.success(access.folderAccess(owner, id));
+    }
+
+    @PutMapping("/folders/{id}/access")
+    public Result<ResourceLibraryAccess.FolderAccess> configureFolder(@PathVariable Long id,
+            @RequestBody RootAccessBody body) {
+        requireManager();
+        return Result.success(access.configureFolder(folderOwner(id), id, body.mode(), body.permissions(), body.grants()));
+    }
+
     /** 新建分类文件夹。 */
     @PostMapping("/folders")
     public Result<ResourceFolder> createFolder(@Valid @RequestBody NameBody body) {
@@ -122,7 +173,7 @@ public class ResourceLibraryController {
         Long owner = body.parentId() == null
                 ? (body.tenantId() == null ? libraryTenantId() : body.tenantId())
                 : folderOwner(body.parentId());
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, body.parentId(), ResourceLibraryAccess.EDIT);
         if (body.parentId() == null) access.requireExisting(owner);
         return inOwner(owner, () -> createFolderInScope(body, owner));
     }
@@ -149,7 +200,7 @@ public class ResourceLibraryController {
     public Result<ResourceFolder> renameFolder(@PathVariable Long id, @Valid @RequestBody NameBody body) {
         requireManager();
         Long owner = folderOwner(id);
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, id, ResourceLibraryAccess.EDIT);
         return inOwner(owner, () -> renameFolderInScope(id, body, owner));
     }
 
@@ -172,7 +223,7 @@ public class ResourceLibraryController {
     public Result<Void> deleteFolder(@PathVariable Long id) {
         requireManager();
         Long owner = folderOwner(id);
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, id, ResourceLibraryAccess.EDIT);
         return inOwner(owner, () -> deleteFolderInScope(id, owner));
     }
 
@@ -196,7 +247,7 @@ public class ResourceLibraryController {
         requireManager();
         Long owner = folderId != null ? folderOwner(folderId)
                 : (tenantId == null ? libraryTenantId() : tenantId);
-        access.require(owner, ResourceLibraryAccess.UPLOAD);
+        access.requireFolder(owner, folderId, ResourceLibraryAccess.UPLOAD);
         if (folderId == null) access.requireExisting(owner);
         if (folderId != null && tenantId != null && !owner.equals(tenantId)) return Result.error("文件夹不属于所选资源库");
         if (uploads == null || uploads.length == 0 || uploads.length > 20) return Result.error("每次可上传 1 至 20 个文件");
@@ -209,11 +260,13 @@ public class ResourceLibraryController {
         List<FileUpload> result = new java.util.ArrayList<>();
         try {
             for (MultipartFile file : uploads) {
-                if (owner > 0) inOwner(owner, () -> { capacity.requireAvailable(file.getSize()); return null; });
-                StorageManager.UploadResult uploaded = storage.upload(file, false, visibility);
+                StorageManager.UploadResult uploaded = storage.upload(file, false, visibility,
+                        size -> {
+                            if (owner > 0) inOwner(owner, () -> { capacity.requireAvailable(size); return null; });
+                        });
                 FileUpload record = new FileUpload();
                 record.setOriginalFileName(cleanName(file.getOriginalFilename()));
-                record.setSize(file.getSize());
+                record.setSize(uploaded.size());
                 storage.apply(record, uploaded);
                 record.setTenantId(owner);
                 record.setUploaderId(StpUtil.getLoginIdAsLong());
@@ -236,7 +289,7 @@ public class ResourceLibraryController {
     public Result<FileUpload> rename(@PathVariable Long id, @Valid @RequestBody NameBody body) {
         requireManager();
         Long owner = fileOwner(id);
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, fileMapper.findAcrossTenants(id).getFolderId(), ResourceLibraryAccess.EDIT);
         return inOwner(owner, () -> renameInScope(id, body));
     }
 
@@ -254,9 +307,11 @@ public class ResourceLibraryController {
         requireManager();
         Long owner = body.folderId() != null ? folderOwner(body.folderId())
                 : body.tenantId() != null ? body.tenantId() : fileOwner(body.ids().get(0));
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, body.folderId(), ResourceLibraryAccess.EDIT);
         if (body.ids().stream().anyMatch(id -> !owner.equals(fileOwner(id))))
             return Result.error("不能跨租户移动资源");
+        for (Long id : body.ids())
+            access.requireFolder(owner, fileMapper.findAcrossTenants(id).getFolderId(), ResourceLibraryAccess.EDIT);
         return inOwner(owner, () -> moveInScope(body, owner));
     }
 
@@ -276,7 +331,8 @@ public class ResourceLibraryController {
     public Result<Void> delete(@Valid @RequestBody BatchBody body) throws Exception {
         requireManager();
         Long owner = fileOwner(body.ids().get(0));
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        for (Long id : body.ids())
+            access.requireFolder(owner, fileMapper.findAcrossTenants(id).getFolderId(), ResourceLibraryAccess.EDIT);
         if (body.ids().stream().anyMatch(id -> !owner.equals(fileOwner(id))))
             return Result.error("不能跨租户批量删除资源");
         return inOwnerChecked(owner, () -> deleteInScope(body));
@@ -324,7 +380,7 @@ public class ResourceLibraryController {
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws Exception {
         requireManager();
         Long owner = fileOwner(id);
-        requireReadableFile(owner);
+        requireReadableFile(fileMapper.findAcrossTenants(id));
         return inOwnerChecked(owner, () -> downloadInScope(id));
     }
 
@@ -343,7 +399,7 @@ public class ResourceLibraryController {
     public Result<FileUpload> detail(@PathVariable Long id) {
         requireManager();
         Long owner = fileOwner(id);
-        requireReadableFile(owner);
+        requireReadableFile(fileMapper.findAcrossTenants(id));
         return inOwner(owner, () -> detailInScope(id));
     }
 
@@ -357,7 +413,7 @@ public class ResourceLibraryController {
     public Result<String> access(@PathVariable Long id) throws Exception {
         requireManager();
         Long owner = fileOwner(id);
-        requireReadableFile(owner);
+        requireReadableFile(fileMapper.findAcrossTenants(id));
         return inOwnerChecked(owner, () -> accessInScope(id));
     }
 
@@ -372,7 +428,7 @@ public class ResourceLibraryController {
     public Result<FileUpload> visibility(@PathVariable Long id, @RequestBody VisibilityBody body) throws Exception {
         requireManager();
         Long owner = fileOwner(id);
-        access.require(owner, ResourceLibraryAccess.EDIT);
+        access.requireFolder(owner, fileMapper.findAcrossTenants(id).getFolderId(), ResourceLibraryAccess.EDIT);
         return inOwnerChecked(owner, () -> visibilityInScope(id, body));
     }
 
@@ -487,8 +543,9 @@ public class ResourceLibraryController {
         return file.getTenantId();
     }
 
-    private void requireReadableFile(Long owner) {
-        if ((access.permissionsFor(owner) & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT)) == 0)
+    private void requireReadableFile(FileUpload file) {
+        if ((access.permissionsForFolder(file.getTenantId(), file.getFolderId())
+                & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT)) == 0)
             throw new SecurityException("无权查看该租户资源");
     }
 
