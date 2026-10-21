@@ -68,14 +68,13 @@ public class FileController {
     }
 
     private FileUpload save(MultipartFile file, boolean imageOnly) throws Exception {
-        capacity.requireAvailable(file.getSize());
         Long tenantId = TenantContext.getTenantIdOrNull();
         Long uploaderId = StpUtil.getLoginIdAsLong();
         Long folderId = tenantId == null ? null : userFolder(tenantId, uploaderId);
-        StorageManager.UploadResult uploaded = storage.upload(file, imageOnly, "PUBLIC");
+        StorageManager.UploadResult uploaded = storage.upload(file, imageOnly, "PUBLIC", capacity::requireAvailable);
         FileUpload record = new FileUpload();
         record.setOriginalFileName(file.getOriginalFilename());
-        record.setSize(file.getSize());
+        record.setSize(uploaded.size());
         record.setTenantId(tenantId == null ? 0L : tenantId);
         record.setUploaderId(uploaderId);
         record.setFolderId(folderId);

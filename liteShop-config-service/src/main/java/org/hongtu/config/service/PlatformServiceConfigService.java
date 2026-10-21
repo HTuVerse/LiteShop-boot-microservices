@@ -25,7 +25,8 @@ public class PlatformServiceConfigService {
             "mailFrom", "mailProtocol", "encryptedMailPassword", "smsAppKey", "smsTemplateId", "smsHost",
             "encryptedSmsAppSecret", "encryptedSmsAppcode");
     private static final Set<String> FILE_FIELDS = Set.of("revision", "ossEnabled", "uploadPath", "baseUrl", "publicDeliveryBaseUrl",
-            "allowedTypes", "maxSize", "encryptedQiniuAccessKey", "encryptedQiniuSecretKey", "qiniuBucket", "qiniuDomain",
+            "allowedTypes", "maxSize", "imageCompressionEnabled", "imageCompressionTargetMb",
+            "encryptedQiniuAccessKey", "encryptedQiniuSecretKey", "qiniuBucket", "qiniuDomain",
             "qiniuPrivateBucket", "qiniuPrivateDomain",
             "storageMode", "profileId", "minioEndpoint", "minioBrowserEndpoint", "minioPublicBucket",
             "minioPrivateBucket", "minioPublicBaseUrl", "encryptedMinioAccessKey", "encryptedMinioSecretKey",
@@ -61,6 +62,11 @@ public class PlatformServiceConfigService {
         view.setOssAccessKeyConfigured(hasText(record.getEncryptedOssAccessKey()));
         view.setOssSecretKeyConfigured(hasText(record.getEncryptedOssSecretKey()));
         view.setStorageMode(resolveMode(record));
+        if (id == FILE_ID) {
+            view.setImageCompressionEnabled(Boolean.TRUE.equals(record.getImageCompressionEnabled()));
+            if (record.getImageCompressionTargetMb() == null)
+                view.setImageCompressionTargetMb(java.math.BigDecimal.valueOf(2));
+        }
         return view;
     }
 
@@ -183,6 +189,12 @@ public class PlatformServiceConfigService {
     private void validateFile(PlatformServiceConfigRecord config) {
         if (config.getMaxSize() == null || config.getMaxSize() < 1 || config.getMaxSize() > 2048)
             throw new BusinessException(400, "上传上限须在 1 至 2048 MB 之间");
+        if (Boolean.TRUE.equals(config.getImageCompressionEnabled())) {
+            if (config.getImageCompressionTargetMb() == null
+                    || config.getImageCompressionTargetMb().compareTo(new java.math.BigDecimal("0.1")) < 0
+                    || config.getImageCompressionTargetMb().compareTo(java.math.BigDecimal.valueOf(50)) > 0)
+                throw new BusinessException(400, "图片压缩目标须在 0.1 至 50 MB 之间");
+        }
         if (config.getAllowedTypes() == null || config.getAllowedTypes().isBlank()
                 || !IMAGE_TYPES.containsAll(java.util.Arrays.asList(config.getAllowedTypes().toLowerCase().split(","))))
             throw new BusinessException(400, "图片类型只能从 jpg,jpeg,png,gif,webp 中选择");

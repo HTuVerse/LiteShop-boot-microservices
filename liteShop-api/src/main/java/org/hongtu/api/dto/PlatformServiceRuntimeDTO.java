@@ -29,6 +29,10 @@ public class PlatformServiceRuntimeDTO {
     private String publicDeliveryBaseUrl;
     private String allowedTypes;
     private Integer maxSize;
+    /** 是否对超过目标大小的图片自动压缩；旧配置缺省时关闭。 */
+    private Boolean imageCompressionEnabled;
+    /** 压缩后图片大小上限，单位 MB。 */
+    private java.math.BigDecimal imageCompressionTargetMb;
     @ToString.Exclude private String qiniuAccessKey;
     @ToString.Exclude private String qiniuSecretKey;
     private String qiniuBucket;

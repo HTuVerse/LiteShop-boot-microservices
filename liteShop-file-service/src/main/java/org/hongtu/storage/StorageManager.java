@@ -10,11 +10,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.LongConsumer;
 
 /** 根据文件自身的存储类型与配置快照选择驱动，切换默认模式仅影响新上传。 */
 @Service
@@ -22,6 +24,7 @@ import java.util.UUID;
 public class StorageManager {
     private final FileUploadConfig config;
     private final FileTypeSniffer sniffer;
+    private final ImageCompressor imageCompressor;
     private final List<StorageService> services;
 
     public StorageService driver(StorageTypeEnum type) {
@@ -38,7 +41,8 @@ public class StorageManager {
 
     public PlatformServiceRuntimeDTO currentSettings() { return config.current(); }
 
-    public UploadResult upload(MultipartFile file, boolean imageOnly, String visibility) throws Exception {
+    public UploadResult upload(MultipartFile file, boolean imageOnly, String visibility,
+                               LongConsumer beforeStore) throws Exception {
         PlatformServiceRuntimeDTO settings = config.current();
         String extension = FilenameUtils.getExtension(file.getOriginalFilename());
         if (extension == null) throw new IllegalArgumentException("文件名缺少扩展名");
@@ -49,6 +53,9 @@ public class StorageManager {
             throw new IllegalArgumentException("不支持的文件类型：" + extension);
         String mime = sniffer.detect(file, extension);
         if (imageOnly && !mime.startsWith("image/")) throw new IllegalArgumentException("仅允许上传图片");
+        byte[] compressed = mime.startsWith("image/") ? imageCompressor.compress(file, extension, settings) : null;
+        long storedSize = compressed == null ? file.getSize() : compressed.length;
+        if (beforeStore != null) beforeStore.accept(storedSize);
         String access = "PRIVATE".equalsIgnoreCase(visibility) ? "PRIVATE" : "PUBLIC";
         StorageTypeEnum type = activeType(settings);
         if (type == StorageTypeEnum.QINIU && "PRIVATE".equals(access)
@@ -58,14 +65,14 @@ public class StorageManager {
                 + UUID.randomUUID().toString().replace("-", "") + "." + extension;
         String bucket = bucket(settings, type, access);
         StorageService service = driver(type);
-        try (InputStream stream = file.getInputStream()) {
-            service.upload(settings, bucket, key, stream, file.getSize(), mime);
+        try (InputStream stream = compressed == null ? file.getInputStream() : new ByteArrayInputStream(compressed)) {
+            service.upload(settings, bucket, key, stream, storedSize, mime);
         }
-        return new UploadResult(type, settings.getProfileId(), bucket, key, access, mime, extension);
+        return new UploadResult(type, settings.getProfileId(), bucket, key, access, mime, extension, storedSize);
     }
 
     public record UploadResult(StorageTypeEnum type, Long profileId, String bucket, String key,
-                               String visibility, String mime, String extension) { }
+                               String visibility, String mime, String extension, long size) { }
 
     public void apply(FileUpload record, UploadResult result) {
         record.setStorageType(result.type());
