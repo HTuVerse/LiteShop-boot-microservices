@@ -462,6 +462,10 @@ public class SaasCatalogService {
             row.setFeatureType("NUMBER").setUnit("STORE").setQuotaMode("RESOURCE")
                     .setUsageSource("REALTIME").setUsageMetric(SaasFeatureKeys.STORE_COUNT)
                     .setDefaultValue(null).setDefaultTextValue(null).setAllowedValues(null);
+        } else if (SaasFeatureKeys.RESOURCE_STORAGE_BYTES.equals(featureCode)) {
+            row.setFeatureType("NUMBER").setUnit("BYTE").setQuotaMode("RESOURCE")
+                    .setUsageSource("REALTIME").setUsageMetric(SaasFeatureKeys.RESOURCE_STORAGE_BYTES)
+                    .setDefaultValue(BigDecimal.valueOf(1073741824L)).setDefaultTextValue(null).setAllowedValues(null);
         } else if (SaasFeatureKeys.AI_MANAGER.equals(featureCode)) {
             // AI 店长只控制租户是否开通；模型 Key 和额度仍由平台统一管理。
             row.setFeatureType("BOOLEAN").setUnit(null).setQuotaMode(null)

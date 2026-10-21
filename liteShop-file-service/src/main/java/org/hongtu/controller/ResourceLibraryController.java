@@ -1,6 +1,6 @@
 package org.hongtu.controller;
 
-import cn.dev33.satoken.annotation.SaCheckRole;
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -17,6 +17,9 @@ import org.hongtu.service.FileUploadService;
 import org.hongtu.storage.StorageManager;
 import org.hongtu.storage.ResourceReferenceGuard;
 import org.hongtu.storage.ResourceReferenceService;
+import org.hongtu.storage.ResourceCapacityGuard;
+import org.springframework.transaction.annotation.Transactional;
+import org.hongtu.tenant.TenantContext;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.core.io.InputStreamResource;
@@ -28,10 +31,10 @@ import org.springframework.http.ContentDisposition;
 import java.util.List;
 import java.nio.charset.StandardCharsets;
 
-/** 超级管理员统一管理全部商户的上传资源。 */
+/** 平台和租户共用的资源库；租户范围由服务端会话确定。 */
 @RestController
 @RequiredArgsConstructor
-@SaCheckRole("SUPER_ADMIN")
+@SaCheckLogin
 @RequestMapping("/file-upload/admin/resources")
 public class ResourceLibraryController {
     private final FileUploadService files;
@@ -39,6 +42,7 @@ public class ResourceLibraryController {
     private final StorageManager storage;
     private final ResourceReferenceGuard references;
     private final ResourceReferenceService referenceService;
+    private final ResourceCapacityGuard capacity;
 
     /** 分页查询资源，可按名称、类型、商户、上传者与文件夹筛选。 */
     @GetMapping
@@ -50,10 +54,12 @@ public class ResourceLibraryController {
                                          @RequestParam(required = false) Long tenantId,
                                          @RequestParam(required = false) Long uploaderId,
                                          @RequestParam(required = false) Long folderId) {
+        requireManager();
         if (currentPage < 1 || pageSize < 1 || pageSize > 100) return Result.error("分页参数不合法");
         LambdaQueryWrapper<FileUpload> query = new LambdaQueryWrapper<FileUpload>()
                 .like(keyword != null && !keyword.isBlank(), FileUpload::getOriginalFileName, keyword == null ? "" : keyword.trim())
-                .eq(tenantId != null, FileUpload::getTenantId, tenantId)
+                .eq(TenantContext.hasTenant(), FileUpload::getTenantId, TenantContext.getTenantIdOrNull())
+                .eq(!TenantContext.hasTenant() && tenantId != null, FileUpload::getTenantId, tenantId)
                 .eq(uploaderId != null, FileUpload::getUploaderId, uploaderId)
                 .eq(visibility != null && !visibility.isBlank(), FileUpload::getVisibility, visibility)
                 .eq(folderId != null && folderId > 0, FileUpload::getFolderId, folderId)
@@ -72,18 +78,27 @@ public class ResourceLibraryController {
     /** 列出平台共享的分类文件夹。 */
     @GetMapping("/folders")
     public Result<List<ResourceFolder>> folders() {
-        return Result.success(folders.selectList(new LambdaQueryWrapper<ResourceFolder>().orderByAsc(ResourceFolder::getName)));
+        requireManager();
+        return Result.success(folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
+                .eq(ResourceFolder::getTenantId, libraryTenantId()).orderByAsc(ResourceFolder::getName)));
     }
 
     /** 新建分类文件夹。 */
     @PostMapping("/folders")
     public Result<ResourceFolder> createFolder(@Valid @RequestBody NameBody body) {
+        requireManager();
         String name = cleanName(body.name());
-        if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getName, name)) > 0)
+        if (body.parentId() != null && !folderExists(body.parentId()))
+            return Result.error("父文件夹不存在");
+        if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getTenantId, libraryTenantId())
+                .eq(body.parentId() != null, ResourceFolder::getParentId, body.parentId())
+                .isNull(body.parentId() == null, ResourceFolder::getParentId)
+                .eq(ResourceFolder::getName, name)) > 0)
             return Result.error("文件夹名称已存在");
         ResourceFolder folder = new ResourceFolder();
         folder.setName(name);
-        folder.setTenantId(0L);
+        folder.setTenantId(libraryTenantId());
+        folder.setParentId(body.parentId());
         folders.insert(folder);
         return Result.success(folder);
     }
@@ -91,10 +106,14 @@ public class ResourceLibraryController {
     /** 修改文件夹名称。 */
     @PutMapping("/folders/{id}")
     public Result<ResourceFolder> renameFolder(@PathVariable Long id, @Valid @RequestBody NameBody body) {
+        requireManager();
         ResourceFolder folder = folders.selectById(id);
-        if (folder == null) return Result.error("文件夹不存在");
+        if (folder == null || !libraryTenantId().equals(folder.getTenantId())) return Result.error("文件夹不存在");
         String name = cleanName(body.name());
-        if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getName, name).ne(ResourceFolder::getId, id)) > 0)
+        if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getTenantId, libraryTenantId())
+                .eq(folder.getParentId() != null, ResourceFolder::getParentId, folder.getParentId())
+                .isNull(folder.getParentId() == null, ResourceFolder::getParentId)
+                .eq(ResourceFolder::getName, name).ne(ResourceFolder::getId, id)) > 0)
             return Result.error("文件夹名称已存在");
         folder.setName(name);
         folders.updateById(folder);
@@ -104,7 +123,10 @@ public class ResourceLibraryController {
     /** 删除空文件夹，避免资源失去分类。 */
     @DeleteMapping("/folders/{id}")
     public Result<Void> deleteFolder(@PathVariable Long id) {
-        if (folders.selectById(id) == null) return Result.error("文件夹不存在");
+        requireManager();
+        if (!folderExists(id)) return Result.error("文件夹不存在");
+        if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getParentId, id)) > 0)
+            return Result.error("请先删除子文件夹");
         if (files.count(new LambdaQueryWrapper<FileUpload>().eq(FileUpload::getFolderId, id)) > 0)
             return Result.error("请先移动或删除文件夹中的资源");
         folders.deleteById(id);
@@ -113,29 +135,39 @@ public class ResourceLibraryController {
 
     /** 上传单个或多个资源，全部使用现有文件服务的类型和大小限制。 */
     @PostMapping("/upload")
+    @Transactional(rollbackFor = Exception.class)
     public Result<List<FileUpload>> upload(@RequestParam("files") MultipartFile[] uploads,
                                            @RequestParam(required = false) Long folderId,
                                            @RequestParam(defaultValue = "PUBLIC") String visibility) throws Exception {
+        requireManager();
         if (uploads == null || uploads.length == 0 || uploads.length > 20) return Result.error("每次可上传 1 至 20 个文件");
-        if (folderId != null && folders.selectById(folderId) == null) return Result.error("文件夹不存在");
+        if (folderId != null && !folderExists(folderId)) return Result.error("文件夹不存在");
         if (!"PUBLIC".equalsIgnoreCase(visibility) && !"PRIVATE".equalsIgnoreCase(visibility))
             return Result.error("访问权限不合法");
         for (MultipartFile file : uploads) {
             cleanName(file.getOriginalFilename());
         }
         List<FileUpload> result = new java.util.ArrayList<>();
-        for (MultipartFile file : uploads) {
-            StorageManager.UploadResult uploaded = storage.upload(file, false, visibility);
-            FileUpload record = new FileUpload();
-            record.setOriginalFileName(cleanName(file.getOriginalFilename()));
-            record.setSize(file.getSize());
-            storage.apply(record, uploaded);
-            record.setTenantId(0L);
-            record.setUploaderId(StpUtil.getLoginIdAsLong());
-            record.setFolderId(folderId);
-            try { files.save(record); }
-            catch (RuntimeException error) { storage.delete(record); throw error; }
-            result.add(storage.forResponse(record));
+        try {
+            for (MultipartFile file : uploads) {
+                capacity.requireAvailable(file.getSize());
+                StorageManager.UploadResult uploaded = storage.upload(file, false, visibility);
+                FileUpload record = new FileUpload();
+                record.setOriginalFileName(cleanName(file.getOriginalFilename()));
+                record.setSize(file.getSize());
+                storage.apply(record, uploaded);
+                record.setTenantId(libraryTenantId());
+                record.setUploaderId(StpUtil.getLoginIdAsLong());
+                record.setFolderId(folderId);
+                try { files.save(record); }
+                catch (RuntimeException error) { storage.delete(record); throw error; }
+                result.add(storage.forResponse(record));
+            }
+        } catch (Exception error) {
+            for (FileUpload saved : result) {
+                try { storage.delete(saved); } catch (Exception cleanup) { error.addSuppressed(cleanup); }
+            }
+            throw error;
         }
         return Result.success(result);
     }
@@ -143,6 +175,7 @@ public class ResourceLibraryController {
     /** 仅修改资源显示名称，保持被业务引用的 URL 不变。 */
     @PutMapping("/{id}/name")
     public Result<FileUpload> rename(@PathVariable Long id, @Valid @RequestBody NameBody body) {
+        requireManager();
         FileUpload record = files.getById(id);
         if (record == null) return Result.error("资源不存在");
         record.setOriginalFileName(cleanName(body.name()));
@@ -153,7 +186,8 @@ public class ResourceLibraryController {
     /** 将资源批量移动到指定分类，null 表示未分类。 */
     @PutMapping("/move")
     public Result<Void> move(@Valid @RequestBody BatchBody body) {
-        if (body.folderId() != null && folders.selectById(body.folderId()) == null) return Result.error("文件夹不存在");
+        requireManager();
+        if (body.folderId() != null && !folderExists(body.folderId())) return Result.error("文件夹不存在");
         for (Long id : body.ids()) {
             if (files.getById(id) == null) return Result.error("资源不存在：" + id);
         }
@@ -166,6 +200,7 @@ public class ResourceLibraryController {
     /** 批量删除记录与对应的本地或对象存储文件。 */
     @PostMapping("/delete")
     public Result<Void> delete(@Valid @RequestBody BatchBody body) throws Exception {
+        requireManager();
         for (Long id : body.ids()) {
             FileUpload record = files.getById(id);
             if (record == null) continue;
@@ -187,6 +222,7 @@ public class ResourceLibraryController {
     public Result<java.util.Map<String, Object>> usages(@PathVariable Long id,
             @RequestParam(defaultValue = "1") int currentPage,
             @RequestParam(defaultValue = "20") int pageSize) {
+        requireManager();
         if (files.getById(id) == null) return Result.error("资源不存在");
         if (currentPage < 1 || pageSize < 1 || pageSize > 100) return Result.error("分页参数不合法");
         return Result.success(java.util.Map.of("total", referenceService.count(id),
@@ -197,6 +233,7 @@ public class ResourceLibraryController {
     /** 以附件形式下载资源，文件名取当前显示名称。 */
     @GetMapping("/{id}/download")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws Exception {
+        requireManager();
         FileUpload record = files.getById(id);
         if (record == null || !"ACTIVE".equals(record.getDeletionState())) return ResponseEntity.notFound().build();
         return ResponseEntity.ok()
@@ -209,6 +246,7 @@ public class ResourceLibraryController {
     /** 读取资源详情，私有文件不会返回永久公开地址。 */
     @GetMapping("/{id}")
     public Result<FileUpload> detail(@PathVariable Long id) {
+        requireManager();
         FileUpload record = files.getById(id);
         return record == null ? Result.error("资源不存在") : Result.success(storage.forResponse(record));
     }
@@ -216,6 +254,7 @@ public class ResourceLibraryController {
     /** 私有资源经角色鉴权后获取五分钟有效的直接访问地址。 */
     @GetMapping("/{id}/access")
     public Result<String> access(@PathVariable Long id) throws Exception {
+        requireManager();
         FileUpload record = files.getById(id);
         return record == null || !"ACTIVE".equals(record.getDeletionState())
                 ? Result.error("资源不存在") : Result.success(storage.accessUrl(record));
@@ -224,6 +263,7 @@ public class ResourceLibraryController {
     /** 变更权限会将文件移到隔离 Bucket 或目录，再更新数据库访问策略。 */
     @PutMapping("/{id}/visibility")
     public Result<FileUpload> visibility(@PathVariable Long id, @RequestBody VisibilityBody body) throws Exception {
+        requireManager();
         FileUpload record = files.getById(id);
         if (record == null) return Result.error("资源不存在");
         var settings = storage.settings(record);
@@ -273,6 +313,7 @@ public class ResourceLibraryController {
     /** 检查当前默认驱动的公开、私有存储位置是否可连接。 */
     @PostMapping("/connection")
     public Result<String> connection() throws Exception {
+        if (!TenantContext.isSuperAdmin()) throw new SecurityException("仅平台管理员可管理存储配置");
         var settings = storage.currentSettings();
         var type = storage.activeType(settings);
         var driver = storage.driver(type);
@@ -303,7 +344,25 @@ public class ResourceLibraryController {
     }
 
     /** 创建或重命名时提交的名称。 */
-    public record NameBody(@NotBlank @Size(max = 255) String name) { }
+    private Long libraryTenantId() {
+        if (TenantContext.hasTenant()) return TenantContext.getTenantId();
+        if (!TenantContext.isSuperAdmin()) throw new SecurityException("缺少租户上下文");
+        return 0L;
+    }
+
+    private void requireManager() {
+        if (!StpUtil.hasRole("SUPER_ADMIN") && !StpUtil.hasRole("ADMIN"))
+            throw new SecurityException("无权管理资源库");
+        if (!TenantContext.hasTenant() && !TenantContext.isSuperAdmin())
+            throw new SecurityException("缺少租户上下文");
+    }
+
+    private boolean folderExists(Long id) {
+        ResourceFolder folder = folders.selectById(id);
+        return folder != null && libraryTenantId().equals(folder.getTenantId());
+    }
+
+    public record NameBody(@NotBlank @Size(max = 255) String name, Long parentId) { }
 
     /** 批量资源操作参数。 */
     public record BatchBody(@NotEmpty @Size(max = 100) List<Long> ids, Long folderId) { }

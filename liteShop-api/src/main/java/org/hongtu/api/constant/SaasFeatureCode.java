@@ -12,4 +12,7 @@ public final class SaasFeatureCode {
 
     /** AI 店长每个订阅周期允许生成的次数。 */
     public static final String AI_MANAGER_CALLS = "ai_manager_calls";
+
+    /** 租户资源库可占用的总字节数。 */
+    public static final String RESOURCE_STORAGE_BYTES = "resource_storage_bytes";
 }

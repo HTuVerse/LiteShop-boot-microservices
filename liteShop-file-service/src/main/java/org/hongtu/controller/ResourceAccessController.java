@@ -28,6 +28,12 @@ public class ResourceAccessController {
     private final FileUploadMapper files;
     private final StorageManager storage;
 
+    /** 内部权益服务查询当前租户已使用容量。 */
+    @GetMapping("/inner/file-upload/resources/used-bytes")
+    public Result<Long> usedBytes() {
+        return Result.success(files.usedBytes(TenantContext.getTenantId()));
+    }
+
     /** 内部业务服务按资源 ID 派生 URL，仅允许读取公开资源。 */
     @GetMapping("/inner/file-upload/resources/{id}/public-url")
     public Result<String> internalPublicUrl(@PathVariable Long id) {

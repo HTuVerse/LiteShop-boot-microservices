@@ -18,7 +18,10 @@ public final class SaasFeatureKeys {
     /** AI 生成次数由用户服务的原子计数器统计。 */
     public static final String AI_MANAGER_CALLS = SaasFeatureCode.AI_MANAGER_CALLS;
 
-    public static final Set<String> SELLABLE = Set.of(STORE_COUNT, AI_MANAGER, AI_MANAGER_CALLS);
+    /** 所有租户上传共同占用的资源库容量。 */
+    public static final String RESOURCE_STORAGE_BYTES = SaasFeatureCode.RESOURCE_STORAGE_BYTES;
+
+    public static final Set<String> SELLABLE = Set.of(STORE_COUNT, AI_MANAGER, AI_MANAGER_CALLS, RESOURCE_STORAGE_BYTES);
 
     public static boolean isSellable(String featureCode) {
         return featureCode != null && SELLABLE.contains(featureCode.trim().toLowerCase());

@@ -15,6 +15,9 @@ import java.util.List;
 /** 业务服务按资源 ID 获取公开访问地址，隐藏底层存储驱动。 */
 @FeignClient(name = "liteShop-file-service", contextId = "fileResourceClient")
 public interface FileResourceClient {
+    /** 查询租户资源库已使用字节数。 */
+    @GetMapping("/inner/file-upload/resources/used-bytes")
+    Result<Long> usedBytes();
     @GetMapping("/inner/file-upload/resources/{id}/public-url")
     Result<String> publicUrl(@PathVariable("id") Long id);
 

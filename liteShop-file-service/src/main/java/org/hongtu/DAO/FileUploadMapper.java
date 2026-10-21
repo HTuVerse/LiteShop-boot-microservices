@@ -17,6 +17,10 @@ import org.apache.ibatis.annotations.Param;
  */
 @Mapper
 public interface FileUploadMapper extends BaseMapper<FileUpload> {
+    /** 汇总租户当前有效文件大小，供套餐权益实时计量。 */
+    @Select("SELECT COALESCE(SUM(size), 0) FROM file_upload WHERE tenant_id = #{tenantId} " +
+            "AND (deletion_state IS NULL OR deletion_state = 'ACTIVE')")
+    Long usedBytes(@Param("tenantId") Long tenantId);
     /** 公开入口和私有授权均需跨租户读取元数据，权限由 Controller 单独校验。 */
     @InterceptorIgnore(tenantLine = "true")
     @Select("SELECT * FROM file_upload WHERE id = #{id} LIMIT 1")
