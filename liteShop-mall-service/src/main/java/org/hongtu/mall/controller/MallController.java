@@ -1,16 +1,19 @@
 package org.hongtu.mall.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
-import cn.dev33.satoken.annotation.SaMode;
+import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.stp.StpUtil;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import org.hongtu.Result.Result;
+import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.mall.dto.MallExchangeRequest;
 import org.hongtu.mall.dto.MallOrder;
 import org.hongtu.mall.dto.MallProduct;
 import org.hongtu.mall.dto.MallProductRequest;
 import org.hongtu.mall.service.MallCatalogService;
 import org.hongtu.mall.service.MallExchangeService;
+import org.hongtu.tenant.TenantScope;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -78,5 +81,57 @@ public class MallController {
     public Result<Map<String, Object>> myOrders(@RequestParam(defaultValue = "1") int currentPage,
             @RequestParam(defaultValue = "10") int pageSize) {
         return Result.success(exchange.page(currentPage, pageSize, StpUtil.getLoginIdAsLong()));
+    }
+
+    /** 为自己的待支付订单获取微信小程序付款参数。 */
+    @PostMapping("/orders/{id}/wechat-pay")
+    public Result<Map<String, Object>> wechatPay(@PathVariable Long id, @RequestParam String openId) {
+        return Result.success(exchange.createWechatPay(id, StpUtil.getLoginIdAsLong(), openId));
+    }
+
+    /** 主动向微信核对付款结果。 */
+    @GetMapping("/orders/{id}/status")
+    public Result<MallOrder> orderStatus(@PathVariable Long id) {
+        return Result.success(exchange.syncPayment(id, StpUtil.getLoginIdAsLong()));
+    }
+
+    /** 取消未支付订单。 */
+    @PostMapping("/orders/{id}/cancel")
+    public Result<MallOrder> cancel(@PathVariable Long id) {
+        return Result.success(exchange.cancel(id, StpUtil.getLoginIdAsLong()));
+    }
+
+    /** 微信支付通知，租户路径仅用于选择验签密钥。 */
+    @PostMapping("/wechat-pay/notify/{tenantId}")
+    @SaIgnore
+    public Map<String, String> paymentNotify(@PathVariable Long tenantId, HttpServletRequest request,
+            @RequestBody String body) {
+        try {
+            TenantScope.run(tenantId, () -> exchange.paymentNotify(notifyRequest(tenantId, request, body)));
+            return Map.of("code", "SUCCESS", "message", "成功");
+        } catch (Exception invalid) {
+            return Map.of("code", "FAIL", "message", "支付通知处理失败");
+        }
+    }
+
+    /** 微信退款通知。 */
+    @PostMapping("/wechat-pay/refund-notify/{tenantId}")
+    @SaIgnore
+    public Map<String, String> refundNotify(@PathVariable Long tenantId, HttpServletRequest request,
+            @RequestBody String body) {
+        try {
+            TenantScope.run(tenantId, () -> exchange.refundNotify(notifyRequest(tenantId, request, body)));
+            return Map.of("code", "SUCCESS", "message", "成功");
+        } catch (Exception invalid) {
+            return Map.of("code", "FAIL", "message", "退款通知处理失败");
+        }
+    }
+
+    private WeChatNotifyParseDTO notifyRequest(Long tenantId, HttpServletRequest request, String body) {
+        return WeChatNotifyParseDTO.builder().tenantId(tenantId).requestBody(body)
+                .signature(request.getHeader("Wechatpay-Signature"))
+                .timestamp(request.getHeader("Wechatpay-Timestamp"))
+                .nonce(request.getHeader("Wechatpay-Nonce"))
+                .serial(request.getHeader("Wechatpay-Serial")).build();
     }
 }

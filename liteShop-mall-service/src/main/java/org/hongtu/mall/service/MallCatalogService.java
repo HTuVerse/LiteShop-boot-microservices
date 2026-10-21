@@ -55,16 +55,16 @@ public class MallCatalogService {
         long tenantId = TenantContext.getTenantId();
         if (id == null) {
             id = IdWorker.getId();
-            jdbc.update("INSERT INTO mall_product (id,tenant_id,name,description,image_url,coupon_id,points_price,stock,status,sort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,NOW(),NOW())",
+            jdbc.update("INSERT INTO mall_product (id,tenant_id,name,description,image_url,coupon_id,points_price,pricing_mode,cash_price,stock,status,sort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW(),NOW())",
                     id, tenantId, req.getName().trim(), req.getDescription(), req.getImageUrl(), req.getCouponId(),
-                    req.getPointsPrice(), req.getStock(), req.getStatus(), req.getSort());
+                    req.getPointsPrice(), req.getPricingMode(), req.getCashPrice(), req.getStock(), req.getStatus(), req.getSort());
         } else {
             MallProduct old = get(id);
             if (old.getStock() < 0) throw new BusinessException("商品库存异常");
             // 编辑时比较读取的库存，避免覆盖并发兑换。
-            int changed = jdbc.update("UPDATE mall_product SET name=?, description=?, image_url=?, coupon_id=?, points_price=?, stock=?, status=?, sort=?, updated_at=NOW() WHERE id=? AND tenant_id=? AND stock=?",
+            int changed = jdbc.update("UPDATE mall_product SET name=?, description=?, image_url=?, coupon_id=?, points_price=?, pricing_mode=?, cash_price=?, stock=?, status=?, sort=?, updated_at=NOW() WHERE id=? AND tenant_id=? AND stock=?",
                     req.getName().trim(), req.getDescription(), req.getImageUrl(), req.getCouponId(), req.getPointsPrice(),
-                    req.getStock(), req.getStatus(), req.getSort(), id, tenantId, old.getStock());
+                    req.getPricingMode(), req.getCashPrice(), req.getStock(), req.getStatus(), req.getSort(), id, tenantId, old.getStock());
             if (changed != 1) throw new BusinessException("商品更新失败，请刷新后重试");
         }
         return get(id);
@@ -88,11 +88,17 @@ public class MallCatalogService {
 
     private void validate(MallProductRequest req) {
         if (req == null || req.getName() == null || req.getName().isBlank() || req.getName().length() > 80
-                || req.getCouponId() == null || req.getPointsPrice() == null || req.getPointsPrice() <= 0
+                || req.getCouponId() == null || req.getPointsPrice() == null || req.getPointsPrice() < 0
+                || req.getCashPrice() == null || req.getCashPrice().scale() > 2
+                || req.getCashPrice().signum() < 0 || req.getCashPrice().compareTo(new java.math.BigDecimal("99999999.99")) > 0
                 || req.getStock() == null || req.getStock() < 0 || req.getStatus() == null
                 || (req.getStatus() != 0 && req.getStatus() != 1)) throw new BusinessException("商品参数无效");
         if (req.getDescription() != null && req.getDescription().length() > 500) throw new BusinessException("商品描述过长");
         if (req.getImageUrl() != null && req.getImageUrl().length() > 500) throw new BusinessException("图片地址过长");
+        boolean points = req.getPointsPrice() > 0;
+        boolean cash = req.getCashPrice().signum() > 0;
+        String expected = points && cash ? "POINTS_CASH" : points ? "POINTS" : cash ? "CASH" : "";
+        if (!expected.equals(req.getPricingMode())) throw new BusinessException("积分与现金价格不符合定价方式");
         if (req.getSort() == null) req.setSort(0);
         Coupon coupon = FeignResultUtil.unwrap(couponClient.getCouponById(req.getCouponId()));
         if (coupon == null || coupon.getStatus() != OnOrOffShelfEnum.ON_SHELF || coupon.getRecallTime() != null
