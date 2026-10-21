@@ -22,6 +22,7 @@ import org.hongtu.storage.ResourceCapacityGuard;
 import org.hongtu.storage.ResourceLibraryAccess;
 import org.springframework.transaction.annotation.Transactional;
 import org.hongtu.tenant.TenantContext;
+import org.hongtu.tenant.TenantIgnore;
 import org.hongtu.tenant.TenantScope;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -83,8 +84,7 @@ public class ResourceLibraryController {
                         .or().notLikeRight(FileUpload::getContentType, "image/"))
                 .orderByDesc(FileUpload::getCreatedAt, FileUpload::getId);
         Page<FileUpload> page = new Page<>(currentPage, pageSize);
-        if (owner > 0) TenantScope.run(owner, () -> files.page(page, query));
-        else files.page(page, query);
+        inOwner(owner, () -> files.page(page, query));
         String deliveryBase = storage.currentSettings().getPublicDeliveryBaseUrl();
         page.getRecords().forEach(record -> storage.forResponse(record, deliveryBase));
         return Result.success(page);
@@ -98,11 +98,8 @@ public class ResourceLibraryController {
         if ((access.permissionsFor(owner) & (ResourceLibraryAccess.VIEW | ResourceLibraryAccess.SELECT
                 | ResourceLibraryAccess.EDIT | ResourceLibraryAccess.UPLOAD)) == 0)
             throw new SecurityException("无权访问该租户资源库");
-        return Result.success(owner > 0
-                ? TenantScope.call(owner, () -> folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
-                    .eq(ResourceFolder::getTenantId, owner).orderByAsc(ResourceFolder::getName)))
-                : folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
-                    .eq(ResourceFolder::getTenantId, owner).orderByAsc(ResourceFolder::getName)));
+        return Result.success(inOwner(owner, () -> folders.selectList(new LambdaQueryWrapper<ResourceFolder>()
+                .eq(ResourceFolder::getTenantId, owner).orderByAsc(ResourceFolder::getName))));
     }
 
     @GetMapping("/roots")
@@ -176,11 +173,11 @@ public class ResourceLibraryController {
         requireManager();
         Long owner = folderOwner(id);
         access.require(owner, ResourceLibraryAccess.EDIT);
-        return inOwner(owner, () -> deleteFolderInScope(id));
+        return inOwner(owner, () -> deleteFolderInScope(id, owner));
     }
 
-    private Result<Void> deleteFolderInScope(Long id) {
-        if (!folderExists(id)) return Result.error("文件夹不存在");
+    private Result<Void> deleteFolderInScope(Long id, Long owner) {
+        if (!folderExists(id, owner)) return Result.error("文件夹不存在");
         if (folders.selectCount(new LambdaQueryWrapper<ResourceFolder>().eq(ResourceFolder::getParentId, id)) > 0)
             return Result.error("请先删除子文件夹");
         if (files.count(new LambdaQueryWrapper<FileUpload>().eq(FileUpload::getFolderId, id)) > 0)
@@ -212,7 +209,7 @@ public class ResourceLibraryController {
         List<FileUpload> result = new java.util.ArrayList<>();
         try {
             for (MultipartFile file : uploads) {
-                inOwner(owner, () -> { capacity.requireAvailable(file.getSize()); return null; });
+                if (owner > 0) inOwner(owner, () -> { capacity.requireAvailable(file.getSize()); return null; });
                 StorageManager.UploadResult uploaded = storage.upload(file, false, visibility);
                 FileUpload record = new FileUpload();
                 record.setOriginalFileName(cleanName(file.getOriginalFilename()));
@@ -260,11 +257,11 @@ public class ResourceLibraryController {
         access.require(owner, ResourceLibraryAccess.EDIT);
         if (body.ids().stream().anyMatch(id -> !owner.equals(fileOwner(id))))
             return Result.error("不能跨租户移动资源");
-        return inOwner(owner, () -> moveInScope(body));
+        return inOwner(owner, () -> moveInScope(body, owner));
     }
 
-    private Result<Void> moveInScope(BatchBody body) {
-        if (body.folderId() != null && !folderExists(body.folderId())) return Result.error("文件夹不存在");
+    private Result<Void> moveInScope(BatchBody body, Long owner) {
+        if (body.folderId() != null && !folderExists(body.folderId(), owner)) return Result.error("文件夹不存在");
         for (Long id : body.ids()) {
             if (files.getById(id) == null) return Result.error("资源不存在：" + id);
         }
@@ -473,9 +470,9 @@ public class ResourceLibraryController {
             throw new SecurityException("缺少租户上下文");
     }
 
-    private boolean folderExists(Long id) {
+    private boolean folderExists(Long id, Long owner) {
         ResourceFolder folder = folders.selectById(id);
-        return folder != null && libraryTenantId().equals(folder.getTenantId());
+        return folder != null && owner.equals(folder.getTenantId());
     }
 
     private Long folderOwner(Long id) {
@@ -496,7 +493,8 @@ public class ResourceLibraryController {
     }
 
     private <T> T inOwner(Long owner, java.util.function.Supplier<T> action) {
-        return owner > 0 ? TenantScope.call(owner, action) : action.get();
+        if (owner > 0) return TenantScope.call(owner, action);
+        return TenantContext.hasTenant() ? TenantIgnore.get(action) : action.get();
     }
 
     private <T> T inOwnerChecked(Long owner, CheckedAction<T> action) throws Exception {

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS `resource_library_root_access` (
 
 CREATE TABLE IF NOT EXISTS `resource_library_root_grant` (
   `tenant_id` BIGINT NOT NULL COMMENT '资源归属租户',
-  `grantee_tenant_id` BIGINT NOT NULL COMMENT '获得只读权限的租户',
+  `grantee_tenant_id` BIGINT NOT NULL COMMENT '获得所配置操作权限的租户',
   `permissions` INT NOT NULL DEFAULT 0 COMMENT '查看1 选用2 编辑4 上传8',
   PRIMARY KEY (`tenant_id`, `grantee_tenant_id`),
   KEY `idx_resource_root_grantee` (`grantee_tenant_id`)

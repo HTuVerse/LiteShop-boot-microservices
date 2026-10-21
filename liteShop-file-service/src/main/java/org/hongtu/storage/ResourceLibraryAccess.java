@@ -41,7 +41,10 @@ public class ResourceLibraryAccess {
         jdbc.query("SELECT tenant_id,grantee_tenant_id,permissions FROM resource_library_root_grant",
                 (RowCallbackHandler) rs -> grants.computeIfAbsent(rs.getLong(1), ignored -> new ArrayList<>())
                         .add(new Grant(rs.getLong(2), rs.getInt(3))));
-        return tenants.stream().map(tenant -> {
+        List<TenantResourceLibraryDTO> owners = new ArrayList<>();
+        owners.add(new TenantResourceLibraryDTO(0L, "平台资源"));
+        owners.addAll(tenants);
+        return owners.stream().map(tenant -> {
                     Map<String, Object> setting = settings.get(tenant.id());
                     String mode = setting == null ? "PRIVATE" : (String) setting.get("access_mode");
                     int permissions = setting == null ? 0 : ((Number) setting.get("permissions")).intValue();
@@ -111,8 +114,10 @@ public class ResourceLibraryAccess {
         if (!List.of("PRIVATE", "ALL", "SELECTED").contains(mode) || (permissions & ~15) != 0
                 || permissions < 0 || grants == null) throw new IllegalArgumentException("资源库权限参数不合法");
         List<TenantResourceLibraryDTO> tenants = FeignResultUtil.unwrap(users.getResourceLibraryTenants());
-        TenantResourceLibraryDTO target = tenants.stream().filter(t -> Objects.equals(t.id(), owner))
-                .findFirst().orElseThrow(() -> new IllegalArgumentException("租户不存在"));
+        TenantResourceLibraryDTO target = Objects.equals(owner, 0L)
+                ? new TenantResourceLibraryDTO(0L, "平台资源")
+                : tenants.stream().filter(t -> Objects.equals(t.id(), owner))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("租户不存在"));
         for (Grant grant : grants) {
             if (grant.tenantId() == null || Objects.equals(grant.tenantId(), owner)
                     || tenants.stream().noneMatch(t -> Objects.equals(t.id(), grant.tenantId()))

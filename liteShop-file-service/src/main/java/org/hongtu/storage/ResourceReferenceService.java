@@ -61,8 +61,7 @@ public class ResourceReferenceService {
             if (file == null) throw new IllegalArgumentException("资源不存在：" + id);
             if (!"ACTIVE".equals(state) || !"PUBLIC".equals(storage.visibility(file)))
                 throw new IllegalStateException("资源正在删除或不是公开资源：" + id);
-            if (!Long.valueOf(0).equals(file.getTenantId())
-                    && (libraryAccess.permissionsFor(file.getTenantId(), request.tenantId())
+            if ((libraryAccess.permissionsFor(file.getTenantId(), request.tenantId())
                         & ResourceLibraryAccess.SELECT) == 0)
                 throw new SecurityException("不能引用其他租户的资源");
             String publicUrl = storage.publicUrl(file);
@@ -230,8 +229,7 @@ public class ResourceReferenceService {
         FileUpload file = files.findAcrossTenants(id);
         if (file == null || !"ACTIVE".equals(file.getDeletionState())
                 || !"PUBLIC".equals(storage.visibility(file))) return null;
-        return Long.valueOf(0).equals(file.getTenantId())
-                || (libraryAccess.permissionsFor(file.getTenantId(), tenantId) & ResourceLibraryAccess.SELECT) != 0
+        return (libraryAccess.permissionsFor(file.getTenantId(), tenantId) & ResourceLibraryAccess.SELECT) != 0
                 ? id : null;
     }
 

@@ -45,7 +45,7 @@ INSERT INTO `sys_permission`
   (`id`,`permission_name`,`permission_code`,`parent_id`,`permission_type`,
    `component_address`,`router_address`,`sort`,`status`,`icon`,`is_hide`,`is_iframe`,`keep_alive`,`menu_scope`)
 SELECT @resource_menu,'我的资源库','config:resources',COALESCE(@resource_parent,0),1,
-  'platform/resources/index','/config/resources',25,1,'ri:folder-image-line',0,0,1,2
+  'config/resources/index','/config/resources',25,1,'ri:folder-image-line',0,0,1,2
 WHERE NOT EXISTS (SELECT 1 FROM `sys_permission` WHERE `permission_code`='config:resources');
 
 INSERT INTO `sys_role_permission` (`tenant_id`,`role_id`,`permission_id`)
