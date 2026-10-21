@@ -98,7 +98,7 @@ public class ResourceLibraryAccess {
         return grants.isEmpty() ? 0 : effective(grants.get(0));
     }
 
-    /** 根策略只决定未分类资源；子目录采用最近一个显式策略，未配置则继承。 */
+    /** 根策略只决定未分类资源和根目录操作；文件夹仅继承父文件夹的显式策略。 */
     public int permissionsForFolder(Long owner, Long folderId, Long grantee) {
         if (folderId == null) return permissionsFor(owner, grantee);
         if (grantee == null) return 0;
@@ -123,7 +123,8 @@ public class ResourceLibraryAccess {
             Object parent = folders.get(0).get("parent_id");
             current = parent == null ? null : ((Number) parent).longValue();
         }
-        return current == null ? permissionsFor(owner, grantee) : 0;
+        // 顶层文件夹没有显式授权时默认私密，不能继承根目录的未分类资源权限。
+        return 0;
     }
 
     public int permissionsForFolder(Long owner, Long folderId) {

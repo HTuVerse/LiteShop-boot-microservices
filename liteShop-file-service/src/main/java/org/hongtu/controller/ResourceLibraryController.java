@@ -71,17 +71,18 @@ public class ResourceLibraryController {
         if (folderId != null && folderId < 0) return Result.error("文件夹参数不合法");
         Long owner = tenantId == null ? libraryTenantId() : tenantId;
         int required = "SELECT".equals(purpose) ? ResourceLibraryAccess.SELECT : ResourceLibraryAccess.VIEW;
-        int rootPermissions = access.permissionsForFolder(owner, null);
+        int unclassifiedPermissions = access.permissionsForFolder(owner, null);
         if (folderId != null && folderId > 0 && !owner.equals(folderOwner(folderId)))
             return Result.error("文件夹不属于所选资源库");
         if (folderId != null && folderId > 0
                 && (access.permissionsForFolder(owner, folderId) & required) != required)
             return Result.success(new Page<>(currentPage, pageSize));
-        if (folderId != null && folderId == 0 && (rootPermissions & required) != required)
+        if (folderId != null && folderId == 0 && (unclassifiedPermissions & required) != required)
             return Result.success(new Page<>(currentPage, pageSize));
+        // 未指定文件夹时只聚合有权访问的文件夹；根目录授权仅补充未分类文件。
         List<Long> allowed = folderId == null
                 ? access.allowedFolders(owner, TenantContext.getTenantIdOrNull(), required) : List.of();
-        if (folderId == null && (rootPermissions & required) != required && allowed.isEmpty())
+        if (folderId == null && (unclassifiedPermissions & required) != required && allowed.isEmpty())
             return Result.success(new Page<>(currentPage, pageSize));
         LambdaQueryWrapper<FileUpload> query = new LambdaQueryWrapper<FileUpload>()
                 .like(keyword != null && !keyword.isBlank(), FileUpload::getOriginalFileName, keyword == null ? "" : keyword.trim())
@@ -94,9 +95,9 @@ public class ResourceLibraryController {
                 .and("file".equals(type), part -> part.isNull(FileUpload::getContentType)
                         .or().notLikeRight(FileUpload::getContentType, "image/"))
                 .orderByDesc(FileUpload::getCreatedAt, FileUpload::getId);
-        if (folderId == null && (rootPermissions & required) == required && !allowed.isEmpty())
+        if (folderId == null && (unclassifiedPermissions & required) == required && !allowed.isEmpty())
             query.and(part -> part.isNull(FileUpload::getFolderId).or().in(FileUpload::getFolderId, allowed));
-        else if (folderId == null && (rootPermissions & required) == required)
+        else if (folderId == null && (unclassifiedPermissions & required) == required)
             query.isNull(FileUpload::getFolderId);
         else if (folderId == null)
             query.in(FileUpload::getFolderId, allowed);
