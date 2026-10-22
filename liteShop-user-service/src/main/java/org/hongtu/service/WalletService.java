@@ -232,7 +232,8 @@ public class WalletService {
             throw new BusinessException("储值商户订单号无效");
         Long id = Long.valueOf(notice.getOutTradeNo().substring(1));
         WalletOrder order = order(id, null);
-        if (!order.getTenantId().equals(request.getTenantId()) || !order.getOutTradeNo().equals(notice.getOutTradeNo())
+        if (!"WECHAT".equals(order.getPaymentChannel())
+                || !order.getTenantId().equals(request.getTenantId()) || !order.getOutTradeNo().equals(notice.getOutTradeNo())
                 || !order.getAmount().movePointRight(2).toBigIntegerExact().equals(java.math.BigInteger.valueOf(notice.getTotalAmount()))
                 || !"CNY".equalsIgnoreCase(notice.getCurrency())
                 || !("wallet:" + id).equals(notice.getAttach())) throw new BusinessException("储值支付通知不匹配");
