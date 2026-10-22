@@ -12,7 +12,7 @@ import jakarta.annotation.Resource;
 
 /**
  * 余额变动历史表 前端控制器
- * 仅允许用户查询自己的余额变动明细，且仅支持查询最近1年数据。
+ * 仅允许用户分页查询自己的余额变动明细。
  *
  * @author Ht
  * @since 2025-08-25
@@ -25,7 +25,7 @@ public class SurplusRecordController {
     private SurplusRecordService surplusRecordService;
 
     /**
-     * 分页查询当前登录用户的余额变动明细（最近1年）
+     * 分页查询当前登录用户的全部余额变动明细。
      * @param pageNum 页码，默认1
      * @param pageSize 每页条数，默认10
      * @param type 变动类型（可选）：1-用户充值 2-管理员充值 3-退款 4-消费

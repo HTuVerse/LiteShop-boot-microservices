@@ -15,7 +15,7 @@ import com.baomidou.mybatisplus.spring.service.IService;
 public interface SurplusRecordService extends IService<UserSurplusRecord> {
 
     /**
-     * 分页查询当前用户余额变动明细，仅允许查询最近1年数据
+     * 分页查询当前用户的全部余额变动明细
      * @param userId 用户ID（当前登录用户）
      * @param pageNum 页码
      * @param pageSize 每页条数

@@ -10,10 +10,6 @@ import org.hongtu.service.SurplusRecordService;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
-
-import static org.hongtu.constant.CommonConst.MAX_QUERY_YEARS;
-
 /**
  * <p>
  * 余额变动历史表 服务实现类
@@ -30,11 +26,9 @@ public class SurplusRecordServiceImpl extends ServiceImpl<SurplusRecordMapper, U
         if (userId == null || pageNum == null || pageSize == null) {
             return Result.error("必要参数不能为空");
         }
-        LocalDateTime oneYearAgo = LocalDateTime.now().minusYears(MAX_QUERY_YEARS);
         Page<UserSurplusRecord> page = new Page<>(pageNum, pageSize);
         LambdaQueryWrapper<UserSurplusRecord> q = new LambdaQueryWrapper<>();
         q.eq(UserSurplusRecord::getUserId, userId)
-                .ge(UserSurplusRecord::getCreatedAt, oneYearAgo)
                 .orderByDesc(UserSurplusRecord::getCreatedAt);
         if (type != null) {
             BalanceResourceEnum typeEnum = BalanceResourceEnum.getByCode(type);
