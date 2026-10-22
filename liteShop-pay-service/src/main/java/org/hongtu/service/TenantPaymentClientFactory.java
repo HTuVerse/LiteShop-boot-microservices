@@ -73,6 +73,8 @@ public class TenantPaymentClientFactory {
     /** 加载当前命令指定租户的支付宝客户端。 */
     public AlipayClient alipay(Long tenantId) {
         TenantPaymentRuntimeDTO account = TenantPaymentAccountGuard.requireAlipay(load(tenantId, "ALIPAY"));
+        // 条码支付可能先完成扣款才收到响应，错误公钥必须在发起请求前拦截。
+        AlipayKeyPairGuard.requireAlipayPublicKey(account.getPrivateKey(), account.getAlipayPublicKey());
         String gateway = alipayGateway(account.getSandboxEnabled());
         String key = cacheKey(tenantId, account);
         evictStale(alipayClients, tenantId, key);
