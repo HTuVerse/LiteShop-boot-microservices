@@ -24,6 +24,9 @@ public class PaymentResponse {
      * 订单ID
      */
     private Long orderId;
+
+    /** 沙箱模式下前端应调用模拟支付确认接口，不调用微信收银台。 */
+    private Boolean sandbox;
     
     /**
      * 订单编号
@@ -54,6 +57,9 @@ public class PaymentResponse {
      * 支付跳转URL（H5支付）
      */
     private String payUrl;
+
+    /** 支付宝小程序交易号，传给 uni.requestPayment.orderInfo。 */
+    private String tradeNo;
     
     /**
      * 小程序支付参数（微信小程序）

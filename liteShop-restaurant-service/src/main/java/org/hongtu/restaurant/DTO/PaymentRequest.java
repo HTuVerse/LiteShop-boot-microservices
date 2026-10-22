@@ -32,6 +32,9 @@ public class PaymentRequest {
      * 用户openId（微信支付时需要）
      */
     private String openId;
+
+    /** 支付宝小程序静默授权码，由支付服务换取用户 ID。 */
+    private String authCode;
     
     /**
      * 前端回调地址（可选）

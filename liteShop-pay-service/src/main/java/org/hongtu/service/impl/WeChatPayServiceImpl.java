@@ -86,6 +86,40 @@ public class WeChatPayServiceImpl implements WeChatPayService {
         }
     }
 
+    @Override
+    public String createH5Pay(WeChatPayTradeParam param) {
+        if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
+                || !StringUtils.hasText(param.getDescription()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getPayerClientIp()) || param.getTotalAmount() == null
+                || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("微信 H5 支付参数不完整");
+        }
+        WeChatClients merchant = clients.wechat(param.getTenantId());
+        try {
+            var request = new com.wechat.pay.java.service.payments.h5.model.PrepayRequest();
+            request.setAppid(merchant.appId());
+            request.setMchid(merchant.mchId());
+            request.setDescription(param.getDescription());
+            request.setOutTradeNo(param.getOutTradeNo());
+            request.setNotifyUrl(param.getNotifyUrl());
+            request.setAttach(param.getAttach());
+            var amount = new com.wechat.pay.java.service.payments.h5.model.Amount();
+            amount.setTotal(param.getTotalAmount().movePointRight(2)
+                    .setScale(0, RoundingMode.UNNECESSARY).intValueExact());
+            request.setAmount(amount);
+            var scene = new com.wechat.pay.java.service.payments.h5.model.SceneInfo();
+            scene.setPayerClientIp(param.getPayerClientIp());
+            var h5 = new com.wechat.pay.java.service.payments.h5.model.H5Info();
+            h5.setType("Wap");
+            scene.setH5Info(h5);
+            request.setSceneInfo(scene);
+            return merchant.h5().prepay(request).getH5Url();
+        } catch (RuntimeException exception) {
+            log.error("创建微信 H5 支付失败, tenantId={}", param.getTenantId(), exception);
+            throw new BusinessException("创建微信 H5 支付失败");
+        }
+    }
+
     /** 付款码场景的调用方 IP 占位，仅作参数填充，不参与风控判断。 */
     private static final String MICRO_PAY_SPBILL_IP = "127.0.0.1";
 

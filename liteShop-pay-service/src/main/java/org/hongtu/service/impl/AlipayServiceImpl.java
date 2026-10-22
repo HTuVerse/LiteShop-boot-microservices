@@ -7,6 +7,8 @@ import com.alipay.api.request.AlipayTradeCloseRequest;
 import com.alipay.api.request.AlipayTradeQueryRequest;
 import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.request.AlipayTradeWapPayRequest;
+import com.alipay.api.request.AlipaySystemOauthTokenRequest;
+import com.alipay.api.request.AlipayTradeCreateRequest;
 import com.alipay.api.response.AlipayTradeCloseResponse;
 import com.alipay.api.response.AlipayTradeQueryResponse;
 import com.alipay.api.response.AlipayTradeRefundResponse;
@@ -17,6 +19,7 @@ import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.TenantPaymentRuntimeDTO;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
+import org.hongtu.params.AlipayMiniPayParam;
 import org.hongtu.service.AlipayService;
 import org.hongtu.service.TenantPaymentClientFactory;
 import org.springframework.stereotype.Service;
@@ -37,6 +40,43 @@ public class AlipayServiceImpl implements AlipayService {
     private final TenantPaymentClientFactory clients;
 
     @Override
+    public String createMiniPay(AlipayMiniPayParam param) {
+        if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
+                || !StringUtils.hasText(param.getSubject()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getAuthCode()) || param.getTotalAmount() == null
+                || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("支付宝小程序支付参数不完整");
+        }
+        var client = clients.alipay(param.getTenantId());
+        try {
+            var oauth = new AlipaySystemOauthTokenRequest();
+            oauth.setGrantType("authorization_code");
+            oauth.setCode(param.getAuthCode());
+            var authorization = client.execute(oauth);
+            if (!authorization.isSuccess() || !StringUtils.hasText(authorization.getUserId()))
+                throw new BusinessException("获取支付宝用户身份失败");
+
+            var request = new AlipayTradeCreateRequest();
+            request.setNotifyUrl(param.getNotifyUrl());
+            Map<String, Object> bizContent = new HashMap<>();
+            bizContent.put("out_trade_no", param.getOutTradeNo());
+            bizContent.put("total_amount", param.getTotalAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString());
+            bizContent.put("subject", param.getSubject());
+            bizContent.put("buyer_id", authorization.getUserId());
+            bizContent.put("product_code", "JSAPI_PAY");
+            bizContent.put("timeout_express", "30m");
+            request.setBizContent(JSON.toJSONString(bizContent));
+            var response = client.execute(request);
+            if (!response.isSuccess() || !StringUtils.hasText(response.getTradeNo()))
+                throw new BusinessException("创建支付宝小程序交易失败");
+            return response.getTradeNo();
+        } catch (AlipayApiException exception) {
+            log.error("创建支付宝小程序交易失败, tenantId={}", param.getTenantId(), exception);
+            throw new BusinessException("创建支付宝小程序交易失败");
+        }
+    }
+
+    @Override
     public String createWapPay(AlipayTradeWapPayRequestParams wapPayRequest) {
         if (wapPayRequest == null || wapPayRequest.getTenantId() == null) {
             throw new BusinessException("支付宝支付命令缺少租户");
@@ -52,6 +92,9 @@ public class AlipayServiceImpl implements AlipayService {
         var client = clients.alipay(wapPayRequest.getTenantId());
         AlipayTradeWapPayRequest request = new AlipayTradeWapPayRequest();
         request.setNotifyUrl(wapPayRequest.getNotifyUrl());
+        if (StringUtils.hasText(wapPayRequest.getReturnUrl())) {
+            request.setReturnUrl(wapPayRequest.getReturnUrl());
+        }
         Map<String, Object> bizContent = new HashMap<>();
         bizContent.put("out_trade_no", wapPayRequest.getOutTradeNo());
         bizContent.put("total_amount", wapPayRequest.getTotalAmount()

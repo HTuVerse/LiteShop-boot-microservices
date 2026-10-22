@@ -9,6 +9,7 @@ import java.util.Map;
  * 按租户支付宝账户执行预下单、查单、关单、退款和回调验签。
  */
 public interface AlipayService {
+    String createMiniPay(org.hongtu.params.AlipayMiniPayParam param);
 
     String createWapPay(AlipayTradeWapPayRequestParams request);
 

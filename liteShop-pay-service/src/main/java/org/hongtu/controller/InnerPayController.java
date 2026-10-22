@@ -38,6 +38,16 @@ public class InnerPayController {
         return Result.success(weChatPayService.createJsapiPay(param));
     }
 
+    @PostMapping("/wechat/h5")
+    public Result<String> createWeChatH5Pay(@RequestBody WeChatPayTradeParam param) {
+        return Result.success(weChatPayService.createH5Pay(param));
+    }
+
+    @PostMapping("/alipay/mini")
+    public Result<String> createAlipayMiniPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param) {
+        return Result.success(alipayService.createMiniPay(param));
+    }
+
     /** 微信付款码（被扫）支付。 */
     @PostMapping("/wechat/micropay")
     public Result<Map<String, Object>> createWeChatMicroPay(@RequestBody WeChatMicroPayParam param) {

@@ -632,7 +632,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public PaymentResponse createPayment(Long orderId, Integer paymentType, String openid, String returnUrl) {
+    public PaymentResponse createPayment(Long orderId, Integer paymentType, String paymentScene,
+                                         String openid, String authCode, String returnUrl, String payerClientIp) {
 
         // 1. 锁定订单，避免同一订单并发创建多个支付或与线下结算竞争。
         RestaurantOrder order = lockOrderForMutation(orderId);
@@ -678,11 +679,17 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         if (paymentTypeEnum == PaymentTypeEnum.WECHAT) {
             // 调用微信支付
-            createWeChatPayment(order, serverPayable, openid, responseBuilder);
+            if ("H5".equals(paymentScene))
+                createWeChatH5Payment(order, serverPayable, payerClientIp, responseBuilder);
+            else
+                createWeChatPayment(order, serverPayable, openid, responseBuilder);
 
         } else if (paymentTypeEnum == PaymentTypeEnum.ALIPAY) {
             // 调用支付宝支付
-            createAlipayPayment(order, serverPayable, returnUrl, responseBuilder);
+            if ("MINI_PROGRAM".equals(paymentScene))
+                createAlipayMiniPayment(order, serverPayable, authCode, responseBuilder);
+            else
+                createAlipayPayment(order, serverPayable, returnUrl, responseBuilder);
 
         } else {
             throw new IllegalStateException("不支持的支付方式");
@@ -1182,6 +1189,32 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                         .paySign((String) payParams.get("paySign"))
                         .build()
         );
+    }
+
+    private void createWeChatH5Payment(RestaurantOrder order, BigDecimal serverPayable, String payerClientIp,
+                                       PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        WeChatPayTradeParam param = WeChatPayTradeParam.builder()
+                .tenantId(order.getTenantId())
+                .outTradeNo(order.getOrderNo())
+                .description("餐饮订单")
+                .totalAmount(serverPayable)
+                .payerClientIp(payerClientIp)
+                .attach(paymentAttach(order))
+                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId(), "微信"))
+                .build();
+        responseBuilder.payUrl(FeignResultUtil.unwrap(payFeignClient.createWeChatH5Pay(param)));
+    }
+
+    private void createAlipayMiniPayment(RestaurantOrder order, BigDecimal serverPayable, String authCode,
+                                         PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        var param = new org.hongtu.params.AlipayMiniPayParam();
+        param.setTenantId(order.getTenantId());
+        param.setOutTradeNo(order.getOrderNo());
+        param.setSubject("餐厅订单-" + order.getOrderNo());
+        param.setTotalAmount(serverPayable);
+        param.setAuthCode(authCode);
+        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
+        responseBuilder.tradeNo(FeignResultUtil.unwrap(payFeignClient.createAlipayMiniPay(param)));
     }
 
     /**

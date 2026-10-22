@@ -66,7 +66,8 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
      * @param openid 用户openid（微信支付必填）
      * @return 支付响应
      */
-    PaymentResponse createPayment(Long orderId, Integer paymentType, String openid, String returnUrl);
+    PaymentResponse createPayment(Long orderId, Integer paymentType, String paymentScene,
+                                  String openid, String authCode, String returnUrl, String payerClientIp);
 
     /**
      * 查询支付状态

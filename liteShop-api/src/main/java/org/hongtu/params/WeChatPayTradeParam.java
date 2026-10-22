@@ -43,6 +43,9 @@ public class WeChatPayTradeParam {
      */
     private String openid;
 
+    /** H5 场景的用户终端 IP，由订单服务从请求获取。 */
+    private String payerClientIp;
+
     /**
      * 回调url
      */

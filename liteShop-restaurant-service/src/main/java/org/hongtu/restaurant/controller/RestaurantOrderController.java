@@ -62,7 +62,11 @@ public class RestaurantOrderController {
     /** 顾客端读取当前支付模式，用于显示正确的支付入口。 */
     @GetMapping("/paymentMode")
     public Result<Map<String, Boolean>> paymentMode() {
-        return Result.success("获取支付模式成功", Map.of("sandbox", tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId())));
+        Long tenantId = org.hongtu.tenant.TenantContext.getTenantId();
+        return Result.success("获取支付模式成功", Map.of(
+                "sandbox", tenantRestaurantConfig.sandboxEnabled(tenantId),
+                "wechatEnabled", tenantRestaurantConfig.paymentEnabled(tenantId, "WECHAT"),
+                "alipayEnabled", tenantRestaurantConfig.paymentEnabled(tenantId, "ALIPAY")));
     }
 
     /** 旧版模拟支付接口已停用；订单只能经真实渠道的验签结果入账。 */
@@ -388,6 +392,16 @@ public class RestaurantOrderController {
                 return Result.error("支付方式不能为空");
             }
 
+            String scene = request.getPaymentScene();
+            if (request.getPaymentType() == PaymentTypeEnum.WECHAT
+                    && !"MINI_PROGRAM".equals(scene) && !"H5".equals(scene)) {
+                return Result.error("微信支付场景无效");
+            }
+            if (request.getPaymentType() == PaymentTypeEnum.ALIPAY
+                    && !"MINI_PROGRAM".equals(scene) && !"H5".equals(scene)) {
+                return Result.error("支付宝支付场景无效");
+            }
+
             // 余额支付：直接处理，无需返回支付参数
             if (request.getPaymentType() == PaymentTypeEnum.BANLANCE_PAY) {
                 boolean success = restaurantOrderService.payByBalance(request.getOrderId());
@@ -406,7 +420,8 @@ public class RestaurantOrderController {
 
             // 微信支付需要openid
             if (request.getPaymentType() == PaymentTypeEnum.WECHAT &&
-                    !sandboxPaymentEnabled && (request.getOpenId() == null || request.getOpenId().isEmpty())) {
+                    "MINI_PROGRAM".equals(scene) && !sandboxPaymentEnabled
+                    && (request.getOpenId() == null || request.getOpenId().isEmpty())) {
                 return Result.error("微信支付需要提供openid");
             }
 
@@ -414,14 +429,26 @@ public class RestaurantOrderController {
             PaymentResponse response = restaurantOrderService.createPayment(
                     request.getOrderId(),
                     request.getPaymentType().getCode(),
+                    scene,
                     request.getOpenId(),
-                    request.getPaymentType() == PaymentTypeEnum.ALIPAY
-                            ? validatedPaymentReturnUrl(request.getReturnUrl()) : null
+                    request.getAuthCode(),
+                    request.getPaymentType() == PaymentTypeEnum.ALIPAY && "H5".equals(scene)
+                            ? validatedPaymentReturnUrl(request.getReturnUrl()) : null,
+                    paymentClientIp()
             );
 
             return Result.success("发起支付成功", response);
 
         
+    }
+
+    private String paymentClientIp() {
+        String forwarded = currentRequest.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            String first = forwarded.split(",", 2)[0].trim();
+            if (first.matches("[0-9a-fA-F:.]{3,45}")) return first;
+        }
+        return currentRequest.getRemoteAddr();
     }
 
     private String validatedPaymentReturnUrl(String returnUrl) {

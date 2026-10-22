@@ -14,6 +14,9 @@ public interface WeChatPayService {
     /** 使用服务端金额和订单号创建 JSAPI 预下单。 */
     Map<String, Object> createJsapiPay(WeChatPayTradeParam param);
 
+    /** 微信浏览器外的 H5 支付链接。 */
+    String createH5Pay(WeChatPayTradeParam param);
+
     /**
      * 付款码（被扫）支付：收银员扫顾客付款码发起扣款。
      * 返回 state：SUCCESS 已支付、USERPAYING 需轮询查单、FAIL 失败。

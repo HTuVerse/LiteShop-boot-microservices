@@ -25,6 +25,12 @@ public interface PayFeignClient {
     @PostMapping("/inner/pay/wechat/jsapi")
     Result<Map<String, Object>> createWeChatJsapiPay(@RequestBody WeChatPayTradeParam param);
 
+    @PostMapping("/inner/pay/wechat/h5")
+    Result<String> createWeChatH5Pay(@RequestBody WeChatPayTradeParam param);
+
+    @PostMapping("/inner/pay/alipay/mini")
+    Result<String> createAlipayMiniPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param);
+
     /** 微信付款码（被扫）支付。 */
     @PostMapping("/inner/pay/wechat/micropay")
     Result<Map<String, Object>> createWeChatMicroPay(@RequestBody WeChatMicroPayParam param);
