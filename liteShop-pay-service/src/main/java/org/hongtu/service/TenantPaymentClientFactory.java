@@ -35,6 +35,8 @@ public class TenantPaymentClientFactory {
     private final ConcurrentHashMap<String, WeChatClients> wechatClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AlipayClient> alipayClients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WxPayService> wxMicroPayClients = new ConcurrentHashMap<>();
+    private static final String ALIPAY_PRODUCTION_GATEWAY = "https://openapi.alipay.com/gateway.do";
+    private static final String ALIPAY_SANDBOX_GATEWAY = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
 
     public TenantPaymentClientFactory(ConfigFeignClient configFeignClient) {
         this.configFeignClient = configFeignClient;
@@ -73,7 +75,7 @@ public class TenantPaymentClientFactory {
         evictStale(alipayClients, tenantId, key);
         try {
             return alipayClients.computeIfAbsent(key, ignored -> new DefaultAlipayClient(
-                    "https://openapi.alipay.com/gateway.do",
+                    Boolean.TRUE.equals(account.getSandboxEnabled()) ? ALIPAY_SANDBOX_GATEWAY : ALIPAY_PRODUCTION_GATEWAY,
                     account.getAppId(),
                     account.getPrivateKey(),
                     "JSON",
@@ -132,7 +134,8 @@ public class TenantPaymentClientFactory {
         String material = String.join("\u0000",
                 value(account.getChannel()), value(account.getAppId()), value(account.getMchId()),
                 value(account.getMchSerialNo()), value(account.getPrivateKey()), value(account.getApiV3Key()),
-                value(account.getApiV2Key()), value(account.getAlipayPublicKey()));
+                value(account.getApiV2Key()), value(account.getAlipayPublicKey()),
+                value(String.valueOf(account.getSandboxEnabled())));
         try {
             String fingerprint = HexFormat.of().formatHex(
                     MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8)));

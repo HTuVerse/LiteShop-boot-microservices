@@ -28,6 +28,10 @@ public class TenantPaymentAccount {
     private String mchId;
     /** 微信商户证书序列号。 */
     private String mchSerialNo;
+    /** 当前渠道的支付回调地址，不含租户路径后缀。 */
+    private String notifyUrl;
+    /** 支付测试环境开关；支付宝走沙箱网关，微信 API v3 暂不支持开启。 */
+    private Integer sandboxEnabled;
     /** 加密后的微信商户或支付宝应用私钥。 */
     @ToString.Exclude
     private String privateKeyCiphertext;

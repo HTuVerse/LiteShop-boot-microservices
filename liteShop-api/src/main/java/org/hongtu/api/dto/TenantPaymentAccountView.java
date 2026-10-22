@@ -19,6 +19,10 @@ public class TenantPaymentAccountView {
     private String mchId;
     /** 微信商户证书序列号。 */
     private String mchSerialNo;
+    /** 当前渠道的支付回调地址。 */
+    private String notifyUrl;
+    /** 支付测试环境开关；支付宝走沙箱网关，微信 API v3 暂不支持开启。 */
+    private Boolean sandboxEnabled;
     /** 是否已保存商户私钥。 */
     private boolean privateKeyConfigured;
     /** 是否已保存微信 APIv3 密钥。 */

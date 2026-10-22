@@ -15,6 +15,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.ZoneId;
 import java.time.LocalDateTime;
+import java.net.URI;
 import java.util.List;
 
 /**
@@ -49,6 +50,9 @@ public class TenantPaymentAccountService {
             throw new BusinessException("支付账户参数不能为空");
         }
         int channel = channelCode(submitted.getChannel());
+        if (channel == WECHAT_CODE && Boolean.TRUE.equals(submitted.getSandboxEnabled())) {
+            throw new BusinessException("微信支付 API v3 暂不支持小程序沙箱下单，不能启用微信沙箱环境");
+        }
         TenantPaymentAccount current = find(channel);
         boolean creating = current == null;
         if (creating) {
@@ -65,6 +69,8 @@ public class TenantPaymentAccountService {
         current.setMchId(channel == WECHAT_CODE ? trimmed(submitted.getMchId(), 64, "微信商户号") : "");
         current.setMchSerialNo(channel == WECHAT_CODE
                 ? trimmed(submitted.getMchSerialNo(), 128, "微信商户证书序列号") : "");
+        current.setNotifyUrl(trimmed(submitted.getNotifyUrl(), 500, "支付回调地址"));
+        current.setSandboxEnabled(Boolean.TRUE.equals(submitted.getSandboxEnabled()) ? 1 : 0);
         current.setPrivateKeyCiphertext(mergeSecret(current.getPrivateKeyCiphertext(),
                 submitted.getPrivateKey(), submitted.getClearPrivateKey()));
         current.setApiV3KeyCiphertext(channel == WECHAT_CODE
@@ -113,6 +119,8 @@ public class TenantPaymentAccountService {
             runtime.setAppId(account.getAppId());
             runtime.setMchId(account.getMchId());
             runtime.setMchSerialNo(account.getMchSerialNo());
+            runtime.setNotifyUrl(account.getNotifyUrl());
+            runtime.setSandboxEnabled(Integer.valueOf(1).equals(account.getSandboxEnabled()));
             runtime.setPrivateKey(cipher.decrypt(account.getPrivateKeyCiphertext()));
             runtime.setApiV3Key(channelCode == WECHAT_CODE ? cipher.decrypt(account.getApiV3KeyCiphertext()) : "");
             runtime.setApiV2Key(channelCode == WECHAT_CODE ? cipher.decrypt(account.getApiV2KeyCiphertext()) : "");
@@ -121,6 +129,19 @@ public class TenantPaymentAccountService {
                     : account.getUpdatedAt().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
             return runtime;
         });
+    }
+
+    /** 微信模拟支付开关；支付宝的同名字段只决定网关环境。 */
+    public boolean sandboxEnabled(Long tenantId) {
+        if (tenantId == null || tenantId <= 0) throw new BusinessException("支付账户缺少租户");
+        Long current = TenantContext.getTenantIdOrNull();
+        if (current != null && !current.equals(tenantId))
+            throw new BusinessException(403, "支付账户租户不匹配");
+        return TenantScope.call(tenantId, () -> sandboxEnabled(find(WECHAT_CODE)));
+    }
+
+    private boolean sandboxEnabled(TenantPaymentAccount account) {
+        return account != null && Integer.valueOf(1).equals(account.getSandboxEnabled());
     }
 
     private void requireTenantOperator() {
@@ -136,6 +157,10 @@ public class TenantPaymentAccountService {
         if (!StringUtils.hasText(account.getAppId()) || !StringUtils.hasText(account.getPrivateKeyCiphertext())) {
             throw new BusinessException("启用支付前请填写应用标识和商户私钥");
         }
+        if (!StringUtils.hasText(account.getNotifyUrl())) {
+            throw new BusinessException("启用支付前请填写回调地址");
+        }
+        requireNotifyUrl(channel, account.getNotifyUrl(), account.getTenantId());
         if (channel == WECHAT_CODE && (!StringUtils.hasText(account.getMchId())
                 || !StringUtils.hasText(account.getMchSerialNo())
                 || !StringUtils.hasText(account.getApiV3KeyCiphertext()))) {
@@ -153,6 +178,22 @@ public class TenantPaymentAccountService {
         if (channel == ALIPAY_CODE && !StringUtils.hasText(account.getAlipayPublicKeyCiphertext())) {
             throw new BusinessException("启用支付宝前请填写支付宝公钥");
         }
+    }
+
+    /** 保存时校验渠道回调地址，避免启用后才在发起支付时失败。 */
+    private void requireNotifyUrl(int channel, String notifyUrl, Long tenantId) {
+        String expectedPath = channel == WECHAT_CODE ? "/wechatPay/notify" : "/alipayPay/notify";
+        try {
+            URI uri = URI.create(notifyUrl);
+            String path = uri.getPath();
+            if ("https".equals(uri.getScheme()) && StringUtils.hasText(uri.getHost())
+                    && uri.getRawQuery() == null && uri.getRawFragment() == null
+                    && !notifyUrl.contains("your-domain")
+                    && (expectedPath.equals(path) || (expectedPath + "/" + tenantId).equals(path))) return;
+        } catch (IllegalArgumentException ignored) {
+            // 无效 URI 统一返回可操作的配置错误。
+        }
+        throw new BusinessException("支付回调地址须为 HTTPS 公网地址，路径以 " + expectedPath + " 结尾");
     }
 
     private String mergeSecret(String currentCiphertext, String submitted, Boolean clear) {
@@ -185,6 +226,8 @@ public class TenantPaymentAccountService {
         view.setAppId(account == null ? "" : account.getAppId());
         view.setMchId(account == null ? "" : account.getMchId());
         view.setMchSerialNo(account == null ? "" : account.getMchSerialNo());
+        view.setNotifyUrl(account == null ? "" : account.getNotifyUrl());
+        view.setSandboxEnabled(account != null && Integer.valueOf(1).equals(account.getSandboxEnabled()));
         view.setPrivateKeyConfigured(account != null && StringUtils.hasText(account.getPrivateKeyCiphertext()));
         view.setApiV3KeyConfigured(account != null && StringUtils.hasText(account.getApiV3KeyCiphertext()));
         view.setApiV2KeyConfigured(account != null && StringUtils.hasText(account.getApiV2KeyCiphertext()));

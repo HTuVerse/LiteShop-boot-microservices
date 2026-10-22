@@ -65,18 +65,11 @@ public class RestaurantOrderController {
         return Result.success("获取支付模式成功", Map.of("sandbox", tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId())));
     }
 
-    /** 沙箱确认仅在服务端明确开启时可用，并复用真实支付的订单入账规则。 */
+    /** 旧版模拟支付接口已停用；订单只能经真实渠道的验签结果入账。 */
     @PostMapping("/sandboxPay")
     public Result<Boolean> sandboxPay(@RequestParam Long orderId,
                                       @RequestParam(defaultValue = "1") Integer paymentType) {
-        if (!tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId())) throw new org.hongtu.exception.BusinessException(403, "沙箱支付未启用");
-        PaymentTypeEnum channel = PaymentTypeEnum.getByCode(paymentType);
-        if (channel != PaymentTypeEnum.WECHAT && channel != PaymentTypeEnum.ALIPAY) {
-            return Result.error("沙箱仅支持微信或支付宝支付");
-        }
-        requireOrderAccess(orderId, null, "settle");
-        boolean paid = restaurantOrderService.confirmSandboxPayment(orderId, channel);
-        return paid ? Result.success("沙箱支付成功", true) : Result.error("订单当前无法支付");
+        throw new org.hongtu.exception.BusinessException(403, "模拟支付接口已停用，请通过支付渠道完成付款");
     }
 
     /**
@@ -407,24 +400,14 @@ public class RestaurantOrderController {
 
             // 同一次支付请求只读取一次租户开关，避免配置修改时两个分支判断不一致。
             boolean sandboxPaymentEnabled = tenantRestaurantConfig.sandboxEnabled(org.hongtu.tenant.TenantContext.getTenantId());
+            if (sandboxPaymentEnabled && request.getPaymentType() == PaymentTypeEnum.WECHAT) {
+                return Result.error("微信支付 API v3 不支持小程序沙箱下单，请关闭微信沙箱开关后再支付");
+            }
 
             // 微信支付需要openid
             if (request.getPaymentType() == PaymentTypeEnum.WECHAT &&
                     !sandboxPaymentEnabled && (request.getOpenId() == null || request.getOpenId().isEmpty())) {
                 return Result.error("微信支付需要提供openid");
-            }
-
-            if (sandboxPaymentEnabled && (request.getPaymentType() == PaymentTypeEnum.WECHAT
-                    || request.getPaymentType() == PaymentTypeEnum.ALIPAY)) {
-                RestaurantOrder order = restaurantOrderService.getById(request.getOrderId());
-                if (order == null) return Result.error("订单不存在");
-                if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
-                    return Result.error("该订单采用线下支付，请到收银台结算");
-                }
-                return Result.success("沙箱支付待确认", PaymentResponse.builder()
-                        .orderId(order.getId()).orderNo(order.getOrderNo())
-                        .payAmount(order.getActualAmount()).paymentType(request.getPaymentType().getCode())
-                        .sandbox(true).build());
             }
 
             // 调用业务层处理（第三方支付）

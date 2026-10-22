@@ -15,6 +15,10 @@ public class TenantPaymentRuntimeDTO {
     private String appId;
     private String mchId;
     private String mchSerialNo;
+    /** 当前渠道的支付回调地址。 */
+    private String notifyUrl;
+    /** 当前支付宝账户是否使用沙箱网关。 */
+    private Boolean sandboxEnabled;
     @ToString.Exclude
     private String privateKey;
     @ToString.Exclude

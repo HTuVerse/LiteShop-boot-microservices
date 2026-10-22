@@ -918,7 +918,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             // 当前事务已持有订单行锁，不能再走会开启独立事务的回调入账入口。
             CaptureOutcome outcome = captureInTransaction(
                     TransactionAspectSupport.currentTransactionStatus(), orderId,
-                    transactionId, PaymentTypeEnum.BANLANCE_PAY, payAmount, false);
+                    transactionId, PaymentTypeEnum.BANLANCE_PAY, payAmount);
             success = outcome != null && outcome.paidOrder != null;
             if (success) {
                 RestaurantOrder paidOrder = outcome.paidOrder;
@@ -3577,31 +3577,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
     }
 
-    @Override
-    public boolean confirmSandboxPayment(Long orderId, PaymentTypeEnum paymentType) {
-        RestaurantOrder order = this.getById(orderId);
-        if (order == null) throw new BusinessException("订单不存在");
-        if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
-            throw new BusinessException("该订单采用线下支付，请到收银台结算");
-        }
-        if (isOnlinePaymentExpired(order)) {
-            throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
-        }
-        CaptureOutcome outcome = independentTx.execute(status -> captureInTransaction(
-                status, orderId, "SANDBOX-" + order.getOrderNo(), paymentType, null, true));
-        if (outcome == null || outcome.paidOrder == null) return false;
-        try {
-            applyPaidSideEffects(outcome.paidOrder);
-        } catch (RuntimeException exception) {
-            log.error("沙箱支付副作用失败，订单已入账: orderId={}", orderId, exception);
-        }
-        return true;
-    }
-
     private boolean capturePayment(Long orderId, String transactionId, PaymentTypeEnum paymentType, BigDecimal notifiedAmount) {
         try {
             CaptureOutcome outcome = independentTx.execute(status -> captureInTransaction(
-                    status, orderId, transactionId, paymentType, notifiedAmount, false));
+                    status, orderId, transactionId, paymentType, notifiedAmount));
             if (outcome != null && outcome.paidOrder != null) {
                 try {
                     applyPaidSideEffects(outcome.paidOrder);
@@ -3631,8 +3610,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     }
 
     private CaptureOutcome captureInTransaction(org.springframework.transaction.TransactionStatus status, Long orderId,
-                                                String transactionId, PaymentTypeEnum paymentType, BigDecimal notifiedAmount,
-                                                boolean sandbox) {
+                                                String transactionId, PaymentTypeEnum paymentType, BigDecimal notifiedAmount) {
         RestaurantOrder order = lockOrderForMutation(orderId);
         if (order == null) {
             return new CaptureOutcome(null, null);
@@ -3645,11 +3623,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             CashierAmountGuard.requireClientAmountMatches(notifiedAmount, payable);
         }
         PaymentTransitionPolicy.Capture decision = PaymentTransitionPolicy.decide(order.getStatus(), order.getPaymentStatus());
-        if (sandbox && (decision != PaymentTransitionPolicy.Capture.CAPTURE
-                || order.getPaymentStatus() != PaymentStatusEnum.UNPAID
-                || order.getStatus() == null || order.getStatus().isTerminal())) {
-            throw new BusinessException("订单当前无法支付");
-        }
         if (decision == PaymentTransitionPolicy.Capture.ALREADY) {
             return new CaptureOutcome(null, null);
         }

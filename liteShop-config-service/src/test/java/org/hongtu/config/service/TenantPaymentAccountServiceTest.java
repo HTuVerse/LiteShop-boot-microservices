@@ -62,6 +62,33 @@ class TenantPaymentAccountServiceTest {
         var runtime = service.runtime(8L, "WECHAT");
         assertEquals("plain-private-key", runtime.getPrivateKey());
         assertEquals("wx-app", runtime.getAppId());
+        assertEquals("https://example.com/wechatPay/notify", runtime.getNotifyUrl());
+        assertFalse(saved.getSandboxEnabled());
+        assertFalse(service.sandboxEnabled(8L));
+    }
+
+    @Test
+    void wechatSandboxCannotBeEnabledForApiV3() {
+        TenantPaymentAccountView input = wechat("plain-private-key");
+        input.setSandboxEnabled(true);
+        assertThrows(BusinessException.class, () -> service.save(input, 9L));
+        verify(mapper, never()).insert(any(TenantPaymentAccount.class));
+    }
+
+    @Test
+    void alipaySandboxFlagIsAvailableToPaymentService() {
+        TenantPaymentAccountView input = new TenantPaymentAccountView();
+        input.setChannel("ALIPAY");
+        input.setEnabled(true);
+        input.setAppId("sandbox-app");
+        input.setNotifyUrl("https://example.com/alipayPay/notify");
+        input.setPrivateKey("sandbox-private-key");
+        input.setAlipayPublicKey("sandbox-public-key");
+        input.setSandboxEnabled(true);
+        service.save(input, 9L);
+
+        assertTrue(service.runtime(8L, "ALIPAY").getSandboxEnabled());
+        assertFalse(service.sandboxEnabled(8L));
     }
 
     @Test
@@ -69,6 +96,14 @@ class TenantPaymentAccountServiceTest {
         assertNull(service.runtime(8L, "ALIPAY"));
         TenantContext.setTenantId(9L);
         assertEquals(403, assertThrows(BusinessException.class, () -> service.runtime(8L, "WECHAT")).getCode());
+    }
+
+    @Test
+    void enabledAccountRejectsCallbackForOtherChannel() {
+        TenantPaymentAccountView input = wechat("plain-private-key");
+        input.setNotifyUrl("https://example.com/alipayPay/notify");
+        assertThrows(BusinessException.class, () -> service.save(input, 9L));
+        verify(mapper, never()).insert(any(TenantPaymentAccount.class));
     }
 
     @Test
@@ -103,6 +138,8 @@ class TenantPaymentAccountServiceTest {
         view.setAppId("wx-app");
         view.setMchId("mch-1");
         view.setMchSerialNo("serial-1");
+        view.setNotifyUrl("https://example.com/wechatPay/notify");
+        view.setSandboxEnabled(false);
         view.setPrivateKey(privateKey);
         view.setApiV3Key("0123456789abcdef0123456789abcdef");
         return view;
