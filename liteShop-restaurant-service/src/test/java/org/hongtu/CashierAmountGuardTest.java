@@ -64,6 +64,6 @@ class CashierAmountGuardTest {
     @Test
     void rejectsUnsupportedSettlementPaymentType() {
         assertThrows(BusinessException.class, () -> CashierAmountGuard.requireSettlementPaymentType(
-                PaymentTypeEnum.WECHAT));
+                PaymentTypeEnum.OFFLINE_PAY));
     }
 }

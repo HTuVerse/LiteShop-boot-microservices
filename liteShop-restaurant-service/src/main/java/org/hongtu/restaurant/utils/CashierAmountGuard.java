@@ -57,10 +57,12 @@ public final class CashierAmountGuard {
      * 校验桌位结算支付方式，只允许后台已实现并可核验的支付类型。
      */
     public static PaymentTypeEnum requireSettlementPaymentType(PaymentTypeEnum paymentType) {
-        if (paymentType != PaymentTypeEnum.CASH
+        if (paymentType != PaymentTypeEnum.WECHAT
+                && paymentType != PaymentTypeEnum.ALIPAY
+                && paymentType != PaymentTypeEnum.CASH
                 && paymentType != PaymentTypeEnum.BANK_CARD
                 && paymentType != PaymentTypeEnum.BANLANCE_PAY) {
-            throw new BusinessException("桌位结算仅支持现金、银行卡或余额支付");
+            throw new BusinessException("桌位结算仅支持微信、支付宝、现金、银行卡或余额支付");
         }
         return paymentType;
     }

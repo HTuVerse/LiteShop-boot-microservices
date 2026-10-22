@@ -8,7 +8,7 @@ import java.util.List;
 
 /**
  * 收银台-桌位结算请求 DTO
- * 用于桌位会话场景：对会话当前订单做线下支付并结束会话、释放桌位。
+ * 用于桌位会话场景：前台收款后结束会话、释放桌位。
  * 支持收银时传入整单折扣、备注，会写回订单。
  *
  * @author Ht
@@ -22,9 +22,12 @@ public class CashierSettleSessionRequest {
     private String sessionNo;
 
     /**
-     * 支付方式：3-现金，4-银行卡，6-余额支付
+     * 支付方式：1-微信，2-支付宝，3-现金，4-银行卡，6-余额支付
      */
     private PaymentTypeEnum paymentType;
+
+    /** 微信/支付宝付款码，由前台扫码枪读取。 */
+    private String authCode;
 
     /**
      * 客户端实收金额（仅现金找零使用，不能覆盖服务端计算的订单应付金额）

@@ -2007,7 +2007,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     }
 
     /**
-     * 收银台-桌位结算：对会话当前订单做线下支付，并结束会话、释放桌位。
+     * 收银台-桌位结算：对会话当前订单完成前台收款，并结束会话、释放桌位。
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -2107,13 +2107,30 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
 
         PaymentTypeEnum paymentType = CashierAmountGuard.requireSettlementPaymentType(request.getPaymentType());
+        boolean scanPayment = paymentType == PaymentTypeEnum.WECHAT || paymentType == PaymentTypeEnum.ALIPAY;
         if (serverPayable.signum() == 0 && paymentType == PaymentTypeEnum.BANLANCE_PAY) {
             throw new BusinessException("优惠券已全额抵扣，请使用现金方式完成零元结算");
+        }
+        if (scanPayment && serverPayable.signum() == 0) {
+            throw new BusinessException("优惠券已全额抵扣，请使用现金方式完成零元结算");
+        }
+        if (scanPayment && StrUtil.isBlank(request.getAuthCode())) {
+            throw new BusinessException("请扫描顾客付款码");
         }
         BigDecimal tenderedAmount = CashierAmountGuard.requireTenderedAmount(
                 paymentType, request.getActualAmount(), serverPayable);
         verifyCouponsWithCompensation(selectedCoupons, order.getId());
         BigDecimal deductedBalanceAmount = null;
+        String scanTransactionId = null;
+        if (scanPayment) {
+            // 顾客选择到前台付款只决定结算地点；收银员仍通过付款码完成真实扣款。
+            ScanPayOutcome outcome = scanPayCharger.charge(paymentType, order.getTenantId(), order.getOrderNo(),
+                    "餐饮订单-" + order.getOrderNo(), serverPayable, request.getAuthCode());
+            if (!outcome.paid()) {
+                throw new BusinessException(StrUtil.blankToDefault(outcome.message(), "顾客付款码支付失败"));
+            }
+            scanTransactionId = outcome.transactionId();
+        }
         if (paymentType == PaymentTypeEnum.BANLANCE_PAY) {
             if (request.getUserId() == null) {
                 throw new BusinessException("余额支付请先选择会员");
@@ -2142,6 +2159,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             // 3. 更新订单为已支付
             order.setPaymentStatus(PaymentStatusEnum.PAID);
             order.setPaymentType(paymentType);
+            if (scanPayment) {
+                order.setPaymentNo(scanTransactionId);
+            }
             order.setPaymentTime(LocalDateTime.now());
             order.setActualAmount(serverPayable);
             order.setStatus(OrderStatusEnum.COMPLETED);
@@ -2155,7 +2175,12 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
             // 5. 打印小票（可选）
             if (Boolean.TRUE.equals(request.getPrintReceipt())) {
-                printOrderWithStorePrinters(order.getId(), order.getStoreId());
+                try {
+                    printOrderWithStorePrinters(order.getId(), order.getStoreId());
+                } catch (Exception printError) {
+                    // 收款已完成，打印故障不能让前台把整笔结算误判为失败。
+                    log.error("桌位结算小票打印失败: orderId={}", order.getId(), printError);
+                }
             }
 
             log.info("桌位结算成功: sessionNo={}, orderId={}, orderNo={}, payableAmount={}, tenderedAmount={}, paymentType={}",

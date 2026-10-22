@@ -252,8 +252,8 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
     RestaurantOrderVO cashierDirectOrder(CashierOrderRequest request);
 
     /**
-     * 收银台-桌位结算
-     * 对会话当前订单做线下支付，并结束会话、释放桌位。用于桌位收银流程：先提交订单/加菜，再在结算时调用本接口。
+     * 收银台-桌位结算，支持前台微信/支付宝付款码及现金、余额等方式收款。
+     * 对会话当前订单收款后结束会话、释放桌位。用于桌位收银流程：先提交订单/加菜，再在结算时调用本接口。
      *
      * @param request 桌位结算请求（sessionNo、支付方式、实收金额等）
      * @return 订单信息（包含订单明细）
