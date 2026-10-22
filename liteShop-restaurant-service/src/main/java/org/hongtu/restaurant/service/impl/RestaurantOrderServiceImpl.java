@@ -42,6 +42,7 @@ import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.restaurant.payment.PaymentNotifyUrls;
+import org.hongtu.restaurant.payment.AlipayGatewayForm;
 import org.hongtu.restaurant.payment.ScanPayOutcome;
 import org.hongtu.restaurant.payment.PaymentTransitionPolicy;
 import org.hongtu.tenant.TenantContext;
@@ -1271,6 +1272,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                                          PaymentResponse.PaymentResponseBuilder responseBuilder) {
         String form = FeignResultUtil.unwrap(payFeignClient.createAlipayPagePay(
                 alipayWebTrade(order, amount, returnUrl)));
+        form = alignAlipayGateway(order.getTenantId(), form);
         responseBuilder.payForm(form).payUrl(form);
     }
 
@@ -1306,8 +1308,19 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 调用支付宝服务（Feign 调用 pay-service）
         String payFormHtml = FeignResultUtil.unwrap(payFeignClient.createAlipayWapPay(param));
+        payFormHtml = alignAlipayGateway(order.getTenantId(), payFormHtml);
         responseBuilder.payForm(payFormHtml).payUrl(payFormHtml);
 
+    }
+
+    /** 支付服务实例版本不一致时，仍按已保存的账户环境提交网页支付表单。 */
+    private String alignAlipayGateway(Long tenantId, String form) {
+        boolean sandbox = tenantRestaurantConfig.alipaySandboxEnabled(tenantId);
+        String aligned = AlipayGatewayForm.align(form, sandbox);
+        if (!aligned.equals(form)) {
+            log.warn("支付宝网页支付网关与租户配置不一致，已按账户环境修正, tenantId={}, sandbox={}", tenantId, sandbox);
+        }
+        return aligned;
     }
 
 
