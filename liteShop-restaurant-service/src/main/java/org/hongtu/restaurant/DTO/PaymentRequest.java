@@ -24,7 +24,8 @@ public class PaymentRequest {
     
     /**
      * 支付场景（可选）
-     * 例如：小程序、APP、H5等
+     * MINI_PROGRAM、JSAPI、H5、PC、FACE_TO_FACE。
+     * PC 微信返回 Native 二维码，FACE_TO_FACE 返回商家二维码；顾客付款码由收银台接口处理。
      */
     private String paymentScene;
     

@@ -7,6 +7,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.params.AlipayBarCodePayParam;
+import org.hongtu.params.AlipayPayTradeParam;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
 import org.hongtu.params.WeChatMicroPayParam;
 import org.hongtu.params.WeChatPayTradeParam;
@@ -43,8 +44,20 @@ public class InnerPayController {
         return Result.success(weChatPayService.createH5Pay(param));
     }
 
+    /** 微信 Native 扫码预下单。 */
+    @PostMapping("/wechat/native")
+    public Result<String> createWeChatNativePay(@RequestBody WeChatPayTradeParam param) {
+        return Result.success(weChatPayService.createNativePay(param));
+    }
+
     @PostMapping("/alipay/mini")
     public Result<String> createAlipayMiniPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param) {
+        return Result.success(alipayService.createMiniPay(param));
+    }
+
+    /** 支付宝 JSAPI 支付复用授权码换取买家 ID 的交易创建流程。 */
+    @PostMapping("/alipay/jsapi")
+    public Result<String> createAlipayJsapiPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param) {
         return Result.success(alipayService.createMiniPay(param));
     }
 
@@ -121,6 +134,18 @@ public class InnerPayController {
     @PostMapping("/alipay/wap")
     public Result<String> createAlipayWapPay(@RequestBody AlipayTradeWapPayRequestParams param) {
         return Result.success("创建成功", alipayService.createWapPay(param));
+    }
+
+    /** 支付宝电脑网站支付。 */
+    @PostMapping("/alipay/page")
+    public Result<String> createAlipayPagePay(@RequestBody AlipayPayTradeParam param) {
+        return Result.success(alipayService.createPagePay(param));
+    }
+
+    /** 支付宝当面付预创建。 */
+    @PostMapping("/alipay/precreate")
+    public Result<String> createAlipayPrecreatePay(@RequestBody AlipayPayTradeParam param) {
+        return Result.success(alipayService.createPrecreatePay(param));
     }
 
     /** 支付宝条码（被扫）支付。 */

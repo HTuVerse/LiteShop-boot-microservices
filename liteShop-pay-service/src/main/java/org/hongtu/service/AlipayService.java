@@ -2,6 +2,7 @@ package org.hongtu.service;
 
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
+import org.hongtu.params.AlipayPayTradeParam;
 
 import java.util.Map;
 
@@ -12,6 +13,12 @@ public interface AlipayService {
     String createMiniPay(org.hongtu.params.AlipayMiniPayParam param);
 
     String createWapPay(AlipayTradeWapPayRequestParams request);
+
+    /** 电脑网站支付，返回支付宝 SDK 生成的跳转表单。 */
+    String createPagePay(AlipayPayTradeParam request);
+
+    /** 当面付商家码预创建，返回二维码内容。 */
+    String createPrecreatePay(AlipayPayTradeParam request);
 
     /**
      * 条码支付（被扫）：收银员扫顾客付款码发起扣款。

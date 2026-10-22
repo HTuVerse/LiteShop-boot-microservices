@@ -7,6 +7,8 @@ import com.alipay.api.request.AlipayTradeCloseRequest;
 import com.alipay.api.request.AlipayTradeQueryRequest;
 import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.request.AlipayTradeWapPayRequest;
+import com.alipay.api.request.AlipayTradePagePayRequest;
+import com.alipay.api.request.AlipayTradePrecreateRequest;
 import com.alipay.api.request.AlipaySystemOauthTokenRequest;
 import com.alipay.api.request.AlipayTradeCreateRequest;
 import com.alipay.api.response.AlipayTradeCloseResponse;
@@ -19,6 +21,7 @@ import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.TenantPaymentRuntimeDTO;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
+import org.hongtu.params.AlipayPayTradeParam;
 import org.hongtu.params.AlipayMiniPayParam;
 import org.hongtu.service.AlipayService;
 import org.hongtu.service.TenantPaymentClientFactory;
@@ -107,7 +110,8 @@ public class AlipayServiceImpl implements AlipayService {
         request.setBizContent(JSON.toJSONString(bizContent));
         try {
             AlipayTradeWapPayResponse response = client.pageExecute(request);
-            if (!response.isSuccess()) {
+            // pageExecute 只构造签名表单，不请求支付宝；响应没有 10000 业务码。
+            if (!StringUtils.hasText(response.getBody())) {
                 throw new BusinessException("创建支付宝支付失败");
             }
             return response.getBody();
@@ -115,6 +119,65 @@ public class AlipayServiceImpl implements AlipayService {
             log.error("创建支付宝支付失败, tenantId={}", wapPayRequest.getTenantId(), exception);
             throw new BusinessException("创建支付宝支付失败");
         }
+    }
+
+    @Override
+    public String createPagePay(AlipayPayTradeParam param) {
+        validateWebTrade(param);
+        AlipayTradePagePayRequest request = new AlipayTradePagePayRequest();
+        request.setNotifyUrl(param.getNotifyUrl());
+        if (StringUtils.hasText(param.getReturnUrl())) {
+            request.setReturnUrl(param.getReturnUrl());
+        }
+        Map<String, Object> bizContent = baseWebTrade(param);
+        bizContent.put("product_code", "FAST_INSTANT_TRADE_PAY");
+        request.setBizContent(JSON.toJSONString(bizContent));
+        try {
+            var response = clients.alipay(param.getTenantId()).pageExecute(request);
+            if (!StringUtils.hasText(response.getBody())) {
+                throw new BusinessException("创建支付宝电脑网站支付失败");
+            }
+            return response.getBody();
+        } catch (AlipayApiException exception) {
+            log.error("创建支付宝电脑网站支付失败, tenantId={}", param.getTenantId(), exception);
+            throw new BusinessException("创建支付宝电脑网站支付失败");
+        }
+    }
+
+    @Override
+    public String createPrecreatePay(AlipayPayTradeParam param) {
+        validateWebTrade(param);
+        AlipayTradePrecreateRequest request = new AlipayTradePrecreateRequest();
+        request.setNotifyUrl(param.getNotifyUrl());
+        request.setBizContent(JSON.toJSONString(baseWebTrade(param)));
+        try {
+            var response = clients.alipay(param.getTenantId()).execute(request);
+            if (!response.isSuccess() || !StringUtils.hasText(response.getQrCode())) {
+                throw new BusinessException("创建支付宝当面付二维码失败");
+            }
+            return response.getQrCode();
+        } catch (AlipayApiException exception) {
+            log.error("创建支付宝当面付二维码失败, tenantId={}", param.getTenantId(), exception);
+            throw new BusinessException("创建支付宝当面付二维码失败");
+        }
+    }
+
+    private void validateWebTrade(AlipayPayTradeParam param) {
+        if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
+                || !StringUtils.hasText(param.getSubject()) || !StringUtils.hasText(param.getNotifyUrl())
+                || param.getTotalAmount() == null || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("支付宝支付参数不完整");
+        }
+    }
+
+    private Map<String, Object> baseWebTrade(AlipayPayTradeParam param) {
+        Map<String, Object> bizContent = new HashMap<>();
+        bizContent.put("out_trade_no", param.getOutTradeNo());
+        bizContent.put("total_amount", param.getTotalAmount()
+                .setScale(2, RoundingMode.UNNECESSARY).toPlainString());
+        bizContent.put("subject", param.getSubject());
+        bizContent.put("timeout_express", "30m");
+        return bizContent;
     }
 
     @Override

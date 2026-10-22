@@ -16,6 +16,7 @@ import org.hongtu.enums.BalanceResourceEnum;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
+import org.hongtu.params.AlipayPayTradeParam;
 import org.hongtu.params.WeChatPayTradeParam;
 import org.hongtu.restaurant.DAO.*;
 import org.hongtu.restaurant.DTO.*;
@@ -664,6 +665,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 .orderNo(order.getOrderNo())
                 .payAmount(serverPayable)
                 .paymentType(paymentType)
+                .paymentScene(paymentScene)
                 .expireSeconds(1800);
 
         // 5. 根据支付方式调用对应的支付服务
@@ -681,6 +683,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             // 调用微信支付
             if ("H5".equals(paymentScene))
                 createWeChatH5Payment(order, serverPayable, payerClientIp, responseBuilder);
+            else if ("PC".equals(paymentScene) || "FACE_TO_FACE".equals(paymentScene))
+                createWeChatNativePayment(order, serverPayable, responseBuilder);
             else
                 createWeChatPayment(order, serverPayable, openid, responseBuilder);
 
@@ -688,6 +692,12 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             // 调用支付宝支付
             if ("MINI_PROGRAM".equals(paymentScene))
                 createAlipayMiniPayment(order, serverPayable, authCode, responseBuilder);
+            else if ("JSAPI".equals(paymentScene))
+                createAlipayJsapiPayment(order, serverPayable, authCode, responseBuilder);
+            else if ("PC".equals(paymentScene))
+                createAlipayPagePayment(order, serverPayable, returnUrl, responseBuilder);
+            else if ("FACE_TO_FACE".equals(paymentScene))
+                createAlipayPrecreatePayment(order, serverPayable, responseBuilder);
             else
                 createAlipayPayment(order, serverPayable, returnUrl, responseBuilder);
 
@@ -1182,6 +1192,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         // 设置小程序支付参数
         responseBuilder.miniPayParams(
                 PaymentResponse.MiniPayParams.builder()
+                        .appId((String) payParams.get("appId"))
                         .timeStamp((String) payParams.get("timeStamp"))
                         .nonceStr((String) payParams.get("nonceStr"))
                         .packageValue((String) payParams.get("package"))
@@ -1205,6 +1216,20 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         responseBuilder.payUrl(FeignResultUtil.unwrap(payFeignClient.createWeChatH5Pay(param)));
     }
 
+    /** 电脑网站和顾客扫商家码均使用微信 Native 支付。 */
+    private void createWeChatNativePayment(RestaurantOrder order, BigDecimal serverPayable,
+                                           PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        WeChatPayTradeParam param = WeChatPayTradeParam.builder()
+                .tenantId(order.getTenantId())
+                .outTradeNo(order.getOrderNo())
+                .description("餐饮订单")
+                .totalAmount(serverPayable)
+                .attach(paymentAttach(order))
+                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId(), "微信"))
+                .build();
+        responseBuilder.qrCode(FeignResultUtil.unwrap(payFeignClient.createWeChatNativePay(param)));
+    }
+
     private void createAlipayMiniPayment(RestaurantOrder order, BigDecimal serverPayable, String authCode,
                                          PaymentResponse.PaymentResponseBuilder responseBuilder) {
         var param = new org.hongtu.params.AlipayMiniPayParam();
@@ -1215,6 +1240,45 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         param.setAuthCode(authCode);
         param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
         responseBuilder.tradeNo(FeignResultUtil.unwrap(payFeignClient.createAlipayMiniPay(param)));
+    }
+
+    /** 支付宝网页 JSAPI 使用授权码换取买家 ID，返回交易号供前端收银台使用。 */
+    private void createAlipayJsapiPayment(RestaurantOrder order, BigDecimal serverPayable, String authCode,
+                                          PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        var param = new org.hongtu.params.AlipayMiniPayParam();
+        param.setTenantId(order.getTenantId());
+        param.setOutTradeNo(order.getOrderNo());
+        param.setSubject("餐厅订单-" + order.getOrderNo());
+        param.setTotalAmount(serverPayable);
+        param.setAuthCode(authCode);
+        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
+        responseBuilder.tradeNo(FeignResultUtil.unwrap(payFeignClient.createAlipayJsapiPay(param)));
+    }
+
+    private AlipayPayTradeParam alipayWebTrade(RestaurantOrder order, BigDecimal amount, String returnUrl) {
+        AlipayPayTradeParam param = new AlipayPayTradeParam();
+        param.setTenantId(order.getTenantId());
+        param.setOutTradeNo(order.getOrderNo());
+        param.setSubject("餐厅订单-" + order.getOrderNo());
+        param.setTotalAmount(amount);
+        param.setReturnUrl(returnUrl);
+        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
+        return param;
+    }
+
+    /** 电脑网站支付表单由支付宝 SDK 生成，前端需在顶层页面提交。 */
+    private void createAlipayPagePayment(RestaurantOrder order, BigDecimal amount, String returnUrl,
+                                         PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        String form = FeignResultUtil.unwrap(payFeignClient.createAlipayPagePay(
+                alipayWebTrade(order, amount, returnUrl)));
+        responseBuilder.payForm(form).payUrl(form);
+    }
+
+    /** 顾客扫商家码，返回支付宝二维码原始内容。 */
+    private void createAlipayPrecreatePayment(RestaurantOrder order, BigDecimal amount,
+                                              PaymentResponse.PaymentResponseBuilder responseBuilder) {
+        responseBuilder.qrCode(FeignResultUtil.unwrap(payFeignClient.createAlipayPrecreatePay(
+                alipayWebTrade(order, amount, null))));
     }
 
     /**
@@ -1242,7 +1306,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 调用支付宝服务（Feign 调用 pay-service）
         String payFormHtml = FeignResultUtil.unwrap(payFeignClient.createAlipayWapPay(param));
-        responseBuilder.payUrl(payFormHtml);
+        responseBuilder.payForm(payFormHtml).payUrl(payFormHtml);
 
     }
 

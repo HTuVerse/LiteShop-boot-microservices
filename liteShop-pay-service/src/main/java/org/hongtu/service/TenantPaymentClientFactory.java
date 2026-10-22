@@ -8,6 +8,7 @@ import com.wechat.pay.java.core.util.PemUtil;
 import com.wechat.pay.java.service.payments.jsapi.JsapiService;
 import com.wechat.pay.java.service.payments.jsapi.JsapiServiceExtension;
 import com.wechat.pay.java.service.payments.h5.H5Service;
+import com.wechat.pay.java.service.payments.nativepay.NativePayService;
 import com.wechat.pay.java.service.refund.RefundService;
 import com.github.binarywang.wxpay.config.WxPayConfig;
 import com.github.binarywang.wxpay.service.WxPayService;
@@ -115,6 +116,7 @@ public class TenantPaymentClientFactory {
                 new JsapiService.Builder().config(config).build(),
                 new JsapiServiceExtension.Builder().config(config).build(),
                 new H5Service.Builder().config(config).build(),
+                new NativePayService.Builder().config(config).build(),
                 new RefundService.Builder().config(config).build(),
                 new NotificationParser(config));
     }
@@ -158,6 +160,7 @@ public class TenantPaymentClientFactory {
 
     /** 一个租户微信商户对应的官方 SDK 客户端。 */
     public record WeChatClients(String appId, String mchId, JsapiService query, JsapiServiceExtension pay,
-                                H5Service h5, RefundService refund, NotificationParser parser) {
+                                H5Service h5, NativePayService nativePay, RefundService refund,
+                                NotificationParser parser) {
     }
 }

@@ -42,21 +42,23 @@ public class PaymentResponse {
      * 支付方式
      */
     private Integer paymentType;
+
+    /** 实际支付场景，供前端选择调起方式。 */
+    private String paymentScene;
     
     /**
      * 预支付交易会话标识（微信支付返回）
      */
     private String prepayId;
     
-    /**
-     * 支付二维码内容（扫码支付）
-     */
+    /** 支付二维码原始内容，前端据此绘制二维码。 */
     private String qrCode;
     
-    /**
-     * 支付跳转URL（H5支付）
-     */
+    /** 微信 H5 为跳转 URL；支付宝 H5/PC 为历史兼容的 HTML 表单。 */
     private String payUrl;
+
+    /** 支付宝 H5/电脑网站的签名 HTML 表单；payUrl 暂保留同值兼容旧调用方。 */
+    private String payForm;
 
     /** 支付宝小程序交易号，传给 uni.requestPayment.orderInfo。 */
     private String tradeNo;
@@ -79,6 +81,8 @@ public class PaymentResponse {
     @NoArgsConstructor
     @AllArgsConstructor
     public static class MiniPayParams {
+        /** 微信网页 JSAPI 调起支付需传当前应用 ID。 */
+        private String appId;
         private String timeStamp;
         private String nonceStr;
         private String packageValue;  // package是关键字，用packageValue

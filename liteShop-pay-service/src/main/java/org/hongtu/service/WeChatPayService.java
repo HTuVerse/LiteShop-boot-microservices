@@ -17,6 +17,9 @@ public interface WeChatPayService {
     /** 微信浏览器外的 H5 支付链接。 */
     String createH5Pay(WeChatPayTradeParam param);
 
+    /** 微信 Native 扫码预下单，返回二维码原始内容。 */
+    String createNativePay(WeChatPayTradeParam param);
+
     /**
      * 付款码（被扫）支付：收银员扫顾客付款码发起扣款。
      * 返回 state：SUCCESS 已支付、USERPAYING 需轮询查单、FAIL 失败。

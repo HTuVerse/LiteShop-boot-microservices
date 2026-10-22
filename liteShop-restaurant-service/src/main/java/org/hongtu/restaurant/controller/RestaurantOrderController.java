@@ -394,11 +394,15 @@ public class RestaurantOrderController {
 
             String scene = request.getPaymentScene();
             if (request.getPaymentType() == PaymentTypeEnum.WECHAT
-                    && !"MINI_PROGRAM".equals(scene) && !"H5".equals(scene)) {
+                    && !"MINI_PROGRAM".equals(scene) && !"JSAPI".equals(scene)
+                    && !"H5".equals(scene) && !"PC".equals(scene)
+                    && !"FACE_TO_FACE".equals(scene)) {
                 return Result.error("微信支付场景无效");
             }
             if (request.getPaymentType() == PaymentTypeEnum.ALIPAY
-                    && !"MINI_PROGRAM".equals(scene) && !"H5".equals(scene)) {
+                    && !"MINI_PROGRAM".equals(scene) && !"JSAPI".equals(scene)
+                    && !"H5".equals(scene) && !"PC".equals(scene)
+                    && !"FACE_TO_FACE".equals(scene)) {
                 return Result.error("支付宝支付场景无效");
             }
 
@@ -418,9 +422,9 @@ public class RestaurantOrderController {
                 return Result.error("微信支付 API v3 不支持小程序沙箱下单，请关闭微信沙箱开关后再支付");
             }
 
-            // 微信支付需要openid
+            // 微信小程序和公众号 JSAPI 都需要当前应用下的 openid。
             if (request.getPaymentType() == PaymentTypeEnum.WECHAT &&
-                    "MINI_PROGRAM".equals(scene) && !sandboxPaymentEnabled
+                    ("MINI_PROGRAM".equals(scene) || "JSAPI".equals(scene)) && !sandboxPaymentEnabled
                     && (request.getOpenId() == null || request.getOpenId().isEmpty())) {
                 return Result.error("微信支付需要提供openid");
             }
@@ -432,7 +436,8 @@ public class RestaurantOrderController {
                     scene,
                     request.getOpenId(),
                     request.getAuthCode(),
-                    request.getPaymentType() == PaymentTypeEnum.ALIPAY && "H5".equals(scene)
+                    request.getPaymentType() == PaymentTypeEnum.ALIPAY
+                            && ("H5".equals(scene) || "PC".equals(scene))
                             ? validatedPaymentReturnUrl(request.getReturnUrl()) : null,
                     paymentClientIp()
             );

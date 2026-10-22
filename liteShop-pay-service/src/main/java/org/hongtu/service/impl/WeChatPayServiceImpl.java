@@ -72,6 +72,7 @@ public class WeChatPayServiceImpl implements WeChatPayService {
             }
             var paymentResponse = merchant.pay().prepayWithRequestPayment(request);
             Map<String, Object> payParams = new HashMap<>();
+            payParams.put("appId", merchant.appId());
             payParams.put("timeStamp", paymentResponse.getTimeStamp());
             payParams.put("nonceStr", paymentResponse.getNonceStr());
             payParams.put("package", paymentResponse.getPackageVal());
@@ -117,6 +118,33 @@ public class WeChatPayServiceImpl implements WeChatPayService {
         } catch (RuntimeException exception) {
             log.error("创建微信 H5 支付失败, tenantId={}", param.getTenantId(), exception);
             throw new BusinessException("创建微信 H5 支付失败");
+        }
+    }
+
+    @Override
+    public String createNativePay(WeChatPayTradeParam param) {
+        if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
+                || !StringUtils.hasText(param.getDescription()) || !StringUtils.hasText(param.getNotifyUrl())
+                || param.getTotalAmount() == null || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("微信扫码支付参数不完整");
+        }
+        WeChatClients merchant = clients.wechat(param.getTenantId());
+        try {
+            var request = new com.wechat.pay.java.service.payments.nativepay.model.PrepayRequest();
+            request.setAppid(merchant.appId());
+            request.setMchid(merchant.mchId());
+            request.setDescription(param.getDescription());
+            request.setOutTradeNo(param.getOutTradeNo());
+            request.setNotifyUrl(param.getNotifyUrl());
+            request.setAttach(param.getAttach());
+            var amount = new com.wechat.pay.java.service.payments.nativepay.model.Amount();
+            amount.setTotal(param.getTotalAmount().movePointRight(2)
+                    .setScale(0, RoundingMode.UNNECESSARY).intValueExact());
+            request.setAmount(amount);
+            return merchant.nativePay().prepay(request).getCodeUrl();
+        } catch (RuntimeException exception) {
+            log.error("创建微信扫码支付失败, tenantId={}", param.getTenantId(), exception);
+            throw new BusinessException("创建微信扫码支付失败");
         }
     }
 

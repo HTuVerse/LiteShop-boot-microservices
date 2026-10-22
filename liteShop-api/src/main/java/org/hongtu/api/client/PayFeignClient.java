@@ -5,6 +5,7 @@ import org.hongtu.Result.Result;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.params.AlipayBarCodePayParam;
+import org.hongtu.params.AlipayPayTradeParam;
 import org.hongtu.params.AlipayTradeWapPayRequestParams;
 import org.hongtu.params.WeChatMicroPayParam;
 import org.hongtu.params.WeChatPayTradeParam;
@@ -28,8 +29,16 @@ public interface PayFeignClient {
     @PostMapping("/inner/pay/wechat/h5")
     Result<String> createWeChatH5Pay(@RequestBody WeChatPayTradeParam param);
 
+    /** 微信 Native 扫码预下单。 */
+    @PostMapping("/inner/pay/wechat/native")
+    Result<String> createWeChatNativePay(@RequestBody WeChatPayTradeParam param);
+
     @PostMapping("/inner/pay/alipay/mini")
     Result<String> createAlipayMiniPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param);
+
+    /** 支付宝网页 JSAPI 创建交易，返回支付宝交易号。 */
+    @PostMapping("/inner/pay/alipay/jsapi")
+    Result<String> createAlipayJsapiPay(@RequestBody org.hongtu.params.AlipayMiniPayParam param);
 
     /** 微信付款码（被扫）支付。 */
     @PostMapping("/inner/pay/wechat/micropay")
@@ -75,6 +84,14 @@ public interface PayFeignClient {
 
     @PostMapping("/inner/pay/alipay/wap")
     Result<String> createAlipayWapPay(@RequestBody AlipayTradeWapPayRequestParams param);
+
+    /** 支付宝电脑网站跳转表单。 */
+    @PostMapping("/inner/pay/alipay/page")
+    Result<String> createAlipayPagePay(@RequestBody AlipayPayTradeParam param);
+
+    /** 支付宝当面付预创建二维码。 */
+    @PostMapping("/inner/pay/alipay/precreate")
+    Result<String> createAlipayPrecreatePay(@RequestBody AlipayPayTradeParam param);
 
     /** 支付宝条码（被扫）支付。 */
     @PostMapping("/inner/pay/alipay/barcode")
