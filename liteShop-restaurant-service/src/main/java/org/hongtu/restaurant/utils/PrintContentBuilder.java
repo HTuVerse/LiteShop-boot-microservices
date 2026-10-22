@@ -386,7 +386,10 @@ public class PrintContentBuilder {
         // ============ 支付信息 ============
         if (template.getShowPaymentInfo() != null
                 && template.getShowPaymentInfo() == StatusEnum.getByCode(1)) {
-            if (orderVO.getPaymentMode() != null) {
+            // 前台收银订单可先选择到店付款，再实际使用微信或支付宝付款码。
+            if (orderVO.getPaymentTime() != null && orderVO.getPaymentType() != null) {
+                content.append("支付方式：").append(orderVO.getPaymentType().getDesc()).append("<BR>");
+            } else if (orderVO.getPaymentMode() != null) {
                 content.append("支付方式：").append(orderVO.getPaymentMode().getDesc()).append("<BR>");
             }
             if (orderVO.getPaymentStatus() != null) {
