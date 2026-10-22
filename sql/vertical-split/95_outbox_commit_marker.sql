@@ -10,7 +10,7 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- 升级前的事件没有可靠提交标记，保留给人工核对，避免错误自动补偿。
 UPDATE `local_outbox` SET `status` = 'NEEDS_REVIEW'
-WHERE @had_committed = 0 AND `status` IN ('SENT', 'PENDING')
+WHERE @had_committed = 0 AND `status` IN ('SENT', 'PENDING', 'UNKNOWN')
   AND `event_type` <> 'MEMBER_REWARD_SYNC';
 
 SET @ddl = IF((SELECT COUNT(*) FROM information_schema.STATISTICS

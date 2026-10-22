@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS `local_outbox` (
     `event_id` varchar(128) NOT NULL COMMENT '业务幂等键',
     `event_type` varchar(32) NOT NULL COMMENT 'COUPON_VERIFY、COUPON_RESTORE、BALANCE_CHANGE',
     `payload` text NOT NULL COMMENT '补偿所需载荷',
-    `status` varchar(16) NOT NULL COMMENT 'PENDING、SENT、UNKNOWN、DONE、COMPENSATED、NEEDS_REVIEW',
+    `status` varchar(16) NOT NULL COMMENT 'PENDING、SENT、UNKNOWN、ROLLBACK、DONE、COMPENSATED、NEEDS_REVIEW',
     `committed` tinyint NOT NULL DEFAULT 0 COMMENT '外层业务事务是否已提交：0否，1是',
     `attempts` int NOT NULL DEFAULT 0 COMMENT '尝试次数',
     `last_error` varchar(500) NULL COMMENT '最后错误',

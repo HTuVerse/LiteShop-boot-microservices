@@ -3,6 +3,7 @@ package org.hongtu.restaurant.service.impl;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.api.client.CouponFeignClient;
@@ -24,7 +25,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -32,6 +32,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDateTime;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 跨服务写操作的发件箱。远程调用前用独立事务记下事件，外层回滚后仍能自动补偿。
@@ -66,11 +67,19 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             throw new IllegalStateException("上次跨服务操作仍在对账，请稍后重试");
         }
         saveStatus(eventType, eventId, payload, "PENDING", null);
+        boolean transactionActive = TransactionSynchronizationManager.isActualTransactionActive();
+        if (transactionActive && !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("当前事务无法记录跨服务调用结果");
+        }
+        AtomicBoolean remoteAccepted = new AtomicBoolean();
+        if (transactionActive) {
+            registerTransactionDecision(eventId, remoteAccepted);
+        }
         try {
             remoteCall.run();
         } catch (RuntimeException exception) {
             // Feign 超时无法证明远端失败，继续对账而不能终止事件。
-            saveStatus(eventType, eventId, payload, "UNKNOWN", exception.getMessage());
+            saveStatus(eventType, eventId, payload, transactionActive ? "UNKNOWN" : "ROLLBACK", exception.getMessage());
             throw exception;
         }
         saveStatus(eventType, eventId, payload, "SENT", null);
@@ -78,8 +87,10 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             if (localOutboxMapper.markCommitted(TenantContext.getTenantId(), eventId) != 1) {
                 throw new IllegalStateException("发件箱事务提交标记失败");
             }
+            remoteAccepted.set(true);
+        } else {
+            saveStatus(null, eventId, null, "DONE", null);
         }
-        registerDoneAfterCommit(eventId);
     }
 
     @Override
@@ -137,7 +148,6 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void reconcile() {
         List<LocalOutbox> rewards = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .eq(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
@@ -149,7 +159,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 TenantScope.run(event.getTenantId(), () -> deliverMemberReward(event.getEventId()));
         }
         List<LocalOutbox> stuck = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
-                .in(LocalOutbox::getStatus, "SENT", "PENDING", "UNKNOWN")
+                .in(LocalOutbox::getStatus, "SENT", "PENDING", "UNKNOWN", "ROLLBACK")
                 .ne(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
                 .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
                 .orderByAsc(LocalOutbox::getUpdatedAt)
@@ -163,11 +173,20 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
     }
 
     private void reconcileOne(LocalOutbox event) {
-        if (Boolean.TRUE.equals(event.getCommitted())) {
-            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "DONE", null);
+        LocalOutbox current = find(event.getEventId());
+        if (current == null || "DONE".equals(current.getStatus())
+                || "COMPENSATED".equals(current.getStatus())
+                || "NEEDS_REVIEW".equals(current.getStatus())) {
             return;
         }
-        compensate(event);
+        if (Boolean.TRUE.equals(current.getCommitted())) {
+            saveStatus(current.getEventType(), current.getEventId(), current.getPayload(), "DONE", null);
+        } else if ("ROLLBACK".equals(current.getStatus())) {
+            compensate(current);
+        } else if (localOutboxMapper.markNeedsReviewIfUndecided(
+                current.getTenantId(), current.getEventId()) == 1) {
+            log.error("跨服务调用的业务事务结论未确认，需人工核对: eventId={}", current.getEventId());
+        }
     }
 
     private void compensate(LocalOutbox event) {
@@ -206,7 +225,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             }
             saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "COMPENSATED", null);
         } catch (RuntimeException exception) {
-            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "UNKNOWN", exception.getMessage());
+            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "ROLLBACK", exception.getMessage());
             log.error("发件箱补偿失败: eventId={}", event.getEventId(), exception);
         }
     }
@@ -234,6 +253,10 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             if (Integer.valueOf(4).equals(type)) {
                 boolean alreadyRefunded = Boolean.TRUE.equals(FeignResultUtil.unwrap(
                         userFeignClient.balanceChangeApplied(orderNo + "_COMPENSATE", userId, 3)));
+                if (!alreadyRefunded) {
+                    alreadyRefunded = Boolean.TRUE.equals(FeignResultUtil.unwrap(
+                            userFeignClient.balanceChangeApplied(orderNo + ":outbox", userId, 3)));
+                }
                 if (!alreadyRefunded) {
                     FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
                             .userId(userId).amount(payload.getBigDecimal("amount")).type(3)
@@ -263,20 +286,28 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 .build();
     }
 
-    private void registerDoneAfterCommit(String eventId) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            saveStatus(null, eventId, null, "DONE", null);
-            return;
-        }
+    private void registerTransactionDecision(String eventId, AtomicBoolean remoteAccepted) {
         Long tenantId = TenantContext.getTenantId();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                if (!remoteAccepted.get()) return;
                 try {
                     TenantScope.run(tenantId, () -> saveStatus(null, eventId, null, "DONE", null));
                 } catch (RuntimeException exception) {
                     // 提交标记已在业务事务中持久化，由对账任务补写 DONE。
                     log.error("业务已提交，发件箱完成状态待对账: eventId={}", eventId, exception);
+                }
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_ROLLED_BACK) return;
+                try {
+                    TenantScope.run(tenantId, () -> saveStatus(null, eventId, null, "ROLLBACK", null));
+                } catch (RuntimeException exception) {
+                    // 回滚结论写入失败时保留未决状态，人工复核优先于误补偿。
+                    log.error("业务已回滚，发件箱待人工复核: eventId={}", eventId, exception);
                 }
             }
         });
@@ -310,17 +341,15 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 }
                 return;
             }
-            current.setStatus(status);
-            if (eventType != null) {
-                current.setEventType(eventType);
-            }
-            if (payload != null) {
-                current.setPayload(payload);
-            }
-            current.setAttempts((current.getAttempts() == null ? 0 : current.getAttempts()) + 1);
-            current.setLastError(trim(error));
-            current.setUpdatedAt(now);
-            localOutboxMapper.updateById(current);
+            // 只更新状态列，避免用独立事务里的旧实体覆盖业务事务已提交的 committed 标记。
+            localOutboxMapper.update(null, new LambdaUpdateWrapper<LocalOutbox>()
+                    .eq(LocalOutbox::getId, current.getId())
+                    .set(LocalOutbox::getStatus, status)
+                    .set(eventType != null, LocalOutbox::getEventType, eventType)
+                    .set(payload != null, LocalOutbox::getPayload, payload)
+                    .set(LocalOutbox::getLastError, trim(error))
+                    .set(LocalOutbox::getUpdatedAt, now)
+                    .setSql("attempts = attempts + 1"));
         });
     }
 
