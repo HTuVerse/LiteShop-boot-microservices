@@ -28,6 +28,11 @@ spring:
               uri: lb://liteShop-lottery-service
               predicates:
                 - Path=/lottery-activity/**,/lottery-prize/**,/activity-prize/**,/lottery-record/**,/user-activity-chance/**
+            # 渠道回调由支付服务验签，再通过内部接口交给餐厅服务处理订单。
+            - id: pay-notify-service
+              uri: lb://liteShop-pay-service
+              predicates:
+                - Path=/wechatPay/**,/alipayPay/**,/restaurant-order/wechatPay/**,/restaurant-order/alipayPay/**
             - id: restaurant-service
               uri: lb://liteShop-restaurant-service
               predicates:

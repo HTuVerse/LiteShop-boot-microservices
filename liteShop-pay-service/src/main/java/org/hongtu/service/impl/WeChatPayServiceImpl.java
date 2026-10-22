@@ -41,7 +41,7 @@ public class WeChatPayServiceImpl implements WeChatPayService {
         }
         if (!StringUtils.hasText(param.getOutTradeNo()) || !StringUtils.hasText(param.getDescription())
                 || !StringUtils.hasText(param.getOpenid())
-                || !StringUtils.hasText(param.getNotifyUrl()) || param.getTotalAmount() == null
+                || param.getTotalAmount() == null
                 || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("微信支付参数不完整");
         }
@@ -53,7 +53,8 @@ public class WeChatPayServiceImpl implements WeChatPayService {
             request.setMchid(merchant.mchId());
             request.setDescription(param.getDescription());
             request.setOutTradeNo(param.getOutTradeNo());
-            request.setNotifyUrl(param.getNotifyUrl());
+            request.setNotifyUrl(clients.resolveWeChatNotifyUrl(
+                    param.getTenantId(), param.getCallbackOwner(), param.getNotifyUrl()));
             com.wechat.pay.java.service.payments.jsapi.model.Amount amount =
                     new com.wechat.pay.java.service.payments.jsapi.model.Amount();
             amount.setTotal(param.getTotalAmount().movePointRight(2)
@@ -90,7 +91,7 @@ public class WeChatPayServiceImpl implements WeChatPayService {
     @Override
     public String createH5Pay(WeChatPayTradeParam param) {
         if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
-                || !StringUtils.hasText(param.getDescription()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getDescription())
                 || !StringUtils.hasText(param.getPayerClientIp()) || param.getTotalAmount() == null
                 || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("微信 H5 支付参数不完整");
@@ -102,7 +103,8 @@ public class WeChatPayServiceImpl implements WeChatPayService {
             request.setMchid(merchant.mchId());
             request.setDescription(param.getDescription());
             request.setOutTradeNo(param.getOutTradeNo());
-            request.setNotifyUrl(param.getNotifyUrl());
+            request.setNotifyUrl(clients.resolveWeChatNotifyUrl(
+                    param.getTenantId(), param.getCallbackOwner(), param.getNotifyUrl()));
             request.setAttach(param.getAttach());
             var amount = new com.wechat.pay.java.service.payments.h5.model.Amount();
             amount.setTotal(param.getTotalAmount().movePointRight(2)
@@ -124,7 +126,7 @@ public class WeChatPayServiceImpl implements WeChatPayService {
     @Override
     public String createNativePay(WeChatPayTradeParam param) {
         if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
-                || !StringUtils.hasText(param.getDescription()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getDescription())
                 || param.getTotalAmount() == null || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("微信扫码支付参数不完整");
         }
@@ -135,7 +137,8 @@ public class WeChatPayServiceImpl implements WeChatPayService {
             request.setMchid(merchant.mchId());
             request.setDescription(param.getDescription());
             request.setOutTradeNo(param.getOutTradeNo());
-            request.setNotifyUrl(param.getNotifyUrl());
+            request.setNotifyUrl(clients.resolveWeChatNotifyUrl(
+                    param.getTenantId(), param.getCallbackOwner(), param.getNotifyUrl()));
             request.setAttach(param.getAttach());
             var amount = new com.wechat.pay.java.service.payments.nativepay.model.Amount();
             amount.setTotal(param.getTotalAmount().movePointRight(2)

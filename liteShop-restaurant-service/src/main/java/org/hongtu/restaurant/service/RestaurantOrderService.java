@@ -206,25 +206,11 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
      */
     boolean handlePaymentError(Long orderId, String reason);
 
-    /**
-     * 处理微信支付回调。路径中的租户只用于选择验签密钥。
-     */
-    String handleWeChatPayNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial);
+    /** 支付服务已验签后，由订单服务核对并入账。 */
+    void applyVerifiedPaymentNotify(Long tenantId, org.hongtu.DTO.PaymentNotifyResult notice);
 
-    /**
-     * 处理支付宝支付回调。路径中的租户只用于选择验签密钥。
-     */
-    String handleAlipayNotify(Long tenantId, Map<String, String> params);
-
-    /**
-     * 处理微信退款回调。核对退款单后再入账。
-     */
-    String handleWeChatRefundNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial);
-
-    /**
-     * 处理支付宝退款通知。核对退款单后再入账。
-     */
-    String handleAlipayRefundNotify(Long tenantId, Map<String, String> params);
+    /** 支付服务已验签后，由订单服务核对退款单并入账。 */
+    void applyVerifiedRefundNotify(Long tenantId, org.hongtu.api.dto.PaymentRefundNotifyResult notice);
 
     /**
      * 补偿仍处于已申请或处理中的退款单。

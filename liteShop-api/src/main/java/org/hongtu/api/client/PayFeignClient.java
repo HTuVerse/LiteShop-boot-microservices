@@ -3,6 +3,8 @@ package org.hongtu.api.client;
 import org.hongtu.DTO.PaymentNotifyResult;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
+import org.hongtu.api.dto.PaymentCreateCommand;
+import org.hongtu.api.dto.PaymentCreateResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.params.AlipayBarCodePayParam;
 import org.hongtu.params.AlipayPayTradeParam;
@@ -22,6 +24,10 @@ import java.util.Map;
  */
 @FeignClient(name = "liteShop-pay-service", contextId = "payFeignClient")
 public interface PayFeignClient {
+
+    /** 按租户账户和渠道场景创建支付交易。 */
+    @PostMapping("/inner/pay/create")
+    Result<PaymentCreateResult> createPayment(@RequestBody PaymentCreateCommand command);
 
     @PostMapping("/inner/pay/wechat/jsapi")
     Result<Map<String, Object>> createWeChatJsapiPay(@RequestBody WeChatPayTradeParam param);
@@ -71,6 +77,15 @@ public interface PayFeignClient {
                                                    @RequestParam("totalAmount") String totalAmount,
                                                    @RequestParam(value = "reason", required = false) String reason,
                                                    @RequestParam("notifyUrl") String notifyUrl);
+
+    /** 餐厅退款的渠道通知地址由支付服务从本租户账户生成。 */
+    @PostMapping("/inner/pay/wechat/refund/restaurant")
+    Result<Map<String, Object>> refundRestaurantWeChatTrade(@RequestParam("tenantId") Long tenantId,
+                                                              @RequestParam("outTradeNo") String outTradeNo,
+                                                              @RequestParam("outRefundNo") String outRefundNo,
+                                                              @RequestParam("refundAmount") String refundAmount,
+                                                              @RequestParam("totalAmount") String totalAmount,
+                                                              @RequestParam(value = "reason", required = false) String reason);
 
     @GetMapping("/inner/pay/wechat/refund/query")
     Result<Map<String, Object>> queryWeChatRefund(@RequestParam("tenantId") Long tenantId,

@@ -45,7 +45,7 @@ public class AlipayServiceImpl implements AlipayService {
     @Override
     public String createMiniPay(AlipayMiniPayParam param) {
         if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
-                || !StringUtils.hasText(param.getSubject()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getSubject())
                 || !StringUtils.hasText(param.getAuthCode()) || param.getTotalAmount() == null
                 || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("支付宝小程序支付参数不完整");
@@ -60,7 +60,7 @@ public class AlipayServiceImpl implements AlipayService {
                 throw new BusinessException("获取支付宝用户身份失败");
 
             var request = new AlipayTradeCreateRequest();
-            request.setNotifyUrl(param.getNotifyUrl());
+            request.setNotifyUrl(clients.notifyUrl(param.getTenantId(), "ALIPAY"));
             Map<String, Object> bizContent = new HashMap<>();
             bizContent.put("out_trade_no", param.getOutTradeNo());
             bizContent.put("total_amount", param.getTotalAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString());
@@ -86,7 +86,6 @@ public class AlipayServiceImpl implements AlipayService {
         }
         if (!StringUtils.hasText(wapPayRequest.getOutTradeNo())
                 || !StringUtils.hasText(wapPayRequest.getSubject())
-                || !StringUtils.hasText(wapPayRequest.getNotifyUrl())
                 || !StringUtils.hasText(wapPayRequest.getProductCode())
                 || wapPayRequest.getTotalAmount() == null
                 || wapPayRequest.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
@@ -94,7 +93,7 @@ public class AlipayServiceImpl implements AlipayService {
         }
         var client = clients.alipay(wapPayRequest.getTenantId());
         AlipayTradeWapPayRequest request = new AlipayTradeWapPayRequest();
-        request.setNotifyUrl(wapPayRequest.getNotifyUrl());
+        request.setNotifyUrl(clients.notifyUrl(wapPayRequest.getTenantId(), "ALIPAY"));
         if (StringUtils.hasText(wapPayRequest.getReturnUrl())) {
             request.setReturnUrl(wapPayRequest.getReturnUrl());
         }
@@ -125,7 +124,7 @@ public class AlipayServiceImpl implements AlipayService {
     public String createPagePay(AlipayPayTradeParam param) {
         validateWebTrade(param);
         AlipayTradePagePayRequest request = new AlipayTradePagePayRequest();
-        request.setNotifyUrl(param.getNotifyUrl());
+        request.setNotifyUrl(clients.notifyUrl(param.getTenantId(), "ALIPAY"));
         if (StringUtils.hasText(param.getReturnUrl())) {
             request.setReturnUrl(param.getReturnUrl());
         }
@@ -148,7 +147,7 @@ public class AlipayServiceImpl implements AlipayService {
     public String createPrecreatePay(AlipayPayTradeParam param) {
         validateWebTrade(param);
         AlipayTradePrecreateRequest request = new AlipayTradePrecreateRequest();
-        request.setNotifyUrl(param.getNotifyUrl());
+        request.setNotifyUrl(clients.notifyUrl(param.getTenantId(), "ALIPAY"));
         request.setBizContent(JSON.toJSONString(baseWebTrade(param)));
         try {
             var response = clients.alipay(param.getTenantId()).execute(request);
@@ -164,7 +163,7 @@ public class AlipayServiceImpl implements AlipayService {
 
     private void validateWebTrade(AlipayPayTradeParam param) {
         if (param == null || param.getTenantId() == null || !StringUtils.hasText(param.getOutTradeNo())
-                || !StringUtils.hasText(param.getSubject()) || !StringUtils.hasText(param.getNotifyUrl())
+                || !StringUtils.hasText(param.getSubject())
                 || param.getTotalAmount() == null || param.getTotalAmount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("支付宝支付参数不完整");
         }

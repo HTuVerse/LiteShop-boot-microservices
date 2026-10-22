@@ -73,11 +73,12 @@ public class TenantPaymentClientFactory {
     /** 加载当前命令指定租户的支付宝客户端。 */
     public AlipayClient alipay(Long tenantId) {
         TenantPaymentRuntimeDTO account = TenantPaymentAccountGuard.requireAlipay(load(tenantId, "ALIPAY"));
+        String gateway = alipayGateway(account.getSandboxEnabled());
         String key = cacheKey(tenantId, account);
         evictStale(alipayClients, tenantId, key);
         try {
             return alipayClients.computeIfAbsent(key, ignored -> new DefaultAlipayClient(
-                    Boolean.TRUE.equals(account.getSandboxEnabled()) ? ALIPAY_SANDBOX_GATEWAY : ALIPAY_PRODUCTION_GATEWAY,
+                    gateway,
                     account.getAppId(),
                     account.getPrivateKey(),
                     "JSON",
@@ -93,6 +94,43 @@ public class TenantPaymentClientFactory {
     /** 读取支付宝公钥，供回调验签使用。 */
     public TenantPaymentRuntimeDTO alipayAccount(Long tenantId) {
         return TenantPaymentAccountGuard.requireAlipay(load(tenantId, "ALIPAY"));
+    }
+
+    /** 支付环境丢失时拒绝创建表单，避免沙箱应用误入正式网关。 */
+    static String alipayGateway(Boolean sandboxEnabled) {
+        if (sandboxEnabled == null) {
+            throw new BusinessException("支付宝支付环境未同步，请检查配置服务与支付服务版本");
+        }
+        return sandboxEnabled ? ALIPAY_SANDBOX_GATEWAY : ALIPAY_PRODUCTION_GATEWAY;
+    }
+
+    /** 支付回调地址只由支付服务读取，调用方不传递渠道配置。 */
+    public String notifyUrl(Long tenantId, String channel) {
+        TenantPaymentRuntimeDTO account = load(tenantId, channel);
+        if ("WECHAT".equals(channel)) {
+            TenantPaymentAccountGuard.requireWeChat(account);
+        } else if ("ALIPAY".equals(channel)) {
+            TenantPaymentAccountGuard.requireAlipay(account);
+        } else {
+            throw new BusinessException("不支持的支付渠道");
+        }
+        return PaymentNotifyUrls.withTenant(account.getNotifyUrl(), tenantId, channel);
+    }
+
+    /** 微信退款通知沿用本租户的支付通知域名。 */
+    public String wechatRefundNotifyUrl(Long tenantId) {
+        return PaymentNotifyUrls.wechatRefund(notifyUrl(tenantId, "WECHAT"));
+    }
+
+    /** 其他业务仍使用其订单服务提供的通知地址。 */
+    public String resolveWeChatNotifyUrl(Long tenantId, String callbackOwner, String suppliedUrl) {
+        if ("RESTAURANT".equals(callbackOwner)) {
+            return notifyUrl(tenantId, "WECHAT");
+        }
+        if (suppliedUrl == null || suppliedUrl.isBlank()) {
+            throw new BusinessException("微信支付回调地址未配置");
+        }
+        return suppliedUrl;
     }
 
     private TenantPaymentRuntimeDTO load(Long tenantId, String channel) {

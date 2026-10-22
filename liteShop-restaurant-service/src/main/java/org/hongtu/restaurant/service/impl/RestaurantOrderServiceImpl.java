@@ -15,9 +15,6 @@ import org.hongtu.DTO.SysUser;
 import org.hongtu.enums.BalanceResourceEnum;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.exception.BusinessException;
-import org.hongtu.params.AlipayTradeWapPayRequestParams;
-import org.hongtu.params.AlipayPayTradeParam;
-import org.hongtu.params.WeChatPayTradeParam;
 import org.hongtu.restaurant.DAO.*;
 import org.hongtu.restaurant.DTO.*;
 import org.hongtu.restaurant.VO.*;
@@ -39,10 +36,9 @@ import org.hongtu.api.client.PayFeignClient;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
-import org.hongtu.api.dto.WeChatNotifyParseDTO;
+import org.hongtu.api.dto.PaymentCreateCommand;
+import org.hongtu.api.dto.PaymentCreateResult;
 import org.hongtu.api.util.FeignResultUtil;
-import org.hongtu.restaurant.payment.PaymentNotifyUrls;
-import org.hongtu.restaurant.payment.AlipayGatewayForm;
 import org.hongtu.restaurant.payment.ScanPayOutcome;
 import org.hongtu.restaurant.payment.PaymentTransitionPolicy;
 import org.hongtu.tenant.TenantContext;
@@ -680,30 +676,39 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             throw new IllegalStateException("该订单已创建其它支付渠道的交易，请先取消订单");
         }
 
-        if (paymentTypeEnum == PaymentTypeEnum.WECHAT) {
-            // 调用微信支付
-            if ("H5".equals(paymentScene))
-                createWeChatH5Payment(order, serverPayable, payerClientIp, responseBuilder);
-            else if ("PC".equals(paymentScene) || "FACE_TO_FACE".equals(paymentScene))
-                createWeChatNativePayment(order, serverPayable, responseBuilder);
-            else
-                createWeChatPayment(order, serverPayable, openid, responseBuilder);
-
-        } else if (paymentTypeEnum == PaymentTypeEnum.ALIPAY) {
-            // 调用支付宝支付
-            if ("MINI_PROGRAM".equals(paymentScene))
-                createAlipayMiniPayment(order, serverPayable, authCode, responseBuilder);
-            else if ("JSAPI".equals(paymentScene))
-                createAlipayJsapiPayment(order, serverPayable, authCode, responseBuilder);
-            else if ("PC".equals(paymentScene))
-                createAlipayPagePayment(order, serverPayable, returnUrl, responseBuilder);
-            else if ("FACE_TO_FACE".equals(paymentScene))
-                createAlipayPrecreatePayment(order, serverPayable, responseBuilder);
-            else
-                createAlipayPayment(order, serverPayable, returnUrl, responseBuilder);
-
-        } else {
+        if (paymentTypeEnum != PaymentTypeEnum.WECHAT && paymentTypeEnum != PaymentTypeEnum.ALIPAY) {
             throw new IllegalStateException("不支持的支付方式");
+        }
+
+        // 订单服务只提交可信金额和场景；渠道参数、网关与通知地址都由支付服务处理。
+        PaymentCreateCommand command = new PaymentCreateCommand();
+        command.setTenantId(order.getTenantId());
+        command.setOrderNo(order.getOrderNo());
+        command.setChannel(paymentTypeEnum == PaymentTypeEnum.WECHAT ? "WECHAT" : "ALIPAY");
+        command.setScene(paymentScene);
+        command.setAmount(serverPayable);
+        command.setSubject(paymentTypeEnum == PaymentTypeEnum.WECHAT
+                ? "餐饮订单" : "餐厅订单-" + order.getOrderNo());
+        command.setAttach(paymentAttach(order));
+        command.setOpenid(openid);
+        command.setAuthCode(authCode);
+        command.setReturnUrl(returnUrl);
+        command.setPayerClientIp(payerClientIp);
+        PaymentCreateResult created = FeignResultUtil.unwrap(payFeignClient.createPayment(command));
+        responseBuilder.payUrl(created.getPayUrl())
+                .payForm(created.getPayForm())
+                .qrCode(created.getQrCode())
+                .tradeNo(created.getTradeNo());
+        if (created.getMiniPayParams() != null) {
+            Map<String, Object> payParams = created.getMiniPayParams();
+            responseBuilder.miniPayParams(PaymentResponse.MiniPayParams.builder()
+                    .appId((String) payParams.get("appId"))
+                    .timeStamp((String) payParams.get("timeStamp"))
+                    .nonceStr((String) payParams.get("nonceStr"))
+                    .packageValue((String) payParams.get("package"))
+                    .signType((String) payParams.get("signType"))
+                    .paySign((String) payParams.get("paySign"))
+                    .build());
         }
 
         // 记录已创建的支付渠道订单，取消/超时任务才能正确关单。
@@ -1163,259 +1168,35 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         return value == null ? null : value.toString();
     }
 
-    /**
-     * 创建微信支付
-     */
-    private void createWeChatPayment(RestaurantOrder order, BigDecimal serverPayable, String openid,
-                                     PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        if (openid == null || openid.isEmpty()) {
-            throw new IllegalArgumentException("微信支付需要提供openid");
-        }
-
-        // 构建微信支付参数
-        // 注意：notifyUrl 应该配置为餐厅模块专用的回调地址
-        // 示例：https://your-domain.com/restaurant-order/wechatPay/notify
-        // 生产环境由订单所属租户在微信支付账户中填写实际域名。
-        WeChatPayTradeParam param = WeChatPayTradeParam.builder()
-                .tenantId(order.getTenantId())
-                .outTradeNo(order.getOrderNo())
-                .description("餐饮订单")
-                .totalAmount(serverPayable)
-                .openid(openid)
-                .attach(paymentAttach(order))
-                .timeExpire(30)
-                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId(), "微信"))
-                .build();
-
-        // 调用微信支付服务（Feign 调用 pay-service）
-        Map<String, Object> payParams = FeignResultUtil.unwrap(payFeignClient.createWeChatJsapiPay(param));
-
-        // 设置小程序支付参数
-        responseBuilder.miniPayParams(
-                PaymentResponse.MiniPayParams.builder()
-                        .appId((String) payParams.get("appId"))
-                        .timeStamp((String) payParams.get("timeStamp"))
-                        .nonceStr((String) payParams.get("nonceStr"))
-                        .packageValue((String) payParams.get("package"))
-                        .signType((String) payParams.get("signType"))
-                        .paySign((String) payParams.get("paySign"))
-                        .build()
-        );
-    }
-
-    private void createWeChatH5Payment(RestaurantOrder order, BigDecimal serverPayable, String payerClientIp,
-                                       PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        WeChatPayTradeParam param = WeChatPayTradeParam.builder()
-                .tenantId(order.getTenantId())
-                .outTradeNo(order.getOrderNo())
-                .description("餐饮订单")
-                .totalAmount(serverPayable)
-                .payerClientIp(payerClientIp)
-                .attach(paymentAttach(order))
-                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId(), "微信"))
-                .build();
-        responseBuilder.payUrl(FeignResultUtil.unwrap(payFeignClient.createWeChatH5Pay(param)));
-    }
-
-    /** 电脑网站和顾客扫商家码均使用微信 Native 支付。 */
-    private void createWeChatNativePayment(RestaurantOrder order, BigDecimal serverPayable,
-                                           PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        WeChatPayTradeParam param = WeChatPayTradeParam.builder()
-                .tenantId(order.getTenantId())
-                .outTradeNo(order.getOrderNo())
-                .description("餐饮订单")
-                .totalAmount(serverPayable)
-                .attach(paymentAttach(order))
-                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId(), "微信"))
-                .build();
-        responseBuilder.qrCode(FeignResultUtil.unwrap(payFeignClient.createWeChatNativePay(param)));
-    }
-
-    private void createAlipayMiniPayment(RestaurantOrder order, BigDecimal serverPayable, String authCode,
-                                         PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        var param = new org.hongtu.params.AlipayMiniPayParam();
-        param.setTenantId(order.getTenantId());
-        param.setOutTradeNo(order.getOrderNo());
-        param.setSubject("餐厅订单-" + order.getOrderNo());
-        param.setTotalAmount(serverPayable);
-        param.setAuthCode(authCode);
-        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
-        responseBuilder.tradeNo(FeignResultUtil.unwrap(payFeignClient.createAlipayMiniPay(param)));
-    }
-
-    /** 支付宝网页 JSAPI 使用授权码换取买家 ID，返回交易号供前端收银台使用。 */
-    private void createAlipayJsapiPayment(RestaurantOrder order, BigDecimal serverPayable, String authCode,
-                                          PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        var param = new org.hongtu.params.AlipayMiniPayParam();
-        param.setTenantId(order.getTenantId());
-        param.setOutTradeNo(order.getOrderNo());
-        param.setSubject("餐厅订单-" + order.getOrderNo());
-        param.setTotalAmount(serverPayable);
-        param.setAuthCode(authCode);
-        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
-        responseBuilder.tradeNo(FeignResultUtil.unwrap(payFeignClient.createAlipayJsapiPay(param)));
-    }
-
-    private AlipayPayTradeParam alipayWebTrade(RestaurantOrder order, BigDecimal amount, String returnUrl) {
-        AlipayPayTradeParam param = new AlipayPayTradeParam();
-        param.setTenantId(order.getTenantId());
-        param.setOutTradeNo(order.getOrderNo());
-        param.setSubject("餐厅订单-" + order.getOrderNo());
-        param.setTotalAmount(amount);
-        param.setReturnUrl(returnUrl);
-        param.setNotifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"));
-        return param;
-    }
-
-    /** 电脑网站支付表单由支付宝 SDK 生成，前端需在顶层页面提交。 */
-    private void createAlipayPagePayment(RestaurantOrder order, BigDecimal amount, String returnUrl,
-                                         PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        String form = FeignResultUtil.unwrap(payFeignClient.createAlipayPagePay(
-                alipayWebTrade(order, amount, returnUrl)));
-        form = alignAlipayGateway(order.getTenantId(), form);
-        responseBuilder.payForm(form).payUrl(form);
-    }
-
-    /** 顾客扫商家码，返回支付宝二维码原始内容。 */
-    private void createAlipayPrecreatePayment(RestaurantOrder order, BigDecimal amount,
-                                              PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        responseBuilder.qrCode(FeignResultUtil.unwrap(payFeignClient.createAlipayPrecreatePay(
-                alipayWebTrade(order, amount, null))));
-    }
-
-    /**
-     * 创建支付宝支付
-     */
-    private void createAlipayPayment(RestaurantOrder order, BigDecimal serverPayable, String returnUrl,
-                                     PaymentResponse.PaymentResponseBuilder responseBuilder) {
-        // 构建支付宝参数
-        // 支付回调地址从租户支付宝账户读取，配置路径须指向餐饮订单通知接口。
-        // 计算超时时间：当前时间 + 30分钟
-        LocalDateTime expireTime = LocalDateTime.now().plusMinutes(30);
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        String timeExpireStr = expireTime.format(formatter);
-
-        AlipayTradeWapPayRequestParams param = AlipayTradeWapPayRequestParams.builder()
-                .tenantId(order.getTenantId())
-                .outTradeNo(order.getOrderNo())
-                .subject("餐厅订单-"+order.getOrderNo())
-                .totalAmount(serverPayable)
-                .timeExpire(timeExpireStr)
-                .returnUrl(returnUrl)
-                .quitUrl(returnUrl)
-                .notifyUrl(PaymentNotifyUrls.withTenant(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "ALIPAY"), order.getTenantId(), "支付宝"))
-                .build();
-
-        // 调用支付宝服务（Feign 调用 pay-service）
-        String payFormHtml = FeignResultUtil.unwrap(payFeignClient.createAlipayWapPay(param));
-        payFormHtml = alignAlipayGateway(order.getTenantId(), payFormHtml);
-        responseBuilder.payForm(payFormHtml).payUrl(payFormHtml);
-
-    }
-
-    /** 支付服务实例版本不一致时，仍按已保存的账户环境提交网页支付表单。 */
-    private String alignAlipayGateway(Long tenantId, String form) {
-        boolean sandbox = tenantRestaurantConfig.alipaySandboxEnabled(tenantId);
-        String aligned = AlipayGatewayForm.align(form, sandbox);
-        if (!aligned.equals(form)) {
-            log.warn("支付宝网页支付网关与租户配置不一致，已按账户环境修正, tenantId={}, sandbox={}", tenantId, sandbox);
-        }
-        return aligned;
-    }
-
-
-    /**
-     * 微信支付回调。路径租户只用于选择密钥，订单租户必须与之相同。
-     */
+    /** 只处理支付服务已验签的成功事件，订单归属和金额仍以餐厅数据库为准。 */
     @Override
-    public String handleWeChatPayNotify(Long tenantId, String requestBody, String signature, String timestamp, String nonce, String serial) {
-        if (tenantId == null) {
-            return "{\"code\": \"FAIL\", \"message\": \"缺少租户\"}";
+    public void applyVerifiedPaymentNotify(Long tenantId, PaymentNotifyResult notice) {
+        if (tenantId == null || notice == null || !Boolean.TRUE.equals(notice.getIsSuccess())
+                || notice.getTotalAmount() == null || notice.getTotalAmount() <= 0
+                || !"CNY".equalsIgnoreCase(notice.getCurrency())
+                || StrUtil.isBlank(notice.getOutTradeNo()) || StrUtil.isBlank(notice.getTransactionId())
+                || StrUtil.isBlank(notice.getPaymentType())) {
+            throw new BusinessException("支付回调数据不完整");
         }
-        try {
-            PaymentNotifyResult notifyResult = FeignResultUtil.unwrap(payFeignClient.parseWeChatNotify(
-                    WeChatNotifyParseDTO.builder()
-                            .tenantId(tenantId)
-                            .requestBody(requestBody)
-                            .signature(signature)
-                            .timestamp(timestamp)
-                            .nonce(nonce)
-                            .serial(serial)
-                            .build()));
-            if (!Boolean.TRUE.equals(notifyResult.getIsSuccess())) {
-                return "{\"code\": \"FAIL\", \"message\": \"验签或解密失败\"}";
-            }
-            if (!"CNY".equalsIgnoreCase(notifyResult.getCurrency()) || notifyResult.getTotalAmount() == null) {
-                throw new BusinessException("微信支付回调币种或金额缺失");
-            }
-            OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(notifyResult.getOutTradeNo()));
-            if (located == null || !tenantId.equals(located.getTenantId())) {
-                throw new BusinessException("微信支付回调订单归属校验失败");
-            }
-            TenantScope.run(tenantId, () -> {
-                RestaurantOrder callbackOrder = this.getById(located.getId());
-                if (callbackOrder == null || (StrUtil.isNotBlank(notifyResult.getAttach())
-                        && !paymentAttach(callbackOrder).equals(notifyResult.getAttach()))) {
-                    throw new BusinessException("微信支付回调订单归属校验失败");
-                }
-            });
-            boolean success = handlePaymentSuccess(notifyResult.getOutTradeNo(), notifyResult.getTransactionId(),
-                    PaymentTypeEnum.WECHAT, BigDecimal.valueOf(notifyResult.getTotalAmount(), 2), tenantId);
-            if (!success) {
-                throw new BusinessException("微信支付回调业务处理失败");
-            }
-            return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
-        } catch (Exception e) {
-            log.error("餐厅订单模块：处理微信支付回调失败", e);
-            throw e instanceof BusinessException businessException
-                    ? businessException : new BusinessException(e.getMessage());
+        PaymentTypeEnum type = switch (notice.getPaymentType()) {
+            case "WECHAT" -> PaymentTypeEnum.WECHAT;
+            case "ALIPAY" -> PaymentTypeEnum.ALIPAY;
+            default -> throw new BusinessException("支付回调渠道不支持");
+        };
+        OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(notice.getOutTradeNo()));
+        if (located == null || !tenantId.equals(located.getTenantId())) {
+            throw new BusinessException("支付回调订单归属校验失败");
         }
-    }
-
-    /**
-     * 支付宝支付回调。验签使用路径租户的应用公钥。
-     */
-    @Override
-    public String handleAlipayNotify(Long tenantId, Map<String, String> params) {
-        if (tenantId == null) {
-            return "failure";
-        }
-        try {
-            if (!Boolean.TRUE.equals(FeignResultUtil.unwrap(payFeignClient.verifyAlipayNotify(tenantId, params)))) {
-                log.warn("餐厅订单模块：支付宝回调验签失败");
-                return "failure";
+        TenantScope.run(tenantId, () -> {
+            RestaurantOrder callbackOrder = this.getById(located.getId());
+            if (callbackOrder == null || (StrUtil.isNotBlank(notice.getAttach())
+                    && !paymentAttach(callbackOrder).equals(notice.getAttach()))) {
+                throw new BusinessException("支付回调订单附加信息不匹配");
             }
-            String outTradeNo = params.get("out_trade_no");
-            String tradeNo = params.get("trade_no");
-            String tradeStatus = params.get("trade_status");
-            if (!"TRADE_SUCCESS".equals(tradeStatus) && !"TRADE_FINISHED".equals(tradeStatus)) {
-                return "success";
-            }
-            if (StrUtil.isBlank(params.get("total_amount"))) {
-                throw new BusinessException("支付宝回调金额缺失");
-            }
-            BigDecimal notifiedAmount = new BigDecimal(params.get("total_amount"));
-            OrderTenantRef located = TenantIgnore.get(() -> baseMapper.findTenantByOrderNo(outTradeNo));
-            if (located == null || !tenantId.equals(located.getTenantId())) {
-                throw new BusinessException("支付宝回调订单归属校验失败");
-            }
-            String passback = params.get("passback_params");
-            TenantScope.run(tenantId, () -> {
-                RestaurantOrder callbackOrder = this.getById(located.getId());
-                if (callbackOrder == null || (StrUtil.isNotBlank(passback)
-                        && !paymentAttach(callbackOrder).equals(passback))) {
-                    throw new BusinessException("支付宝回调订单归属校验失败");
-                }
-            });
-            boolean success = handlePaymentSuccess(outTradeNo, tradeNo, PaymentTypeEnum.ALIPAY, notifiedAmount, tenantId);
-            if (!success) {
-                throw new BusinessException("支付宝回调业务处理失败");
-            }
-            return "success";
-        } catch (Exception e) {
-            log.error("餐厅订单模块：处理支付宝回调失败", e);
-            throw e instanceof BusinessException businessException
-                    ? businessException : new BusinessException(e.getMessage());
+        });
+        if (!handlePaymentSuccess(notice.getOutTradeNo(), notice.getTransactionId(), type,
+                BigDecimal.valueOf(notice.getTotalAmount(), 2), tenantId)) {
+            throw new BusinessException("支付回调业务处理失败");
         }
     }
 
@@ -3478,44 +3259,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
     }
 
-    /** 微信退款回调只在核对退款单、原订单、金额和商户后入账。 */
+    /** 支付服务验签后，餐厅服务按退款单归属和金额完成入账。 */
     @Override
-    public String handleWeChatRefundNotify(Long tenantId, String requestBody, String signature,
-                                           String timestamp, String nonce, String serial) {
-        if (tenantId == null) {
-            return "{\"code\": \"FAIL\", \"message\": \"缺少租户\"}";
-        }
-        try {
-            PaymentRefundNotifyResult parsed = FeignResultUtil.unwrap(payFeignClient.parseWeChatRefundNotify(
-                    WeChatNotifyParseDTO.builder().tenantId(tenantId).requestBody(requestBody)
-                            .signature(signature).timestamp(timestamp).nonce(nonce).serial(serial).build()));
-            completeChannelRefundNotify(tenantId, parsed);
-            return "{\"code\": \"SUCCESS\", \"message\": \"成功\"}";
-        } catch (RuntimeException exception) {
-            log.error("微信退款回调处理失败", exception);
-            return "{\"code\": \"FAIL\", \"message\": \"处理失败\"}";
-        }
-    }
-
-    /** 支付宝退款通知验签后按退款单入账。 */
-    @Override
-    public String handleAlipayRefundNotify(Long tenantId, Map<String, String> params) {
-        if (tenantId == null) {
-            return "failure";
-        }
-        try {
-            PaymentRefundNotifyResult parsed = FeignResultUtil.unwrap(
-                    payFeignClient.parseAlipayRefundNotify(tenantId, params));
-            completeChannelRefundNotify(tenantId, parsed);
-            return "success";
-        } catch (RuntimeException exception) {
-            log.error("支付宝退款回调处理失败", exception);
-            return "failure";
-        }
-    }
-
-    private void completeChannelRefundNotify(Long tenantId, PaymentRefundNotifyResult parsed) {
-        if (parsed == null || !Boolean.TRUE.equals(parsed.getMerchantMatched())
+    public void applyVerifiedRefundNotify(Long tenantId, PaymentRefundNotifyResult parsed) {
+        if (tenantId == null || parsed == null || !Boolean.TRUE.equals(parsed.getMerchantMatched())
                 || StrUtil.isBlank(parsed.getOutRefundNo()) || StrUtil.isBlank(parsed.getOutTradeNo())) {
             throw new BusinessException("退款回调缺少原订单或退款单");
         }
@@ -3951,10 +3698,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         Map<String, Object> current = FeignResultUtil.unwrap(
                 payFeignClient.queryWeChatRefund(order.getTenantId(), refund.getRefundNo()));
         if (!Boolean.TRUE.equals(current.get("success"))) {
-            current = FeignResultUtil.unwrap(payFeignClient.refundWeChatTrade(
+            current = FeignResultUtil.unwrap(payFeignClient.refundRestaurantWeChatTrade(
                     order.getTenantId(), order.getOrderNo(), refund.getRefundNo(), toCentString(refund.getAmount()),
-                    String.valueOf(totalNumber.longValue()), StrUtil.blankToDefault(refund.getReason(), "订单退菜退款"),
-                    PaymentNotifyUrls.wechatRefund(tenantRestaurantConfig.paymentNotifyUrl(order.getTenantId(), "WECHAT"), order.getTenantId())));
+                    String.valueOf(totalNumber.longValue()), StrUtil.blankToDefault(refund.getReason(), "订单退菜退款")));
         }
         if (!Boolean.TRUE.equals(current.get("success"))) {
             return ChannelRefundState.FAILED;

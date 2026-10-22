@@ -5,6 +5,8 @@ import lombok.RequiredArgsConstructor;
 import org.hongtu.DTO.PaymentNotifyResult;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
+import org.hongtu.api.dto.PaymentCreateCommand;
+import org.hongtu.api.dto.PaymentCreateResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.params.AlipayBarCodePayParam;
 import org.hongtu.params.AlipayPayTradeParam;
@@ -12,6 +14,8 @@ import org.hongtu.params.AlipayTradeWapPayRequestParams;
 import org.hongtu.params.WeChatMicroPayParam;
 import org.hongtu.params.WeChatPayTradeParam;
 import org.hongtu.service.AlipayService;
+import org.hongtu.service.TenantPaymentClientFactory;
+import org.hongtu.service.PaymentCreationService;
 import org.hongtu.service.WeChatPayService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,6 +36,14 @@ import java.util.Map;
 public class InnerPayController {
     private final WeChatPayService weChatPayService;
     private final AlipayService alipayService;
+    private final TenantPaymentClientFactory paymentClients;
+    private final PaymentCreationService paymentCreationService;
+
+    /** 根据订单业务金额、渠道和场景生成支付调起数据。 */
+    @PostMapping("/create")
+    public Result<PaymentCreateResult> createPayment(@RequestBody PaymentCreateCommand command) {
+        return Result.success(paymentCreationService.create(command));
+    }
 
     /** 微信 JSAPI 预下单。 */
     @PostMapping("/wechat/jsapi")
@@ -107,6 +119,18 @@ public class InnerPayController {
                                                           @RequestParam("notifyUrl") String notifyUrl) {
         return Result.success(weChatPayService.refund(
                 tenantId, outTradeNo, outRefundNo, refundAmount, totalAmount, reason, notifyUrl));
+    }
+
+    /** 餐厅退款使用支付账户中的回调域名。 */
+    @PostMapping("/wechat/refund/restaurant")
+    public Result<Map<String, Object>> refundRestaurantWeChatTrade(@RequestParam("tenantId") Long tenantId,
+                                                                    @RequestParam("outTradeNo") String outTradeNo,
+                                                                    @RequestParam("outRefundNo") String outRefundNo,
+                                                                    @RequestParam("refundAmount") String refundAmount,
+                                                                    @RequestParam("totalAmount") String totalAmount,
+                                                                    @RequestParam(value = "reason", required = false) String reason) {
+        return Result.success(weChatPayService.refund(tenantId, outTradeNo, outRefundNo,
+                refundAmount, totalAmount, reason, paymentClients.wechatRefundNotifyUrl(tenantId)));
     }
 
     /** 查询微信退款，供订单服务核对金额和原订单。 */

@@ -51,6 +51,9 @@ public class WeChatPayTradeParam {
      */
     private String notifyUrl;
 
+    /** 回调所属业务；RESTAURANT 由支付服务按账户生成地址。 */
+    private String callbackOwner;
+
     /**
      * 订单附加信息，可空
      */
