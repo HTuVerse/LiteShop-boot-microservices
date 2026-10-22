@@ -56,6 +56,8 @@ public class SaTokenConfigure implements WebMvcConfigurer {
             "/points-mall/products",
             "/points-mall/wechat-pay/notify/**",
             "/points-mall/wechat-pay/refund-notify/**",
+            "/wallet/wechat-pay/notify/**",
+            "/wallet/alipay-pay/notify/**",
             "/images/**",  // 图片资源路径
             "/favicon.ico",
             "/inner/**"    // 服务间内部接口（外部访问已在网关层拦截）

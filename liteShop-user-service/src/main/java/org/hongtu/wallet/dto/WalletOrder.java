@@ -17,6 +17,8 @@ public class WalletOrder {
     private String status;
     private String requestKey;
     private String outTradeNo;
+    /** 首次发起的支付渠道：WECHAT 或 ALIPAY，防止跨渠道重复支付。 */
+    private String paymentChannel;
     private String paymentTxnId;
     private LocalDateTime expiresAt;
     private LocalDateTime paidAt;

@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
-/** 租户储值配置、会员钱包和微信充值接口。 */
+/** 租户储值配置、会员钱包和渠道充值接口。 */
 @RestController
 @RequestMapping("/wallet")
 public class WalletController {
@@ -85,6 +85,27 @@ public class WalletController {
         return Result.success(wallet.wechatPay(id, StpUtil.getLoginIdAsLong(), openId));
     }
 
+    /** 获取本人待付款订单的微信 H5 支付地址。 */
+    @PostMapping("/orders/{id}/wechat-h5-pay")
+    public Result<Map<String, String>> wechatH5Pay(@PathVariable Long id, HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        String ip = forwarded == null ? request.getRemoteAddr() : forwarded.split(",")[0].trim();
+        return Result.success(Map.of("payUrl", wallet.wechatH5Pay(id, StpUtil.getLoginIdAsLong(), ip)));
+    }
+
+    /** 获取本人待付款订单的支付宝小程序交易号。 */
+    @PostMapping("/orders/{id}/alipay-mini-pay")
+    public Result<Map<String, String>> alipayMiniPay(@PathVariable Long id, @RequestParam String authCode) {
+        return Result.success(Map.of("tradeNo", wallet.alipayMiniPay(id, StpUtil.getLoginIdAsLong(), authCode)));
+    }
+
+    /** 获取本人待付款订单的支付宝手机网站签名表单。 */
+    @PostMapping("/orders/{id}/alipay-wap-pay")
+    public Result<Map<String, String>> alipayWapPay(@PathVariable Long id,
+            @RequestParam(required = false) String returnUrl) {
+        return Result.success(Map.of("payUrl", wallet.alipayWapPay(id, StpUtil.getLoginIdAsLong(), returnUrl)));
+    }
+
     /** 主动查询真实支付结果并重试入账。 */
     @GetMapping("/orders/{id}/status")
     public Result<WalletOrder> status(@PathVariable Long id) {
@@ -105,6 +126,22 @@ public class WalletController {
             return Map.of("code", "SUCCESS", "message", "成功");
         } catch (Exception failure) {
             return Map.of("code", "FAIL", "message", "储值通知处理失败");
+        }
+    }
+
+    /** 支付宝储值通知先验签，再主动查渠道交易并核对金额。 */
+    @PostMapping("/alipay-pay/notify/{tenantId}")
+    @SaIgnore
+    public String alipayNotify(@PathVariable Long tenantId, HttpServletRequest request) {
+        try {
+            Map<String, String> params = new java.util.HashMap<>();
+            request.getParameterMap().forEach((key, values) -> {
+                if (values != null && values.length > 0) params.put(key, values[0]);
+            });
+            TenantScope.run(tenantId, () -> wallet.alipayNotify(tenantId, params));
+            return "success";
+        } catch (Exception failure) {
+            return "failure";
         }
     }
 }

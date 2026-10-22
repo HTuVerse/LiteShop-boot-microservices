@@ -30,6 +30,7 @@ import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -41,6 +42,19 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AlipayServiceImpl implements AlipayService {
     private final TenantPaymentClientFactory clients;
+
+    /** 钱包回调只能使用租户支付账户配置的同一公网源。 */
+    private String resolveNotifyUrl(Long tenantId, String requested) {
+        String configured = clients.notifyUrl(tenantId, "ALIPAY");
+        if (!StringUtils.hasText(requested)) return configured;
+        URI base = URI.create(configured);
+        URI target = URI.create(requested);
+        if (!"https".equalsIgnoreCase(target.getScheme()) || !base.getHost().equalsIgnoreCase(target.getHost())
+                || base.getPort() != target.getPort()
+                || !target.getPath().equals("/wallet/alipay-pay/notify/" + tenantId))
+            throw new BusinessException("支付宝回调地址无效");
+        return requested;
+    }
 
     @Override
     public String createMiniPay(AlipayMiniPayParam param) {
@@ -60,7 +74,7 @@ public class AlipayServiceImpl implements AlipayService {
                 throw new BusinessException("获取支付宝用户身份失败");
 
             var request = new AlipayTradeCreateRequest();
-            request.setNotifyUrl(clients.notifyUrl(param.getTenantId(), "ALIPAY"));
+            request.setNotifyUrl(resolveNotifyUrl(param.getTenantId(), param.getNotifyUrl()));
             Map<String, Object> bizContent = new HashMap<>();
             bizContent.put("out_trade_no", param.getOutTradeNo());
             bizContent.put("total_amount", param.getTotalAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString());
@@ -93,7 +107,7 @@ public class AlipayServiceImpl implements AlipayService {
         }
         var client = clients.alipay(wapPayRequest.getTenantId());
         AlipayTradeWapPayRequest request = new AlipayTradeWapPayRequest();
-        request.setNotifyUrl(clients.notifyUrl(wapPayRequest.getTenantId(), "ALIPAY"));
+        request.setNotifyUrl(resolveNotifyUrl(wapPayRequest.getTenantId(), wapPayRequest.getNotifyUrl()));
         if (StringUtils.hasText(wapPayRequest.getReturnUrl())) {
             request.setReturnUrl(wapPayRequest.getReturnUrl());
         }
