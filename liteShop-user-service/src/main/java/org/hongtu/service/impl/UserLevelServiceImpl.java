@@ -18,6 +18,7 @@ public class UserLevelServiceImpl extends ServiceImpl<UserLevelMapper, UserLevel
     @Resource SysUserMapper sysUserMapper;
     @Resource UserLevelMapper userLevelMapper;
     @Resource UserLevelSchemeService schemes;
+    @Resource UserExpRecordService expRecords;
 
     @Override public Result listLevels() { return Result.success(baseMapper.listLevels()); }
     @Override public Result listEnabledLevels() { return Result.success(baseMapper.listEnabledLevels()); }
@@ -85,8 +86,10 @@ public class UserLevelServiceImpl extends ServiceImpl<UserLevelMapper, UserLevel
         schemes.lockTenant(); var user = lockedUser(userId);
         var level = userLevelMapper.getLevelByLevelCode(levelCode);
         if (level == null) throw new BusinessException(400,"当前租户启用方案内没有该等级");
+        int oldExp = user.getExp() == null ? 0 : user.getExp();
         user.setLevel(levelCode); user.setExp(level.getRequiredExp()); user.setUpdateTime(LocalDateTime.now());
         if (sysUserMapper.updateById(user) != 1) throw new IllegalStateException("更新会员等级失败");
+        expRecords.record(userId, oldExp, level.getRequiredExp(), "LEVEL_ADJUST", null, "管理员调整会员等级");
         return Result.success("用户等级更新成功");
     }
     private SysUser lockedUser(Long id) {
@@ -109,6 +112,8 @@ public class UserLevelServiceImpl extends ServiceImpl<UserLevelMapper, UserLevel
         if(level==null) throw new BusinessException(400,"当前租户尚未配置有效的会员等级方案");
         user.setExp(nextExp); user.setLevel(level.getLevelCode()); user.setUpdateTime(LocalDateTime.now());
         if(sysUserMapper.updateById(user)!=1)throw new IllegalStateException("更新经验值失败");
+        expRecords.record(id, oldExp, nextExp, "MANUAL", null,
+                reason == null || reason.isBlank() ? "管理员调整经验" : reason);
         Map<String,Object> result=new HashMap<>();result.put("userId",id);result.put("oldExp",oldExp);
         result.put(increase?"addedExp":"decreasedExp",increase?exp:oldExp-nextExp);result.put("newExp",nextExp);
         result.put("reason",reason);result.put("currentLevel",level);

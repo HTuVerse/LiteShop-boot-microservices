@@ -29,13 +29,15 @@ public class MemberOrderRewardService {
     private final SysUserMapper users;
     private final UserLevelMapper levels;
     private final UserPointsRecordMapper pointsRecords;
+    private final UserExpRecordService expRecords;
 
     public MemberOrderRewardService(JdbcTemplate jdbc, SysUserMapper users, UserLevelMapper levels,
-                                    UserPointsRecordMapper pointsRecords) {
+                                    UserPointsRecordMapper pointsRecords, UserExpRecordService expRecords) {
         this.jdbc = jdbc;
         this.users = users;
         this.levels = levels;
         this.pointsRecords = pointsRecords;
+        this.expRecords = expRecords;
     }
 
     /** 同一订单串行入账；配置和会员等级在首次发放时固化，之后退款按该快照重算。 */
@@ -78,6 +80,10 @@ public class MemberOrderRewardService {
             if (level == null) throw new BusinessException(409, "当前租户尚未配置有效的会员等级方案");
             user.setExp(newExp).setPoints(newPoints).setLevel(level.getLevelCode()).setUpdateTime(LocalDateTime.now());
             if (users.updateById(user) != 1) throw new IllegalStateException("更新会员奖励失败");
+            if (newExp != currentExp)
+                expRecords.record(user.getId(), currentExp, newExp,
+                        expDelta > 0 ? "ORDER_REWARD" : "ORDER_REFUND", request.orderNo(),
+                        expDelta > 0 ? "餐饮订单完成奖励" : "餐饮订单退款撤回");
             if (pointsDelta != 0) recordPoints(user, currentPoints, newPoints, pointsDelta, request.orderNo());
         }
         jdbc.update("UPDATE member_order_reward SET remaining_amount=?,awarded_exp=?,awarded_points=?,updated_at=NOW() "
