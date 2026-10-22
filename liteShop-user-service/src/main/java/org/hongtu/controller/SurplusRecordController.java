@@ -1,6 +1,7 @@
 package org.hongtu.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import org.hongtu.Result.Result;
 import org.hongtu.service.SurplusRecordService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,5 +39,16 @@ public class SurplusRecordController {
     ) {
         Long userId = StpUtil.getLoginIdAsLong();
         return surplusRecordService.getMyRecordPage(userId, pageNum, pageSize, type);
+    }
+
+    /** 管理员分页查询指定会员的余额变动明细。 */
+    @GetMapping("/admin/list")
+    @SaCheckPermission(value = "system:user", orRole = "SUPER_ADMIN")
+    public Result getUserList(
+            @RequestParam Long userId,
+            @RequestParam(defaultValue = "1") Integer pageNum,
+            @RequestParam(defaultValue = "10") Integer pageSize
+    ) {
+        return surplusRecordService.getMyRecordPage(userId, pageNum, pageSize, null);
     }
 }
