@@ -13,8 +13,10 @@ import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.MallPointsChangeDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
+import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.dto.UserBasicDTO;
 import org.hongtu.service.SysUserService;
+import org.hongtu.service.MemberOrderRewardService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.impl.InnerBalanceService;
@@ -63,6 +65,9 @@ public class InnerUserController {
 
     @Resource
     private MallPointsAccountService mallPointsAccountService;
+
+    @Resource
+    private MemberOrderRewardService memberOrderRewardService;
 
     @Resource
     private SysUserStoreService userStoreService;
@@ -151,6 +156,13 @@ public class InnerUserController {
     @PostMapping("/points/mall-change")
     public Result<Integer> changeMallPoints(@RequestBody MallPointsChangeDTO dto) {
         return Result.success(mallPointsAccountService.change(dto));
+    }
+
+    /** 同步餐饮订单完成奖励或退款后的撤回金额。 */
+    @PostMapping("/member-reward/sync")
+    public Result<Void> syncMemberReward(@RequestBody MemberRewardSyncDTO dto) {
+        memberOrderRewardService.sync(dto);
+        return Result.success();
     }
 
     /**

@@ -11,6 +11,9 @@ public interface LocalOutboxService {
      */
     void executeRemote(String eventType, String eventId, String payload, Runnable remoteCall);
 
+    /** 与订单状态同事务记录会员奖励同步事件，提交后投递，失败由对账任务重试。 */
+    void enqueueMemberReward(Long orderId, String eventId);
+
     /** 扫描超时的 SENT/PENDING 记录并补偿或重试。 */
     void reconcile();
 }

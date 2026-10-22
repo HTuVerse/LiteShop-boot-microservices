@@ -11,6 +11,7 @@ import org.hongtu.api.dto.AiAdvisorMessageDTO;
 import org.hongtu.api.dto.AiAdvisorSessionDTO;
 import org.hongtu.api.dto.AiPageDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
+import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.dto.UserBasicDTO;
 import org.hongtu.api.dto.TenantResourceLibraryDTO;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -66,6 +67,10 @@ public interface UserFeignClient {
     /** 商城兑换积分扣减及失败补偿，按订单和动作幂等。 */
     @PostMapping("/inner/user/points/mall-change")
     Result<Integer> changeMallPoints(@RequestBody MallPointsChangeDTO dto);
+
+    /** 根据已完成餐饮订单的最新实付金额幂等同步经验和积分。 */
+    @PostMapping("/inner/user/member-reward/sync")
+    Result<Void> syncMemberReward(@RequestBody MemberRewardSyncDTO dto);
 
     /**
      * 余额变动（扣减/退款/充值），user-service 本地事务保证原子性

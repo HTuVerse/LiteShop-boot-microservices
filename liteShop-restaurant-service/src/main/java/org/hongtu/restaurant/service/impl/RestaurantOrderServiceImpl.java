@@ -615,7 +615,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             order.setDiningEndTime(LocalDateTime.now());
         }
 
-        return this.updateById(order);
+        boolean updated = this.updateById(order);
+        if (updated && status == OrderStatusEnum.COMPLETED && order.getUserId() != null)
+            localOutboxService.enqueueMemberReward(order.getId(), "MEMBER_REWARD:" + order.getId() + ":COMPLETE");
+        return updated;
     }
 
     /** 仅取消尚未付款生效的线上订单；关单不明确时进入对账。 */
@@ -1573,6 +1576,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             order.setCouponTypes(mergedTypes);
             order.setUpdatedAt(LocalDateTime.now());
             this.updateById(order);
+
             verifyCouponsWithCompensation(addItemUserCouponIds, order.getId());
         }
 
@@ -2168,6 +2172,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             order.setUpdatedAt(LocalDateTime.now());
             commitOrderSales(order);
             this.updateById(order);
+            if (order.getUserId() != null)
+                localOutboxService.enqueueMemberReward(order.getId(), "MEMBER_REWARD:" + order.getId() + ":COMPLETE");
 
             // 4. 结束会话并更新桌位状态为空闲
             tableSessionService.endSession(sessionNo, serverPayable);
@@ -3991,6 +3997,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     full ? OrderStatusEnum.CANCELLED.getCode() : order.getStatus().getCode(),
                     full ? "退菜后订单金额为0，自动取消" : order.getCancelReason(),
                     full ? LocalDateTime.now() : order.getCancelTime());
+            if (order.getUserId() != null)
+                localOutboxService.enqueueMemberReward(order.getId(), "MEMBER_REWARD:" + order.getId() + ":REFUND:" + refund.getId());
         } else if (full) {
             baseMapper.markClosedIfUnpaid(order.getId(), "退菜后订单金额为0，自动取消", LocalDateTime.now());
         }

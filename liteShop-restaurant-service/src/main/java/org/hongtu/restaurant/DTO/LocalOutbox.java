@@ -25,7 +25,7 @@ public class LocalOutbox {
     /** 业务幂等键，同一事件重复投递不得产生第二次副作用。 */
     private String eventId;
 
-    /** COUPON_VERIFY、COUPON_RESTORE、BALANCE_CHANGE。 */
+    /** COUPON_VERIFY、COUPON_RESTORE、BALANCE_CHANGE、MEMBER_REWARD_SYNC。 */
     private String eventType;
 
     private String payload;

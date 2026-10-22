@@ -4,15 +4,30 @@ import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
 import org.hongtu.DTO.*;
 import org.hongtu.service.UserLevelSchemeService;
+import org.hongtu.service.MemberRewardRuleService;
 import org.springframework.web.bind.annotation.*;
 import java.util.*;
 @RestController @RequestMapping("/user-level/schemes")
 @SaCheckPermission(value="system:level", orRole="SUPER_ADMIN")
 public class UserLevelSchemeController {
     @Resource private UserLevelSchemeService service;
+    @Resource private MemberRewardRuleService rewardRules;
     public record SchemeRequest(String name, String description, Long copyFromId) {}
     @GetMapping public Result list() { return Result.success(Map.of("schemes",service.owned(),"templates",service.templates())); }
     @GetMapping("/{id}/levels") public Result levels(@PathVariable Long id) { return Result.success(service.schemeLevels(id)); }
+    /** 查看指定等级方案的订单经验积分规则。 */
+    @GetMapping("/{id}/reward-rule")
+    public Result rewardRule(@PathVariable Long id) {
+        return Result.success(rewardRules.get(id, service.schemeLevels(id)));
+    }
+    /** 保存方案基础换算值和每个等级的获取倍率。 */
+    @PutMapping("/{id}/reward-rule")
+    @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:level:scheme-edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
+    public Result saveRewardRule(@PathVariable Long id, @RequestBody MemberRewardRuleService.RuleConfig body) {
+        var scheme = service.writable(id);
+        rewardRules.save(id, scheme.getTenantId(), service.schemeLevels(id), body);
+        return Result.success("经验积分规则已保存");
+    }
     @PostMapping @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:level:scheme-add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result create(@RequestBody SchemeRequest body) { return Result.success(service.create(body.name(),body.description(),body.copyFromId())); }
     @PutMapping("/{id}") @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:level:scheme-edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")

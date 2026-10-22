@@ -19,6 +19,7 @@ public class UserLevelSchemeService {
     @Resource private UserLevelMapper levels;
     @Resource private UserLevelTemplateGrantMapper grants;
     @Resource private SysTenantMapper tenants;
+    @Resource private MemberRewardRuleService rewardRules;
 
     public List<UserLevelScheme> owned() {
         Long tenant = TenantContext.getTenantIdOrNull();
@@ -142,6 +143,7 @@ public class UserLevelSchemeService {
             row.setId(null).setTenantId(tenant).setSchemeId(scheme.getId()).setCreateTime(now).setUpdateTime(now);
             if (levels.insert(row) != 1) throw new IllegalStateException("复制会员等级失败");
         }
+        if (copyFromId != null) rewardRules.copy(copyFromId, scheme.getId(), tenant);
         return scheme;
     }
     @Transactional(rollbackFor = Exception.class)
@@ -209,6 +211,7 @@ public class UserLevelSchemeService {
         if (Integer.valueOf(1).equals(scheme.getIsActive()) || Integer.valueOf(1).equals(scheme.getIsDefault()))
             throw new BusinessException(409,"当前启用方案或默认模板不能删除");
         if (scheme.getTenantId() == null) grants.deleteForTemplate(id);
+        rewardRules.delete(id);
         levels.delete(new LambdaQueryWrapper<UserLevel>().eq(UserLevel::getSchemeId,id));
         schemes.deleteById(id);
     }

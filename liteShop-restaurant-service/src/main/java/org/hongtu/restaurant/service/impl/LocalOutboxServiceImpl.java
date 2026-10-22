@@ -8,11 +8,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.api.client.CouponFeignClient;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.dto.BalanceChangeDTO;
+import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.restaurant.DAO.LocalOutboxMapper;
 import org.hongtu.restaurant.DAO.RestaurantOrderMapper;
 import org.hongtu.restaurant.DTO.LocalOutbox;
 import org.hongtu.restaurant.DTO.RestaurantOrder;
+import org.hongtu.restaurant.enums.OrderStatusEnum;
+import org.hongtu.restaurant.enums.PaymentStatusEnum;
 import org.hongtu.restaurant.service.LocalOutboxService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
@@ -27,6 +30,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -73,10 +77,74 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
     }
 
     @Override
+    public void enqueueMemberReward(Long orderId, String eventId) {
+        RestaurantOrder order = restaurantOrderMapper.selectById(orderId);
+        if (order == null || order.getUserId() == null) return;
+        LocalOutbox event = new LocalOutbox();
+        event.setEventId(eventId);
+        event.setEventType("MEMBER_REWARD_SYNC");
+        event.setPayload(JSONUtil.createObj().set("orderId", orderId).toString());
+        event.setStatus("PENDING");
+        event.setAttempts(0);
+        event.setCreatedAt(LocalDateTime.now());
+        event.setUpdatedAt(LocalDateTime.now());
+        try {
+            localOutboxMapper.insert(event);
+        } catch (DuplicateKeyException duplicate) {
+            return;
+        }
+        Long tenantId = TenantContext.getTenantId();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() {
+                    TenantScope.run(tenantId, () -> deliverMemberReward(eventId));
+                }
+            });
+        } else {
+            deliverMemberReward(eventId);
+        }
+    }
+
+    /** 始终读取订单最新实付金额，旧发件箱重试不会覆盖后续退款状态。 */
+    private void deliverMemberReward(String eventId) {
+        LocalOutbox event = find(eventId);
+        if (event == null || "DONE".equals(event.getStatus())) return;
+        try {
+            Long orderId = JSONUtil.parseObj(event.getPayload()).getLong("orderId");
+            RestaurantOrder order = restaurantOrderMapper.selectById(orderId);
+            if (order == null || order.getUserId() == null) {
+                saveStatus(null, eventId, null, "DONE", null);
+                return;
+            }
+            boolean rewarded = order.getStatus() == OrderStatusEnum.COMPLETED
+                    && (order.getPaymentStatus() == PaymentStatusEnum.PAID
+                    || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND);
+            BigDecimal amount = rewarded && order.getActualAmount() != null
+                    ? order.getActualAmount().max(BigDecimal.ZERO) : BigDecimal.ZERO;
+            FeignResultUtil.check(userFeignClient.syncMemberReward(
+                    new MemberRewardSyncDTO(order.getOrderNo(), order.getUserId(), amount)));
+            saveStatus(null, eventId, null, "DONE", null);
+        } catch (RuntimeException exception) {
+            saveStatus(null, eventId, null, "PENDING", exception.getMessage());
+            log.error("会员订单奖励同步失败，等待重试: eventId={}", eventId, exception);
+        }
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void reconcile() {
+        List<LocalOutbox> rewards = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
+                .eq(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
+                .eq(LocalOutbox::getStatus, "PENDING")
+                .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
+                .last("LIMIT 100")));
+        for (LocalOutbox event : rewards) {
+            if (event.getTenantId() != null)
+                TenantScope.run(event.getTenantId(), () -> deliverMemberReward(event.getEventId()));
+        }
         List<LocalOutbox> stuck = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .in(LocalOutbox::getStatus, "SENT", "PENDING")
+                .ne(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
                 .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
                 .lt(LocalOutbox::getAttempts, MAX_ATTEMPTS)
                 .last("LIMIT 100")));
