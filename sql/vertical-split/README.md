@@ -40,8 +40,15 @@
 32. `54_payment_account_menu.sql`（创建仅租户总部可见的支付账户菜单并授权）
 33. `57_saas_menu_restructure.sql`（将套餐与权益提升为顶级菜单，并拆分套餐、功能和租户权益子菜单）
 34. `46_seed_current_demo.sql`（清理全部租户及非必要平台用户，并生成当前功能模拟数据）
+35. `71_platform_service_config.sql`（复用 `sys_website_config` 第 2 行保存平台消息配置、第 3 行保存文件配置，并添加记录用途字段）
+
+存量库升级时，支付账户还需按历史顺序执行 `52_tenant_payment_account.sql`、`53_tenant_payment_account_v2_key.sql`；小程序凭据执行 `69_tenant_miniapp_credential.sql`，用户库执行 `70_customer_profile_region.sql`，平台运行参数执行 `71_platform_service_config.sql`，最后执行 `72_remove_sys_config.sql`。`72` 将旧小程序展示、H5、打印及支付回调迁入新表后删除 `sys_config`。全新库的 `01`、`06` 已包含 `53`、`69`、`70`、`72` 所需结构，不要重复执行这些存量升级脚本。
 
 优惠券服务升级到明确配对叠加及长期有效时，存量库先执行 `81_coupon_stack_and_long_term.sql`，再启动新版优惠券服务；新建库的 `03_liteshop_coupon.sql` 已包含对应结构。旧券不会自动产生叠加配对，需在后台逐张配置。
+
+积分商城需依次执行 `84_points_mall.sql`、`85_mall_mixed_payment.sql`、`88_mall_categories.sql`。88 号迁移新增租户自定义分类和商品分类字段；旧商品保持未分类，仍可在小程序“全部”中展示，后台编辑商品时可为其归类。
+
+已经部署过含图片、主题色、小程序普通链接前缀和二维码默认平台列的旧版 `tenant_miniapp_credential` 时，额外执行 `73_remove_miniapp_visual_config.sql` 删除这些列。新版 `06` 和 `72` 不创建这些列，不执行 `73`。
 
 前序脚本已在独立 MySQL 8.4 实例验证；新增的 48 号迁移需在目标环境执行后验收。新版 `01` 已包含账号初始化需要的多租户字段和门店授权表；新版 `02` 已包含连锁菜单、定价、加退菜及日汇总结构，空库不要再执行 `30`、`31`、`35`、`41`、`42` 等重复建表/加列迁移。
 48 号迁移不会改变旧订阅绑定的套餐版本。已有商业版或企业版租户需由运营分配新版本，或单独加购；加购项价格留空，由运营定价并在线下完成计费后分配。
@@ -117,6 +124,7 @@
 
 - 已执行旧版“餐台控制台”菜单的环境，发布本版前执行 `18_merge_table_console_into_cashier.sql`，将原角色授权迁移至“餐桌收银”并移除重复入口。
 - 已有 `table_info` 数据的环境执行 `19_table_reservation_details.sql`，补充当前预留的手机号、预计到店时间和备注字段；空库初始化已包含这些字段，无需重复执行。
+- 已有餐饮库在启用桌位码自动生成前执行 `74_table_qr_columns.sql`；新建库的 `02_liteshop_restaurant.sql` 已包含这些字段。
 - 部署统一订单状态的餐饮服务前执行 `29_unify_order_status.sql`，将旧的订单状态 `0-未支付` 迁移为 `1-已下单`；支付结果仍以 `payment_status` 为准。
 - 部署连锁菜单第一阶段前执行 `30_chain_menu_phase1.sql`，新增总部/门店菜品来源、门店价格与库存覆盖、门店上下架/清退和菜单策略，并自动回填存量菜品关系。
 - 第一阶段完成后执行 `31_chain_menu_phase2.sql`，增加门店分组、菜单变更审批、定时生效、审计记录和配置版本。
@@ -142,6 +150,7 @@
 - 部署 P1 业务加固时，先在餐饮库执行 `52_order_p1_hardening.sql`（下单幂等、取餐码唯一、打印任务），再在优惠券库执行 `53_coupon_p1_hardening.sql`（订单核销绑定、消息消费幂等）。RabbitMQ 现有 `coupon.issue.queue` 需按新配置重建为带死信参数的队列后再启动消费者。
 - 部署 P2 查询优化时，在餐饮库执行 `54_restaurant_p2_indexes.sql`，在优惠券库执行 `55_coupon_p2_indexes.sql`；上线后结合真实慢 SQL 和 `EXPLAIN` 复核索引使用情况。
 - 启用租户直连支付前，在配置库执行 `52_tenant_payment_account.sql`，在用户库执行 `54_payment_account_menu.sql`，并为配置服务设置固定的 `CONFIG_CREDENTIAL_ENCRYPTION_KEY`。微信、支付宝支付回调地址还需分别配置为 HTTPS 公网地址；租户总部保存并启用渠道后，其下门店自动沿用且无权查看密钥。
+- 上线会员成长明细前，在用户库执行 `93_user_exp_records.sql`，创建经验流水表并为已有经验的会员写入期初记录；随后同步部署用户服务和包含 `/user-exp-record/**` 的网关路由。
 - 同步升级顾客点餐端：桌台列表/详情返回的 `scanToken` 必须随首次 `/table-session/scan` 请求提交；扫码成功后保存返回的 `sessionToken`，后续共享购物车、会话订单接口使用 `X-Table-Session-Token` 请求头，WebSocket 使用 `sessionNo` 与 `token` 查询参数。旧二维码若未携带 `scanToken` 将被拒绝，需重新生成。
 - 需要重置本地测试环境时，执行 `46_seed_current_demo.sql`；`32_cleanup_old_test_tenants.sql` 仅用于需要清理测试租户但不生成新数据的场景。
 

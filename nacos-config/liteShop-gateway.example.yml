@@ -15,7 +15,7 @@ spring:
             - id: user-service
               uri: lb://liteShop-user-service
               predicates:
-                - Path=/user/**,/wallet/**,/surplus-record/**,/sys-role/**,/user-level/**,/sys-role-permission/**,/sys-permission/**,/user-points-record/**,/sys-user-role/**,/sys-user-store/**,/sys-tenant/**,/saas/**
+                - Path=/user/**,/wallet/**,/surplus-record/**,/sys-role/**,/user-level/**,/sys-role-permission/**,/sys-permission/**,/user-points-record/**,/user-exp-record/**,/sys-user-role/**,/sys-user-store/**,/sys-tenant/**,/saas/**
             - id: coupon-service
               uri: lb://liteShop-coupon-service
               predicates:
