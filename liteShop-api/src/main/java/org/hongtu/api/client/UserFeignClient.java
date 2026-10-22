@@ -81,6 +81,18 @@ public interface UserFeignClient {
     @PostMapping("/inner/user/balance/change")
     Result<BigDecimal> changeBalance(@RequestBody BalanceChangeDTO dto);
 
+    /** 查询指定余额流水是否已实际入账，供跨服务对账。 */
+    @GetMapping("/inner/user/balance/applied")
+    Result<Boolean> balanceChangeApplied(@RequestParam("orderNo") String orderNo,
+                                         @RequestParam("userId") Long userId,
+                                         @RequestParam("type") Integer type);
+
+    /** 回滚已提交的退款入账，恢复对应的赠送余额分量。 */
+    @PostMapping("/inner/user/balance/reverse-credit")
+    Result<Boolean> reverseBalanceCredit(@RequestParam("orderNo") String orderNo,
+                                         @RequestParam("userId") Long userId,
+                                         @RequestParam("reversalNo") String reversalNo);
+
     /**
      * 查询用户角色码列表（供各服务 @SaCheckRole 使用）
      */

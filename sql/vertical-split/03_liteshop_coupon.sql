@@ -154,6 +154,8 @@ CREATE TABLE `coupon_message_receipt` (
   `event_id` varchar(64) NOT NULL COMMENT '业务事件唯一键',
   `tenant_id` bigint NOT NULL COMMENT '租户ID',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `lottery_notified_at` datetime NULL COMMENT '抽奖服务领取通知确认时间，空表示待重试',
   PRIMARY KEY (`event_id`),
-  INDEX `idx_tenant_created`(`tenant_id`, `created_at`)
+  INDEX `idx_tenant_created`(`tenant_id`, `created_at`),
+  INDEX `idx_lottery_notice`(`lottery_notified_at`, `created_at`)
 ) ENGINE = InnoDB COMMENT = '优惠券消息消费幂等凭据';

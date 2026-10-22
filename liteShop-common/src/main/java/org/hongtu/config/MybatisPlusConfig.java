@@ -48,8 +48,22 @@ public class MybatisPlusConfig {
             @Value("${liteshop.id.worker-id:0}") long workerId,
             @Value("${liteshop.id.datacenter-id:0}") long datacenterId) {
         if (leaseEnabled) {
-            SnowflakeWorkerLease.Node node = SnowflakeWorkerLease.acquire(dataSource);
-            return new DefaultIdentifierGenerator(node.workerId(), node.datacenterId());
+            SnowflakeWorkerLease.Lease lease = SnowflakeWorkerLease.acquire(dataSource);
+            SnowflakeWorkerLease.Node node = lease.node();
+            DefaultIdentifierGenerator generator = new DefaultIdentifierGenerator(node.workerId(), node.datacenterId());
+            return new IdentifierGenerator() {
+                @Override
+                public Number nextId(Object entity) {
+                    lease.requireValid();
+                    return generator.nextId(entity);
+                }
+
+                @Override
+                public String nextUUID(Object entity) {
+                    lease.requireValid();
+                    return generator.nextUUID(entity);
+                }
+            };
         }
         if (workerId < 0 || workerId > 31 || datacenterId < 0 || datacenterId > 31) {
             throw new IllegalArgumentException("雪花ID worker-id/datacenter-id 必须在 0~31 之间");

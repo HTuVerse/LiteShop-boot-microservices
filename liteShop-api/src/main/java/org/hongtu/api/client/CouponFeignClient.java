@@ -34,6 +34,16 @@ public interface CouponFeignClient {
     Result<Void> restoreCouponOnCancel(@RequestParam("userCouponId") Long userCouponId,
                                        @RequestParam("orderId") Long orderId);
 
+    /** 对账查询指定订单的核销状态：ACTIVE、RESTORED 或 ABSENT。 */
+    @GetMapping("/inner/coupon/verification-state")
+    Result<String> verificationState(@RequestParam("userCouponId") Long userCouponId,
+                                     @RequestParam("orderId") Long orderId);
+
+    /** 订单事务回滚时恢复原订单核销，不重新判断券当前有效期。 */
+    @PostMapping("/inner/coupon/undo-restore")
+    Result<Void> undoRestore(@RequestParam("userCouponId") Long userCouponId,
+                             @RequestParam("orderId") Long orderId);
+
     /**
      * 校验多张券的叠加/互斥规则（替代原 UserCouponService.validateCouponStackRules）
      */

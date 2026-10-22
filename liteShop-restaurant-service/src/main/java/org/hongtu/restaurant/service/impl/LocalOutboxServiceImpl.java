@@ -40,8 +40,6 @@ import java.util.List;
 @Service
 public class LocalOutboxServiceImpl implements LocalOutboxService {
 
-    private static final int MAX_ATTEMPTS = 8;
-
     @Resource
     private LocalOutboxMapper localOutboxMapper;
     @Resource
@@ -61,18 +59,26 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
     @Override
     public void executeRemote(String eventType, String eventId, String payload, Runnable remoteCall) {
         LocalOutbox existing = find(eventId);
-        if (existing != null && ("DONE".equals(existing.getStatus()) || "SENT".equals(existing.getStatus())
-                || "COMPENSATED".equals(existing.getStatus()))) {
+        if (existing != null && ("DONE".equals(existing.getStatus()) || Boolean.TRUE.equals(existing.getCommitted()))) {
             return;
+        }
+        if (existing != null && !"COMPENSATED".equals(existing.getStatus())) {
+            throw new IllegalStateException("上次跨服务操作仍在对账，请稍后重试");
         }
         saveStatus(eventType, eventId, payload, "PENDING", null);
         try {
             remoteCall.run();
         } catch (RuntimeException exception) {
-            saveStatus(eventType, eventId, payload, "FAILED", exception.getMessage());
+            // Feign 超时无法证明远端失败，继续对账而不能终止事件。
+            saveStatus(eventType, eventId, payload, "UNKNOWN", exception.getMessage());
             throw exception;
         }
         saveStatus(eventType, eventId, payload, "SENT", null);
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            if (localOutboxMapper.markCommitted(TenantContext.getTenantId(), eventId) != 1) {
+                throw new IllegalStateException("发件箱事务提交标记失败");
+            }
+        }
         registerDoneAfterCommit(eventId);
     }
 
@@ -143,10 +149,10 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 TenantScope.run(event.getTenantId(), () -> deliverMemberReward(event.getEventId()));
         }
         List<LocalOutbox> stuck = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
-                .in(LocalOutbox::getStatus, "SENT", "PENDING")
+                .in(LocalOutbox::getStatus, "SENT", "PENDING", "UNKNOWN")
                 .ne(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
                 .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
-                .lt(LocalOutbox::getAttempts, MAX_ATTEMPTS)
+                .orderByAsc(LocalOutbox::getUpdatedAt)
                 .last("LIMIT 100")));
         for (LocalOutbox event : stuck) {
             if (event.getTenantId() == null) {
@@ -157,54 +163,104 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
     }
 
     private void reconcileOne(LocalOutbox event) {
-        boolean orderExists = orderExists(event.getPayload());
-        if ("SENT".equals(event.getStatus()) && orderExists) {
+        if (Boolean.TRUE.equals(event.getCommitted())) {
             saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "DONE", null);
             return;
         }
-        if ("SENT".equals(event.getStatus())) {
-            compensate(event);
-            return;
-        }
-        saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "FAILED", "远程调用未确认");
+        compensate(event);
     }
 
     private void compensate(LocalOutbox event) {
         try {
             JSONObject payload = JSONUtil.parseObj(event.getPayload());
             if ("COUPON_VERIFY".equals(event.getEventType())) {
-                FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(
+                String state = FeignResultUtil.unwrap(couponFeignClient.verificationState(
                         payload.getLong("userCouponId"), payload.getLong("orderId")));
-            } else if ("BALANCE_CHANGE".equals(event.getEventType()) && Integer.valueOf(4).equals(payload.getInt("type"))) {
-                FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
-                        .userId(payload.getLong("userId"))
-                        .amount(payload.getBigDecimal("amount"))
-                        .type(3)
-                        .orderNo(payload.getStr("orderNo") + ":outbox")
-                        .operateUserId(payload.getLong("userId"))
-                        .build()));
+                if ("ACTIVE".equals(state)) {
+                    FeignResultUtil.check(couponFeignClient.restoreCouponOnCancel(
+                            payload.getLong("userCouponId"), payload.getLong("orderId")));
+                } else if ("ABSENT".equals(state)) {
+                    // 查询时远端请求仍可能在途，保留事件直至观察到确定结果。
+                    throw new IllegalStateException("优惠券核销尚未确认，等待下次对账");
+                } else if (!"RESTORED".equals(state)) {
+                    throw new IllegalStateException("未知优惠券核销状态: " + state);
+                }
             } else if ("COUPON_RESTORE".equals(event.getEventType())) {
-                saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "DONE", null);
+                String state = FeignResultUtil.unwrap(couponFeignClient.verificationState(
+                        payload.getLong("userCouponId"), payload.getLong("orderId")));
+                if ("RESTORED".equals(state)) {
+                    FeignResultUtil.check(couponFeignClient.undoRestore(
+                            payload.getLong("userCouponId"), payload.getLong("orderId")));
+                } else if ("ACTIVE".equals(state)) {
+                    // 原返券请求可能晚于状态查询完成，不能将未执行误记为已补偿。
+                    throw new IllegalStateException("优惠券返还尚未确认，等待下次对账");
+                } else if (!"ABSENT".equals(state)) {
+                    throw new IllegalStateException("未知优惠券核销状态: " + state);
+                }
+            } else if ("BALANCE_CHANGE".equals(event.getEventType())) {
+                compensateBalance(event, payload);
                 return;
             } else {
-                saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "FAILED", "没有自动补偿策略");
+                saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "NEEDS_REVIEW", "没有自动补偿策略");
                 return;
             }
             saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "COMPENSATED", null);
         } catch (RuntimeException exception) {
-            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "FAILED", exception.getMessage());
+            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "UNKNOWN", exception.getMessage());
             log.error("发件箱补偿失败: eventId={}", event.getEventId(), exception);
         }
     }
 
-    private boolean orderExists(String payload) {
-        JSONObject json = JSONUtil.parseObj(payload);
-        Long orderId = json.getLong("orderId");
-        if (orderId == null) {
-            return false;
+    /** 先查询远端流水；退款入账撤销时须精确恢复赠送余额部分。 */
+    private void compensateBalance(LocalOutbox event, JSONObject payload) {
+        Long userId = payload.getLong("userId");
+        String orderNo = payload.getStr("orderNo");
+        Integer type = payload.getInt("type");
+        Boolean applied = FeignResultUtil.unwrap(userFeignClient.balanceChangeApplied(orderNo, userId, type));
+        if (applied == null) throw new IllegalStateException("余额流水对账结果为空");
+        if (Integer.valueOf(3).equals(type) && payload.getLong("orderId") == null) {
+            // 余额支付失败的独立补偿退款必须完成，即使原订单事务已回滚。
+            if (!Boolean.TRUE.equals(applied)) {
+                FeignResultUtil.check(userFeignClient.changeBalance(balanceChange(payload)));
+            }
+            saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "DONE", null);
+            return;
         }
-        RestaurantOrder order = restaurantOrderMapper.selectById(orderId);
-        return order != null;
+        if (!Boolean.TRUE.equals(applied)) {
+            // 超时请求可能仍在远端执行；缺少流水不能证明调用失败。
+            throw new IllegalStateException("余额变动尚未确认，等待下次对账");
+        }
+        if (Boolean.TRUE.equals(applied)) {
+            if (Integer.valueOf(4).equals(type)) {
+                boolean alreadyRefunded = Boolean.TRUE.equals(FeignResultUtil.unwrap(
+                        userFeignClient.balanceChangeApplied(orderNo + "_COMPENSATE", userId, 3)));
+                if (!alreadyRefunded) {
+                    FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
+                            .userId(userId).amount(payload.getBigDecimal("amount")).type(3)
+                            .orderNo(orderNo + "_COMPENSATE").sourceOrderNo(orderNo)
+                            .operateUserId(userId).build()));
+                }
+            } else if (Integer.valueOf(3).equals(type)) {
+                if (!Boolean.TRUE.equals(FeignResultUtil.unwrap(userFeignClient.reverseBalanceCredit(
+                        orderNo, userId, orderNo + ":outbox-reverse")))) {
+                    throw new IllegalStateException("退款流水尚未确认，等待对账");
+                }
+            } else {
+                throw new IllegalStateException("未知余额变动类型: " + type);
+            }
+        }
+        saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "COMPENSATED", null);
+    }
+
+    private BalanceChangeDTO balanceChange(JSONObject payload) {
+        return BalanceChangeDTO.builder()
+                .userId(payload.getLong("userId"))
+                .amount(payload.getBigDecimal("amount"))
+                .type(payload.getInt("type"))
+                .orderNo(payload.getStr("orderNo"))
+                .sourceOrderNo(payload.getStr("sourceOrderNo"))
+                .operateUserId(payload.getLong("userId"))
+                .build();
     }
 
     private void registerDoneAfterCommit(String eventId) {
@@ -216,7 +272,12 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                TenantScope.run(tenantId, () -> saveStatus(null, eventId, null, "DONE", null));
+                try {
+                    TenantScope.run(tenantId, () -> saveStatus(null, eventId, null, "DONE", null));
+                } catch (RuntimeException exception) {
+                    // 提交标记已在业务事务中持久化，由对账任务补写 DONE。
+                    log.error("业务已提交，发件箱完成状态待对账: eventId={}", eventId, exception);
+                }
             }
         });
     }
@@ -237,6 +298,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 created.setEventType(eventType);
                 created.setPayload(payload);
                 created.setStatus(status);
+                created.setCommitted(false);
                 created.setAttempts(1);
                 created.setLastError(trim(error));
                 created.setCreatedAt(now);
@@ -244,7 +306,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 try {
                     localOutboxMapper.insert(created);
                 } catch (DuplicateKeyException duplicate) {
-                    saveStatus(eventType, eventId, payload, status, error);
+                    throw new IllegalStateException("相同业务事件正在处理，请稍后重试", duplicate);
                 }
                 return;
             }

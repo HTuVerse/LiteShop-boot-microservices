@@ -30,8 +30,11 @@ public class LocalOutbox {
 
     private String payload;
 
-    /** PENDING、SENT、DONE、COMPENSATED、FAILED。 */
+    /** PENDING、SENT、UNKNOWN、DONE、COMPENSATED、NEEDS_REVIEW。 */
     private String status;
+
+    /** 外层业务事务提交时置为 true，对账不能仅凭订单存在推断提交成功。 */
+    private Boolean committed;
 
     private Integer attempts;
 

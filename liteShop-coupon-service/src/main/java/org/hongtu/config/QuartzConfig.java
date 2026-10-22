@@ -3,6 +3,7 @@ package org.hongtu.config;
 import org.hongtu.job.CouponAutoOffShelfJob;
 import org.hongtu.job.CouponCleanupJob;
 import org.hongtu.job.CouponStatusUpdateJob;
+import org.hongtu.job.LotteryCouponReceiptJob;
 import org.quartz.*;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,6 +16,23 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration("couponQuartzConfig")
 public class QuartzConfig {
+
+    /** 已提交发券事件的抽奖领取通知，每 30 秒对账一次。 */
+    @Bean
+    public JobDetail lotteryCouponReceiptJobDetail() {
+        return JobBuilder.newJob(LotteryCouponReceiptJob.class)
+                .withIdentity("lotteryCouponReceiptJob", "couponGroup")
+                .storeDurably().build();
+    }
+
+    @Bean
+    public Trigger lotteryCouponReceiptTrigger() {
+        return TriggerBuilder.newTrigger().forJob(lotteryCouponReceiptJobDetail())
+                .withIdentity("lotteryCouponReceiptTrigger", "couponGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInSeconds(30).repeatForever())
+                .build();
+    }
 
     // ==================== 优惠券状态更新任务 ====================
 

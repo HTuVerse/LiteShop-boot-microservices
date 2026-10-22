@@ -95,4 +95,13 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
     int creditWallet(@Param("tenantId") Long tenantId, @Param("userId") Long userId,
                      @Param("amount") java.math.BigDecimal amount, @Param("bonus") java.math.BigDecimal bonus);
 
+    /** 精确撤销退款入账的余额与赠送部分，避免比例重算产生尾差。 */
+    @Update("UPDATE sys_user SET surplus_money = surplus_money - #{amount}, " +
+            "gift_money = gift_money - #{gift}, update_time = NOW() " +
+            "WHERE id = #{userId} AND tenant_id = #{tenantId} " +
+            "AND surplus_money >= #{amount} AND gift_money >= #{gift}")
+    int reverseBalanceCredit(@Param("tenantId") Long tenantId, @Param("userId") Long userId,
+                             @Param("amount") java.math.BigDecimal amount,
+                             @Param("gift") java.math.BigDecimal gift);
+
 }

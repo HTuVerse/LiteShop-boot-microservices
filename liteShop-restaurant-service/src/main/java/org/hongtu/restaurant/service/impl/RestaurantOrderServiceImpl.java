@@ -2220,6 +2220,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                         .set("amount", dto.getAmount())
                         .set("type", dto.getType())
                         .set("orderNo", dto.getOrderNo())
+                        .set("sourceOrderNo", dto.getSourceOrderNo())
                         .toString(),
                 () -> FeignResultUtil.check(userFeignClient.changeBalance(dto)));
     }
@@ -2334,7 +2335,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                         }
                         TenantScope.run(tenantId, () -> rollbackCoupons.forEach(couponId -> {
                             try {
-                                FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(couponId, orderId));
+                                FeignResultUtil.check(couponFeignClient.undoRestore(couponId, orderId));
                             } catch (Exception compensationError) {
                                 log.error("取消事务回滚后的优惠券补偿失败: orderId={}, userCouponId={}",
                                         orderId, couponId, compensationError);
@@ -2346,7 +2347,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         } catch (RuntimeException restoreError) {
             for (Long restoredId : restored) {
                 try {
-                    FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(restoredId, orderId));
+                    FeignResultUtil.check(couponFeignClient.undoRestore(restoredId, orderId));
                 } catch (Exception compensationError) {
                     log.error("取消订单返券补偿失败，需告警处理: orderId={}, userCouponId={}",
                             orderId, restoredId, compensationError);

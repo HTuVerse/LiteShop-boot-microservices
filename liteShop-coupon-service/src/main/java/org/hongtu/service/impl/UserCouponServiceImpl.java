@@ -662,6 +662,24 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         log.info("优惠券返还成功(CAS) - userCouponId: {}, orderId: {}, 恢复状态: {}", userCouponId, orderId, statusDesc);
     }
 
+    /** 仅用于跨服务回滚补偿，恢复原订单已消费的券，不受当前有效期影响。 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void undoRestoreOnRollback(Long userCouponId, Long orderId) {
+        if (userCouponId == null || orderId == null) throw new BusinessException(400, "优惠券和订单不能为空");
+        VerifyRecord record = verifyRecordMapper.selectOne(new LambdaQueryWrapper<VerifyRecord>()
+                .eq(VerifyRecord::getUserCouponId, userCouponId)
+                .eq(VerifyRecord::getOrderId, orderId)
+                .last("FOR UPDATE"));
+        if (record == null) throw new BusinessException(409, "原订单核销记录不存在");
+        if (record.getStatus() == VerifyStatusEnum.VERIFYED) return;
+        if (userCouponMapper.casUndoRestore(userCouponId, record.getVerifyTime()) != 1) {
+            throw new BusinessException(409, "优惠券已被其他操作占用，需人工对账");
+        }
+        record.setStatus(VerifyStatusEnum.VERIFYED);
+        verifyRecordMapper.updateById(record);
+    }
+
     // ======================== 优惠券叠加规则校验 ========================
 
     /**

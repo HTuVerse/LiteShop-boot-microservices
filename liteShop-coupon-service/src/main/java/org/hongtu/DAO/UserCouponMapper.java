@@ -81,6 +81,11 @@ public interface UserCouponMapper extends BaseMapper<UserCoupon> {
             "WHERE id = #{id} AND status = 2")
     int casRestoreCoupon(@Param("id") Long id, @Param("newStatus") int newStatus);
 
+    /** 撤销订单返券时恢复原已核销状态；其他订单已占用则拒绝覆盖。 */
+    @Update("UPDATE user_coupon SET status = 2, use_time = #{useTime} " +
+            "WHERE id = #{id} AND status IN (1, 3, 4)")
+    int casUndoRestore(@Param("id") Long id, @Param("useTime") LocalDateTime useTime);
+
     /**
      * 返还优惠券时重置券码（避免与 verify_record 表唯一索引 verify_code 冲突）
      * @param id 用户优惠券ID

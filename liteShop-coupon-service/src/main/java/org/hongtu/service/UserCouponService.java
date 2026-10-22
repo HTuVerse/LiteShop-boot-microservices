@@ -93,6 +93,9 @@ public interface UserCouponService extends IService<UserCoupon> {
      */
     void restoreCouponOnCancel(Long userCouponId, Long orderId);
 
+    /** 取消订单事务回滚时，按原核销记录撤销返券。 */
+    void undoRestoreOnRollback(Long userCouponId, Long orderId);
+
     /**
      * 校验多张优惠券的叠加规则
      *

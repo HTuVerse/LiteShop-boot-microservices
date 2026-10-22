@@ -2,7 +2,6 @@ package org.hongtu.service.impl;
 
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.session.SaSession;
-import cn.hutool.core.util.NumberUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.digest.BCrypt;
@@ -18,6 +17,7 @@ import org.hongtu.DAO.*;
 import org.hongtu.DTO.*;
 import org.hongtu.Result.Result;
 import org.hongtu.api.util.ResourceBindingCoordinator;
+import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.ResourceBindingPlan;
 import org.hongtu.api.dto.ResourceBinding;
 import org.hongtu.VO.AdminStoreOptionVO;
@@ -103,6 +103,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     UserLevelMapper userLevelMapper;
     @Resource
     SurplusRecordMapper surplusRecordMapper;
+    @Resource
+    private InnerBalanceService innerBalanceService;
     @Resource
     private RateLimitUtil rateLimitUtil;
     @Resource
@@ -722,6 +724,9 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Result updateUserInfo(SysUser sysUser) {
+        if (sysUser == null) {
+            return Result.error("用户信息不能为空");
+        }
         // 获取当前登录用户ID
         long userId = StpUtil.getLoginIdAsLong();
         // 查询当前用户信息
@@ -729,37 +734,33 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (currentUser == null) {
             return Result.error("用户不存在");
         }
-        // 设置不允许修改的字段
-        sysUser.setId((long) userId);
-        sysUser.setTenantId(currentUser.getTenantId());
+        // 只构造个人资料允许更新的字段，资金及认证字段不能从请求实体写回。
+        String username = sysUser.getUsername() == null ? currentUser.getUsername() : sysUser.getUsername();
         // 如果修改了用户名，检查是否与其他用户冲突
-        if (!currentUser.getUsername().equals(sysUser.getUsername())) {
-            if(hongTuUtil.containsChinese(sysUser.getUsername())){
+        if (!currentUser.getUsername().equals(username)) {
+            if(hongTuUtil.containsChinese(username)){
                 return Result.error("用户名不能包含中文");
             }
             SysUser usernameCheck = lambdaQuery()
-                    .eq(SysUser::getUsername, sysUser.getUsername())
-                    .ne(SysUser::getId, sysUser.getId())
+                    .eq(SysUser::getUsername, username)
+                    .ne(SysUser::getId, userId)
                     .one();
             if (usernameCheck != null) {
                 return Result.error("用户名已被使用");
             }
 
         }
-        sysUser.setOpenId(currentUser.getOpenId());
-        sysUser.setStatus(currentUser.getStatus());
-        sysUser.setCreateTime(currentUser.getCreateTime());
-        sysUser.setUpdateTime(LocalDateTime.now());
-        sysUser.setSurplusMoney(currentUser.getSurplusMoney());
-        sysUser.setPoints(currentUser.getPoints());
-        sysUser.setExp(currentUser.getExp());
-        sysUser.setLevel(currentUser.getLevel());
-        sysUser.setPhone(currentUser.getPhone());//通过特定接口修改手机号
-        //加密用户密码
-        sysUser.setPassword(currentUser.getPassword());
-        // 更新用户信息
-        ResourceBindingPlan avatarPlan = normalizeAvatar(sysUser, currentUser);
-        boolean updated = updateById(sysUser);
+        SysUser changes = new SysUser().setId(userId)
+                .setUsername(username)
+                .setNickname(sysUser.getNickname())
+                .setGender(sysUser.getGender())
+                .setIntroduction(sysUser.getIntroduction())
+                .setBirthday(sysUser.getBirthday())
+                .setAvatar(sysUser.getAvatar())
+                .setAvatarResourceId(sysUser.getAvatarResourceId())
+                .setUpdateTime(LocalDateTime.now());
+        ResourceBindingPlan avatarPlan = normalizeAvatar(changes, currentUser);
+        boolean updated = updateById(changes);
         if (updated) {
             resourceBindings.completeAfterCommit(avatarPlan);
             // 查询更新后的用户信息
@@ -886,20 +887,16 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (existingUser == null) {
             return Result.error("用户不存在或不在当前租户");
         }
-        sysUser.setTenantId(existingUser.getTenantId());
-        // 保留不允许修改的字段
-        sysUser.setOpenId(existingUser.getOpenId());
-        sysUser.setPassword(existingUser.getPassword()); // 密码通过专门的接口修改
-        sysUser.setCreateTime(existingUser.getCreateTime());
-        sysUser.setSurplusMoney(existingUser.getSurplusMoney());
-        sysUser.setPoints(existingUser.getPoints());
+        // 管理端同样只写业务允许编辑的字段，防止附带字段越权和旧余额覆盖。
+        String username = sysUser.getUsername() == null ? existingUser.getUsername() : sysUser.getUsername();
+        StatusEnum status = sysUser.getStatus() == null ? existingUser.getStatus() : sysUser.getStatus();
         // 如果修改了用户名，检查是否与其他用户冲突
-        if (!existingUser.getUsername().equals(sysUser.getUsername())) {
-            if(hongTuUtil.containsChinese(sysUser.getUsername())){
+        if (!existingUser.getUsername().equals(username)) {
+            if(hongTuUtil.containsChinese(username)){
                 return Result.error("用户名不能包含中文");
             }
             SysUser usernameCheck = lambdaQuery()
-                    .eq(SysUser::getUsername, sysUser.getUsername())
+                    .eq(SysUser::getUsername, username)
                     .ne(SysUser::getId, sysUser.getId())
                     .one();
             if (usernameCheck != null) {
@@ -908,7 +905,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         }
 
         //状态修改判断
-        if (!existingUser.getStatus().equals(sysUser.getStatus())) {
+        if (!existingUser.getStatus().equals(status)) {
             List<String> targetId = sysRoleMapper.selectRoleCodesByUserId(sysUser.getId());
             if(StpUtil.hasRole("SUPER_ADMIN")){
                 if( targetId.contains("SUPER_ADMIN")){
@@ -936,7 +933,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
         if (sysUser.getLevel() == null) sysUser.setLevel(existingUser.getLevel());
         //等级修改判断
-        if (!existingUser.getLevel().equals(sysUser.getLevel())) {
+        boolean levelChanged = !existingUser.getLevel().equals(sysUser.getLevel());
+        if (levelChanged) {
             if (!TenantContext.isSuperAdmin()) StpUtil.checkPermission("system:user:level");
             org.hongtu.api.util.FeignResultUtil.unwrap(userLevelService.updateUserLevel(sysUser.getId(),sysUser.getLevel()));
             sysUser.setExp(userLevelMapper.getLevelByLevelCode(sysUser.getLevel()).getRequiredExp());
@@ -956,8 +954,22 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         }
 
         // 更新用户信息
-        ResourceBindingPlan avatarPlan = normalizeAvatar(sysUser, existingUser);
-        boolean success = updateById(sysUser);
+        SysUser changes = new SysUser().setId(existingUser.getId())
+                .setUsername(username)
+                .setNickname(sysUser.getNickname())
+                .setGender(sysUser.getGender())
+                .setPhone(sysUser.getPhone())
+                .setEmail(sysUser.getEmail())
+                .setIntroduction(sysUser.getIntroduction())
+                .setBirthday(sysUser.getBirthday())
+                .setStatus(status)
+                .setLevel(levelChanged ? sysUser.getLevel() : null)
+                .setExp(levelChanged ? sysUser.getExp() : null)
+                .setAvatar(sysUser.getAvatar())
+                .setAvatarResourceId(sysUser.getAvatarResourceId())
+                .setUpdateTime(LocalDateTime.now());
+        ResourceBindingPlan avatarPlan = normalizeAvatar(changes, existingUser);
+        boolean success = updateById(changes);
         if (success) {
             resourceBindings.completeAfterCommit(avatarPlan);
             return Result.success("更新用户信息成功");
@@ -1091,35 +1103,24 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     }
 
     private Result rechargeBalanceInCurrentTenant(Long userId, Integer amount) {
-        SysUser user = getById(userId);
-        if (user == null) {
+        if (amount == null || amount <= 0) {
+            return Result.error("充值金额必须大于零");
+        }
+        if (getById(userId) == null) {
             return Result.error("用户不存在或不在当前租户");
         }
-
-        // 计算新余额
-        BigDecimal surplusMoney = user.getSurplusMoney();
-        BigDecimal newBalance = NumberUtil.add(surplusMoney, amount);
-
-        // 更新用户余额
-        user.setSurplusMoney(newBalance);
-        user.setUpdateTime(LocalDateTime.now());
-
-        boolean success = updateById(user);
-        if (success) {
-            //记录余额变动详情
-            UserSurplusRecord surplusRecord = new UserSurplusRecord();
-            surplusRecord.setUserId(userId);
-            surplusRecord.setOrderNo(null);
-            surplusRecord.setAmount(BigDecimal.valueOf(amount));
-            surplusRecord.setNewBalance(newBalance);
-            surplusRecord.setOldBalance(surplusMoney);
-            surplusRecord.setType(BalanceResourceEnum.getByCode(1));
-            surplusRecord.setOperateUserId(StpUtil.getLoginIdAsLong());
-            surplusRecordMapper.insert(surplusRecord);
-            return Result.success("充值成功", surplusRecord);
-        } else {
-            return Result.error("充值失败");
-        }
+        // 复用资金服务的行锁、原子增量和流水事务；订单号用于服务内部幂等。
+        String orderNo = "ADMIN-" + UUID.randomUUID();
+        innerBalanceService.changeBalance(BalanceChangeDTO.builder()
+                .userId(userId)
+                .amount(BigDecimal.valueOf(amount))
+                .type(BalanceResourceEnum.ADMIN_RECHARGE.getCode())
+                .orderNo(orderNo)
+                .operateUserId(StpUtil.getLoginIdAsLong())
+                .build());
+        UserSurplusRecord record = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, orderNo).last("LIMIT 1"));
+        return Result.success("充值成功", record);
     }
 
     @Override

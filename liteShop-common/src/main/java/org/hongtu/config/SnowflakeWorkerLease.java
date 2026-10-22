@@ -6,10 +6,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.sql.Timestamp;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 为当前进程申请唯一的雪花节点号。申请不到时拒绝启动，避免多实例生成相同主键。
@@ -19,7 +19,7 @@ public final class SnowflakeWorkerLease {
     private SnowflakeWorkerLease() {
     }
 
-    public static Node acquire(DataSource dataSource) {
+    public static Lease acquire(DataSource dataSource) {
         String instanceId = instanceId();
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -34,14 +34,16 @@ public final class SnowflakeWorkerLease {
                         ) COMMENT='雪花节点租约'
                         """);
             }
+            long leaseStartNanos = System.nanoTime();
             Node owned = claim(connection, instanceId);
             if (owned == null) {
                 connection.rollback();
                 throw new IllegalStateException("没有可用的雪花节点号，拒绝启动");
             }
             connection.commit();
-            startHeartbeat(dataSource, owned, instanceId);
-            return owned;
+            Lease lease = new Lease(owned, leaseStartNanos);
+            startHeartbeat(dataSource, lease, instanceId);
+            return lease;
         } catch (IllegalStateException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -50,29 +52,25 @@ public final class SnowflakeWorkerLease {
     }
 
     private static Node claim(Connection connection, String instanceId) throws Exception {
-        Timestamp now = Timestamp.from(Instant.now());
-        Timestamp until = Timestamp.from(Instant.now().plus(60, ChronoUnit.SECONDS));
         try (PreparedStatement select = connection.prepareStatement("""
                 SELECT worker_id, datacenter_id FROM snowflake_worker_lease
-                WHERE expires_at < ? OR instance_id = ?
+                WHERE expires_at < NOW() OR instance_id = ?
                 ORDER BY expires_at
                 LIMIT 1 FOR UPDATE
                 """)) {
-            select.setTimestamp(1, now);
-            select.setString(2, instanceId);
+            select.setString(1, instanceId);
             try (ResultSet rows = select.executeQuery()) {
                 if (rows.next()) {
                     int workerId = rows.getInt(1);
                     int datacenterId = rows.getInt(2);
                     try (PreparedStatement update = connection.prepareStatement("""
                             UPDATE snowflake_worker_lease
-                            SET instance_id = ?, expires_at = ?
+                            SET instance_id = ?, expires_at = DATE_ADD(NOW(), INTERVAL 60 SECOND)
                             WHERE worker_id = ? AND datacenter_id = ?
                             """)) {
                         update.setString(1, instanceId);
-                        update.setTimestamp(2, until);
-                        update.setInt(3, workerId);
-                        update.setInt(4, datacenterId);
+                        update.setInt(2, workerId);
+                        update.setInt(3, datacenterId);
                         update.executeUpdate();
                     }
                     return new Node(workerId, datacenterId);
@@ -83,12 +81,11 @@ public final class SnowflakeWorkerLease {
             for (int workerId = 0; workerId <= 31; workerId++) {
                 try (PreparedStatement insert = connection.prepareStatement("""
                         INSERT INTO snowflake_worker_lease (worker_id, datacenter_id, instance_id, expires_at)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 60 SECOND))
                         """)) {
                     insert.setInt(1, workerId);
                     insert.setInt(2, datacenterId);
                     insert.setString(3, instanceId);
-                    insert.setTimestamp(4, until);
                     insert.executeUpdate();
                     return new Node(workerId, datacenterId);
                 } catch (Exception ignored) {
@@ -99,23 +96,25 @@ public final class SnowflakeWorkerLease {
         return null;
     }
 
-    private static void startHeartbeat(DataSource dataSource, Node node, String instanceId) {
+    private static void startHeartbeat(DataSource dataSource, Lease lease, String instanceId) {
         Thread heartbeat = new Thread(() -> {
-            while (!Thread.currentThread().isInterrupted()) {
+            while (!Thread.currentThread().isInterrupted() && !lease.lost.get()) {
                 try {
                     Thread.sleep(20000);
+                    long renewalStartNanos = System.nanoTime();
                     try (Connection connection = dataSource.getConnection();
                          PreparedStatement update = connection.prepareStatement("""
-                                 UPDATE snowflake_worker_lease SET expires_at = ?
+                                 UPDATE snowflake_worker_lease SET expires_at = DATE_ADD(NOW(), INTERVAL 60 SECOND)
                                  WHERE worker_id = ? AND datacenter_id = ? AND instance_id = ?
                                  """)) {
-                        update.setTimestamp(1, Timestamp.from(Instant.now().plus(60, ChronoUnit.SECONDS)));
-                        update.setInt(2, node.workerId());
-                        update.setInt(3, node.datacenterId());
-                        update.setString(4, instanceId);
+                        update.setInt(1, lease.node.workerId());
+                        update.setInt(2, lease.node.datacenterId());
+                        update.setString(3, instanceId);
                         if (update.executeUpdate() != 1) {
+                            lease.lost.set(true);
                             throw new IllegalStateException("雪花节点租约已丢失");
                         }
+                        lease.renew(renewalStartNanos);
                     }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
@@ -137,5 +136,32 @@ public final class SnowflakeWorkerLease {
     }
 
     public record Node(int workerId, int datacenterId) {
+    }
+
+    /** 续约失败超过安全期限后立即停止发号；租约被夺取后永久失效。 */
+    public static final class Lease {
+        private final Node node;
+        private final AtomicLong safeUntilNanos = new AtomicLong();
+        private final AtomicBoolean lost = new AtomicBoolean();
+
+        private Lease(Node node, long leaseStartNanos) {
+            this.node = node;
+            renew(leaseStartNanos);
+        }
+
+        private void renew(long leaseStartNanos) {
+            // 数据库租约为 60 秒，提前 5 秒停止发号，留出时钟与调度余量。
+            safeUntilNanos.set(leaseStartNanos + TimeUnit.SECONDS.toNanos(55));
+        }
+
+        public Node node() {
+            return node;
+        }
+
+        public void requireValid() {
+            if (lost.get() || System.nanoTime() - safeUntilNanos.get() >= 0) {
+                throw new IllegalStateException("雪花节点租约无效，已停止生成ID");
+            }
+        }
     }
 }

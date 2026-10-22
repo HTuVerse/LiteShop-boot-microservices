@@ -7,8 +7,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.SysPermissionMapper;
 import org.hongtu.DAO.SysRoleMapper;
 import org.hongtu.DAO.SysUserMapper;
+import org.hongtu.DAO.SurplusRecordMapper;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.SysTenant;
+import org.hongtu.DTO.UserSurplusRecord;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.MallPointsChangeDTO;
@@ -62,6 +64,8 @@ public class InnerUserController {
 
     @Resource
     private InnerBalanceService innerBalanceService;
+    @Resource
+    private SurplusRecordMapper surplusRecordMapper;
 
     @Resource
     private MallPointsAccountService mallPointsAccountService;
@@ -171,6 +175,29 @@ public class InnerUserController {
     @PostMapping("/balance/change")
     public Result<BigDecimal> changeBalance(@RequestBody BalanceChangeDTO dto) {
         return Result.success(innerBalanceService.changeBalance(dto));
+    }
+
+    /** 查询本租户已提交的余额流水，不向调用方返回资金明细。 */
+    @GetMapping("/balance/applied")
+    public Result<Boolean> balanceChangeApplied(@RequestParam String orderNo,
+                                                @RequestParam Long userId,
+                                                @RequestParam Integer type) {
+        UserSurplusRecord record = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, orderNo).last("LIMIT 1"));
+        if (record == null) return Result.success(false);
+        if (!userId.equals(record.getUserId()) || record.getType() == null
+                || !type.equals(record.getType().getCode())) {
+            throw new IllegalStateException("余额幂等键已被其他操作占用");
+        }
+        return Result.success(true);
+    }
+
+    /** 撤销一次已提交的退款入账，重复请求使用同一撤销幂等键。 */
+    @PostMapping("/balance/reverse-credit")
+    public Result<Boolean> reverseBalanceCredit(@RequestParam String orderNo,
+                                                @RequestParam Long userId,
+                                                @RequestParam String reversalNo) {
+        return Result.success(innerBalanceService.reverseCredit(orderNo, userId, reversalNo));
     }
 
     /**

@@ -173,4 +173,44 @@ public class InnerBalanceService {
                 dto.getUserId(), type, dto.getAmount(), oldBalance, newBalance, dto.getOrderNo());
         return newBalance;
     }
+
+    /** 精确撤销一次退款入账，并以撤销流水号保证重试不重复扣款。 */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean reverseCredit(String orderNo, Long userId, String reversalNo) {
+        if (orderNo == null || orderNo.isBlank() || userId == null
+                || reversalNo == null || reversalNo.isBlank() || reversalNo.length() > 64) {
+            throw new BusinessException("退款撤销参数无效");
+        }
+        Long tenantId = TenantContext.getTenantId();
+        SysUser locked = sysUserMapper.lockMallPointsUser(tenantId, userId);
+        if (locked == null) throw new BusinessException("会员不存在或不属于当前租户");
+        UserSurplusRecord existing = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, reversalNo).last("LIMIT 1"));
+        if (existing != null) {
+            if (!userId.equals(existing.getUserId()) || existing.getType() != BalanceResourceEnum.EXPENSE
+                    || !orderNo.equals(existing.getSourceOrderNo())) {
+                throw new BusinessException("余额撤销幂等键已被占用");
+            }
+            return true;
+        }
+        UserSurplusRecord credit = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, orderNo).last("LIMIT 1"));
+        if (credit == null) return false;
+        if (!userId.equals(credit.getUserId()) || credit.getType() != BalanceResourceEnum.REFUND) {
+            throw new BusinessException("原退款流水不匹配");
+        }
+        BigDecimal gift = credit.getGiftAmount() == null ? BigDecimal.ZERO : credit.getGiftAmount();
+        if (sysUserMapper.reverseBalanceCredit(tenantId, userId, credit.getAmount(), gift) != 1) {
+            throw new BusinessException("撤销退款余额不足，等待对账重试");
+        }
+        BigDecimal before = locked.getSurplusMoney();
+        UserSurplusRecord reversal = new UserSurplusRecord()
+                .setUserId(userId).setOrderNo(reversalNo).setSourceOrderNo(orderNo)
+                .setAmount(credit.getAmount()).setGiftAmount(gift)
+                .setOldBalance(before).setNewBalance(before.subtract(credit.getAmount()))
+                .setType(BalanceResourceEnum.EXPENSE)
+                .setOperateUserId(userId);
+        surplusRecordMapper.insert(reversal);
+        return true;
+    }
 }

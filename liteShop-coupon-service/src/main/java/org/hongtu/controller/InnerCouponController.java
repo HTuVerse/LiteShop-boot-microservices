@@ -5,9 +5,11 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
 import org.hongtu.DAO.UserCouponMapper;
+import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.DTO.Coupon;
 import org.hongtu.DTO.CouponDishItem;
 import org.hongtu.DTO.UserCoupon;
+import org.hongtu.DTO.VerifyRecord;
 import org.hongtu.Result.Result;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.UserCouponService;
@@ -39,6 +41,8 @@ public class InnerCouponController {
 
     @Resource
     private UserCouponMapper userCouponMapper;
+    @Resource
+    private VerifyRecordMapper verifyRecordMapper;
 
     @Resource
     private CouponMapper couponMapper;
@@ -74,6 +78,26 @@ public class InnerCouponController {
     public Result<Void> restoreCouponOnCancel(@RequestParam("userCouponId") Long userCouponId,
                                               @RequestParam("orderId") Long orderId) {
         userCouponService.restoreCouponOnCancel(userCouponId, orderId);
+        return Result.success();
+    }
+
+    /** 返回指定订单的券核销结果，供跨服务事务回滚后对账。 */
+    @GetMapping("/verification-state")
+    public Result<String> verificationState(@RequestParam Long userCouponId, @RequestParam Long orderId) {
+        VerifyRecord record = verifyRecordMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<VerifyRecord>()
+                .eq(VerifyRecord::getUserCouponId, userCouponId)
+                .eq(VerifyRecord::getOrderId, orderId)
+                .last("LIMIT 1"));
+        if (record == null) return Result.success("ABSENT");
+        if (record.getStatus() == org.hongtu.enums.VerifyStatusEnum.VERIFYED) return Result.success("ACTIVE");
+        if (record.getStatus() == org.hongtu.enums.VerifyStatusEnum.NOT_VERIFY) return Result.success("RESTORED");
+        throw new IllegalStateException("优惠券核销记录状态无效");
+    }
+
+    /** 恢复回滚前的订单核销关系。 */
+    @PostMapping("/undo-restore")
+    public Result<Void> undoRestore(@RequestParam Long userCouponId, @RequestParam Long orderId) {
+        userCouponService.undoRestoreOnRollback(userCouponId, orderId);
         return Result.success();
     }
 

@@ -12,13 +12,17 @@ import org.hongtu.DTO.CouponMessageDTO;
 import org.hongtu.Result.Result;
 import org.hongtu.constant.RabbitMQConstants;
 import org.hongtu.service.UserCouponService;
+import org.hongtu.service.LotteryCouponReceiptNotifier;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.hongtu.tenant.TenantContext;
+import org.hongtu.tenant.TenantScope;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -44,7 +48,7 @@ public class CouponMessageConsumer {
     @Resource
     private CouponMessageReceiptMapper couponMessageReceiptMapper;
     @Resource
-    private org.hongtu.api.client.LotteryFeignClient lotteryFeignClient;
+    private LotteryCouponReceiptNotifier lotteryNotifier;
 
     @Resource
     private RabbitTemplate rabbitTemplate;
@@ -89,8 +93,15 @@ public class CouponMessageConsumer {
                 log.info("优惠券发放成功，eventId={}, 优惠券ID: {}, 用户ID: {}",
                         message.getEventId(), message.getCouponId(), message.getUserId());
                 if (message.getEventId().startsWith("lottery-")) {
-                    org.hongtu.api.util.FeignResultUtil.check(
-                            lotteryFeignClient.markPrizeReceived(message.getEventId()));
+                    Long tenantId = TenantContext.getTenantId();
+                    String eventId = message.getEventId();
+                    // 只有本地发券与幂等凭据都提交成功后，才可宣告抽奖奖品已领取。
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            TenantScope.run(tenantId, () -> lotteryNotifier.notifyOne(eventId));
+                        }
+                    });
                 }
             } else {
                 throw new IllegalStateException(result != null ? result.getMsg() : "优惠券发放返回空结果");
