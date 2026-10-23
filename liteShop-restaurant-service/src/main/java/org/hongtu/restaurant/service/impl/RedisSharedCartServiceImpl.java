@@ -18,6 +18,7 @@ import org.hongtu.restaurant.service.DishService;
 import org.hongtu.restaurant.service.TableSessionService;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.utils.RedisCache;
+import org.hongtu.utils.RateLimitUtil;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
@@ -43,6 +44,8 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     private static final long CART_TTL_HOURS = 24;
     private static final long LOCK_TTL_SECONDS = 5;
     private static final long LOCK_WAIT_MILLIS = 2_000;
+    private static final int MAX_CART_ITEMS = 100;
+    private static final int MAX_ITEM_QUANTITY = 99;
     private static final DefaultRedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(
             "if redis.call('get', KEYS[1]) == ARGV[1] then "
                     + "return redis.call('del', KEYS[1]) else return 0 end",
@@ -57,6 +60,8 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     private TableSessionService tableSessionService;
     @Resource
     private RedisCache redisCache;
+    @Resource
+    private RateLimitUtil rateLimitUtil;
 
     @Override
     public CartItemVO addItem(AddCartItemRequest request) {
@@ -66,13 +71,22 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
                 .eq(TableSession::getSessionNo, request.getSessionNo()));
         if (session == null) throw new BusinessException("桌位会话不存在");
         DishVO dish = dishService.getEffectiveDish(request.getDishId(), session.getStoreId(), true);
+        CartSpecNormalizer.Selection selection = CartSpecNormalizer.normalize(dish, request.getSpecText());
+        if (!rateLimitUtil.isAllowed(RateLimitUtil.tenantKey("cart-write", request.getSessionNo()), 120, 60)) {
+            throw new BusinessException("购物车操作过于频繁，请稍后重试");
+        }
 
         String cartKey = cartKey(request.getSessionNo());
-        String cartItemId = generateCartItemId(request.getDishId(), request.getSpecText());
+        String cartItemId = generateCartItemId(request.getDishId(), selection.text());
+        DishCategory category = dish.getCategoryId() == null
+                ? null : dishCategoryMapper.selectById(dish.getCategoryId());
         return withCartLock(cartKey, () -> {
             CartItemVO existingItem = getCartItem(cartKey, cartItemId);
             if (existingItem != null) {
-                int newQuantity = existingItem.getQuantity() + request.getQuantity();
+                if (existingItem.getQuantity() == null || existingItem.getQuantity() < 1
+                        || existingItem.getQuantity() > MAX_ITEM_QUANTITY) throw new BusinessException("购物车数据异常，请删除该商品后重试");
+                int newQuantity = Math.addExact(existingItem.getQuantity(), request.getQuantity());
+                if (newQuantity > MAX_ITEM_QUANTITY) throw new BusinessException("单项商品数量超限");
                 existingItem.setQuantity(newQuantity);
                 existingItem.setTotalPrice(existingItem.getPrice().multiply(BigDecimal.valueOf(newQuantity)));
                 existingItem.setUpdatedAt(LocalDateTime.now());
@@ -84,14 +98,10 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
             if (basePrice == null || basePrice.signum() < 0) {
                 throw new BusinessException("菜品价格配置异常");
             }
-            // 下单时仍会按服务端规格配置二次校验；这里不接受前端直接指定总价。
-            BigDecimal extraPrice = request.getExtraPrice() == null ? BigDecimal.ZERO : request.getExtraPrice();
-            if (extraPrice.signum() < 0) {
-                throw new BusinessException("规格加价不能小于0");
-            }
+            Long itemCount = redisCache.redisTemplate.opsForHash().size(cartKey);
+            if (itemCount != null && itemCount >= MAX_CART_ITEMS) throw new BusinessException("购物车商品种类已达上限");
+            BigDecimal extraPrice = selection.extraPrice();
             BigDecimal price = basePrice.add(extraPrice);
-            DishCategory category = dish.getCategoryId() == null
-                    ? null : dishCategoryMapper.selectById(dish.getCategoryId());
             CartItemVO cartItem = CartItemVO.builder()
                     .cartItemId(cartItemId)
                     .sessionNo(request.getSessionNo())
@@ -105,7 +115,7 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
                     .extraPrice(extraPrice)
                     .quantity(request.getQuantity())
                     .totalPrice(price.multiply(BigDecimal.valueOf(request.getQuantity())))
-                    .specText(request.getSpecText())
+                    .specText(selection.text())
                     .addedByUserId(request.getUserId())
                     .addedByName(request.getUserName())
                     .addedAt(LocalDateTime.now())
@@ -120,10 +130,14 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
 
     @Override
     public CartItemVO updateItem(UpdateCartItemRequest request) {
-        if (request == null || request.getQuantity() == null || request.getQuantity() <= 0) {
-            throw new BusinessException("商品数量必须大于0");
+        if (request == null || request.getQuantity() == null || request.getQuantity() <= 0
+                || request.getQuantity() > MAX_ITEM_QUANTITY) {
+            throw new BusinessException("商品数量须在 1 到 99 之间");
         }
         tableSessionService.validateSession(request.getSessionNo());
+        if (!rateLimitUtil.isAllowed(RateLimitUtil.tenantKey("cart-write", request.getSessionNo()), 120, 60)) {
+            throw new BusinessException("购物车操作过于频繁，请稍后重试");
+        }
         String cartKey = cartKey(request.getSessionNo());
         return withCartLock(cartKey, () -> {
             CartItemVO cartItem = getCartItem(cartKey, request.getCartItemId());
@@ -141,6 +155,9 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     @Override
     public boolean removeItem(String sessionNo, String cartItemId) {
         tableSessionService.validateSession(sessionNo);
+        if (!rateLimitUtil.isAllowed(RateLimitUtil.tenantKey("cart-write", sessionNo), 120, 60)) {
+            throw new BusinessException("购物车操作过于频繁，请稍后重试");
+        }
         String cartKey = cartKey(sessionNo);
         return withCartLock(cartKey, () -> {
             boolean existed = getCartItem(cartKey, cartItemId) != null;
@@ -155,12 +172,17 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     @Override
     public boolean clearCart(String sessionNo) {
         tableSessionService.validateSession(sessionNo);
+        if (!rateLimitUtil.isAllowed(RateLimitUtil.tenantKey("cart-write", sessionNo), 120, 60)) {
+            throw new BusinessException("购物车操作过于频繁，请稍后重试");
+        }
         return redisCache.deleteObject(cartKey(sessionNo));
     }
 
     @Override
     public List<CartItemVO> getCartItems(String sessionNo) {
         tableSessionService.validateSession(sessionNo);
+        Long itemCount = redisCache.redisTemplate.opsForHash().size(cartKey(sessionNo));
+        if (itemCount != null && itemCount > MAX_CART_ITEMS) throw new BusinessException("购物车数据超限，请清空后重试");
         Map<String, String> cart = redisCache.getCacheMap(cartKey(sessionNo));
         if (cart == null || cart.isEmpty()) {
             return new ArrayList<>();
@@ -188,8 +210,13 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
                 || request.getSessionNo().isBlank()) {
             throw new BusinessException("会话号和菜品ID不能为空");
         }
-        if (request.getQuantity() == null || request.getQuantity() <= 0) {
-            throw new BusinessException("商品数量必须大于0");
+        if (request.getQuantity() == null || request.getQuantity() <= 0
+                || request.getQuantity() > MAX_ITEM_QUANTITY) {
+            throw new BusinessException("商品数量须在 1 到 99 之间");
+        }
+        if (request.getSessionNo().length() > 128
+                || request.getUserName() != null && request.getUserName().length() > 100) {
+            throw new BusinessException("购物车参数过长");
         }
     }
 
@@ -214,7 +241,8 @@ public class RedisSharedCartServiceImpl implements SharedCartService {
     }
 
     private void refreshCartTtl(String cartKey) {
-        redisCache.expire(cartKey, CART_TTL_HOURS, TimeUnit.HOURS);
+        Long ttl = redisCache.redisTemplate.getExpire(cartKey, TimeUnit.SECONDS);
+        if (ttl != null && ttl < 0) redisCache.expire(cartKey, CART_TTL_HOURS, TimeUnit.HOURS);
     }
 
     private <T> T withCartLock(String cartKey, Supplier<T> action) {
