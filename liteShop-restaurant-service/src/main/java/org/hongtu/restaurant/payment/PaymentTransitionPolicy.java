@@ -65,7 +65,8 @@ public final class PaymentTransitionPolicy {
         }
         return switch (state) {
             case "SUCCESS", "REFUND" -> Close.PAID;
-            case "CLOSED", "REVOKED", "NOTPAY", "PAYERROR" -> Close.CLOSED;
+            // 未支付或支付异常仍可能存在可支付交易，不能作为关单成功的证据。
+            case "CLOSED", "REVOKED" -> Close.CLOSED;
             default -> Close.UNKNOWN;
         };
     }
