@@ -723,7 +723,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     public boolean queryAndUpdatePaymentStatus(Long orderId) {
         RestaurantOrder order = this.getById(orderId);
         if (order == null) {
-            throw new IllegalStateException("订单不存在");
+            throw new BusinessException("订单不存在");
         }
         if (order.getPaymentStatus() != null && order.getPaymentStatus() == PaymentStatusEnum.PAID) {
             return true;
@@ -771,7 +771,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     public PaymentStatusVO getPaymentStatus(Long orderId) {
         RestaurantOrder order = this.getById(orderId);
         if (order == null) {
-            throw new IllegalStateException("订单不存在");
+            throw new BusinessException("订单不存在");
         }
 
         // 只计算是否超时，取消由调度任务或明确的超时命令执行。
@@ -902,7 +902,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         // 1. 锁定订单，余额扣款与其它结算方式必须互斥。
         RestaurantOrder order = lockOrderForMutation(orderId);
         if (order == null) {
-            throw new IllegalStateException("订单不存在");
+            throw new BusinessException("订单不存在");
         }
         if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
             throw new BusinessException("该订单采用线下支付，请到收银台结算");
@@ -910,10 +910,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 2. 验证订单状态
         if (order.getPaymentStatus() != null && order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-            throw new IllegalStateException("订单已支付，请勿重复支付");
+            throw new BusinessException("订单已支付，请勿重复支付");
         }
         if (order.getStatus() == OrderStatusEnum.CANCELLED) {
-            throw new IllegalStateException("订单已取消，无法支付");
+            throw new BusinessException("订单已取消，无法支付");
         }
         if (isOnlinePaymentExpired(order)) {
             throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
@@ -921,21 +921,21 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         if (order.getPaymentType() == PaymentTypeEnum.WECHAT
                 || order.getPaymentType() == PaymentTypeEnum.ALIPAY) {
-            throw new IllegalStateException("该订单已创建其它支付渠道的交易，请先取消订单");
+            throw new BusinessException("该订单已创建其它支付渠道的交易，请先取消订单");
         }
 
         // 3. 获取用户信息（Feign 调用 user-service）
         Long userId = StpUtil.getLoginIdAsLong();
         UserBalanceDTO user = FeignResultUtil.unwrap(userFeignClient.getUserBalance(userId));
         if (user == null) {
-            throw new IllegalStateException("用户不存在");
+            throw new BusinessException("用户不存在");
         }
 
         // 4. 检查余额是否足够（user-service 扣款时会再次校验，这里提前给出友好提示）
         BigDecimal payAmount = CashierAmountGuard.requireServerPayable(
                 order.getActualAmount(), order.getTotalAmount());
         if (user.getSurplusMoney() == null || user.getSurplusMoney().compareTo(payAmount) < 0) {
-            throw new IllegalStateException("余额不足，请充值后再试");
+            throw new BusinessException("余额不足，请充值后再试");
         }
 
         // 5. 扣除余额 + 记录流水（user-service 本地事务内原子完成，替代原跨模块裸操作）
@@ -3916,20 +3916,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 已完成的订单不允许退菜
         if (order.getStatus() == OrderStatusEnum.COMPLETED) {
-            throw new IllegalStateException("订单已完成，不允许退菜");
+            throw new BusinessException("订单已完成，不允许退菜");
         }
 
         // 已取消的订单不允许退菜
         if (order.getStatus() == OrderStatusEnum.CANCELLED) {
-            throw new IllegalStateException("订单已取消，不允许退菜");
+            throw new BusinessException("订单已取消，不允许退菜");
         }
 
-        // 支付结果由 paymentStatus 判断；履约完成或取消后不能退菜。
-        if (order.getStatus() == OrderStatusEnum.COMPLETED ||
-                order.getStatus() == OrderStatusEnum.CANCELLED
-        ) {
-            throw new IllegalStateException("当前订单状态不允许退菜: " + order.getStatus().getDesc());
-        }
+
     }
 
     /**
