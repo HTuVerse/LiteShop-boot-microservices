@@ -117,8 +117,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Resource
     private org.hongtu.restaurant.service.DishService dishService;
     @Resource
-    private DishSpecOptionMapper dishSpecOptionMapper;
-    @Resource
     private PrinterInfoService printerInfoService;
     @Resource
     private OrderTimeoutQueueService orderTimeoutQueueService;
@@ -2357,192 +2355,49 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
     }
 
-    /**
-     * 验证购物车商品数据（CreateOrderRequest）
-     * 验证内容：
-     * 1. 菜品是否存在
-     * 2. 规格额外价格是否与服务端规格定义一致
-     * 客户端价格字段不参与校验和结算，最终金额统一由 PricingService 计算。
-     *
-     * @param cartItems 购物车商品列表
-     * @throws BusinessException 验证失败时抛出异常
-     */
+    /** 顾客下单与收银台下单共用同一规格和价格校验。 */
     private void validateCreateOrderCartItems(Long storeId, List<CreateOrderRequest.CartItem> cartItems) {
-        if (cartItems == null || cartItems.isEmpty()) {
-            throw new BusinessException("购物车为空，无法创建订单");
-        }
-
-        log.info("开始验证购物车商品数据，共{}个商品", cartItems.size());
-
-        for (CreateOrderRequest.CartItem cartItem : cartItems) {
-            // 跳过赠送菜品的验证（赠送菜品价格为0）
-            if (cartItem.getIsGift() != null && cartItem.getIsGift() == 1) {
+        if (cartItems == null || cartItems.isEmpty()) throw new BusinessException("购物车为空，无法创建订单");
+        for (CreateOrderRequest.CartItem item : cartItems) {
+            if (Integer.valueOf(1).equals(item.getIsGift())) {
                 org.hongtu.security.OperationPermission.order("gift");
-                log.info("菜品【{}】为赠送菜品，跳过价格验证", cartItem.getDishName());
                 continue;
             }
-
-            // 1. 查询菜品信息
-            DishVO dish = dishService.getEffectiveDish(cartItem.getDishId(), storeId, true);
-
-            if (dish.getEffectiveSalePrice() == null) {
-                throw new BusinessException("菜品【" + dish.getDishName() + "】价格未设置");
-            }
-
-            // 3. 验证规格额外价格（extraPrice）
-            BigDecimal calculatedExtraPrice = BigDecimal.ZERO;
-
-            // 如果有规格文本，说明选择了规格
-            if (StrUtil.isNotBlank(cartItem.getSpecText())) {
-                // 查询该菜品的所有规格选项
-                LambdaQueryWrapper<DishSpecOption> specWrapper = new LambdaQueryWrapper<>();
-                specWrapper.eq(DishSpecOption::getDishId, cartItem.getDishId());
-                List<DishSpecOption> specOptions = dishSpecOptionMapper.selectList(specWrapper);
-
-                if (specOptions != null && !specOptions.isEmpty()) {
-                    // 解析前端传来的规格文本，例如："1桶" 或 "1桶,微辣"
-                    String[] specTexts = cartItem.getSpecText().split(",");
-
-                    for (DishSpecOption specOption : specOptions) {
-                        // 解析数据库中的规格值JSON数组
-                        List<org.hongtu.restaurant.VO.SpecValue> specValues = specOption.getSpecValueList();
-
-                        if (specValues != null && !specValues.isEmpty()) {
-                            // 遍历规格文本，查找匹配的规格值
-                            for (String specText : specTexts) {
-                                specText = specText.trim();
-
-                                for (org.hongtu.restaurant.VO.SpecValue specValue : specValues) {
-                                    if (specValue.getValue().equals(specText)) {
-                                        // 找到匹配的规格，累加额外价格
-                                        if (specValue.getExtraPrice() != null) {
-                                            calculatedExtraPrice = calculatedExtraPrice.add(specValue.getExtraPrice());
-                                        }
-                                        log.debug("找到规格【{}】，额外价格：{}", specText, specValue.getExtraPrice());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 验证前端传来的extraPrice是否正确
-            if (cartItem.getExtraPrice() == null) {
-                cartItem.setExtraPrice(BigDecimal.ZERO);
-            }
-
-            if (cartItem.getExtraPrice().subtract(calculatedExtraPrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】规格额外价格不正确，规格：%s，计算价格：%s，前端传入：%s",
-                        dish.getDishName(),
-                        cartItem.getSpecText(),
-                        calculatedExtraPrice,
-                        cartItem.getExtraPrice()
-                ));
-            }
-
-            log.info("菜品【{}】验证通过，服务端正常售价：{}，规格价格：{}",
-                    dish.getDishName(), dish.getEffectiveSalePrice(), cartItem.getExtraPrice());
+            CartSpecNormalizer.Selection selection = validateOrderLine(
+                    storeId, item.getDishId(), item.getSpecText(), item.getExtraPrice());
+            item.setSpecText(selection.text());
+            item.setExtraPrice(selection.extraPrice());
         }
-
-        log.info("购物车商品数据验证完成");
     }
 
-    /**
-     * 验证购物车商品数据（CashierOrderRequest）
-     * 验证内容：
-     * 1. 菜品是否存在
-     * 2. 规格额外价格是否与服务端规格定义一致
-     * 客户端价格字段不参与校验和结算，最终金额统一由 PricingService 计算。
-     *
-     * @param cartItems 购物车商品列表
-     * @throws BusinessException 验证失败时抛出异常
-     */
     private void validateCartItems(Long storeId, List<CashierOrderRequest.CartItem> cartItems) {
-        if (cartItems == null || cartItems.isEmpty()) {
-            throw new BusinessException("购物车为空，无法创建订单");
-        }
-
-        log.info("开始验证购物车商品数据，共{}个商品", cartItems.size());
-
-        for (CashierOrderRequest.CartItem cartItem : cartItems) {
-            // 跳过赠送菜品的验证（赠送菜品价格为0）
-            if (cartItem.getIsGift() != null && cartItem.getIsGift() == 1) {
+        if (cartItems == null || cartItems.isEmpty()) throw new BusinessException("购物车为空，无法创建订单");
+        for (CashierOrderRequest.CartItem item : cartItems) {
+            if (Integer.valueOf(1).equals(item.getIsGift())) {
                 org.hongtu.security.OperationPermission.order("gift");
-                log.info("菜品【{}】为赠送菜品，跳过价格验证", cartItem.getDishName());
                 continue;
             }
-
-            // 1. 查询菜品信息
-            DishVO dish = dishService.getEffectiveDish(cartItem.getDishId(), storeId, true);
-
-            if (dish.getEffectiveSalePrice() == null) {
-                throw new BusinessException("菜品【" + dish.getDishName() + "】价格未设置");
-            }
-
-            // 3. 验证规格额外价格（extraPrice）
-            BigDecimal calculatedExtraPrice = BigDecimal.ZERO;
-
-            // 如果有规格文本，说明选择了规格
-            if (StrUtil.isNotBlank(cartItem.getSpecText())) {
-                // 查询该菜品的所有规格选项
-                LambdaQueryWrapper<DishSpecOption> specWrapper = new LambdaQueryWrapper<>();
-                specWrapper.eq(DishSpecOption::getDishId, cartItem.getDishId());
-                List<DishSpecOption> specOptions = dishSpecOptionMapper.selectList(specWrapper);
-
-                if (specOptions != null && !specOptions.isEmpty()) {
-                    // 解析前端传来的规格文本，例如："1桶" 或 "1桶,微辣"
-                    String[] specTexts = cartItem.getSpecText().split(",");
-
-                    for (DishSpecOption specOption : specOptions) {
-                        // 解析数据库中的规格值JSON数组
-                        List<org.hongtu.restaurant.VO.SpecValue> specValues = specOption.getSpecValueList();
-
-                        if (specValues != null && !specValues.isEmpty()) {
-                            // 遍历规格文本，查找匹配的规格值
-                            for (String specText : specTexts) {
-                                specText = specText.trim();
-
-                                for (org.hongtu.restaurant.VO.SpecValue specValue : specValues) {
-                                    if (specValue.getValue().equals(specText)) {
-                                        // 找到匹配的规格，累加额外价格
-                                        if (specValue.getExtraPrice() != null) {
-                                            calculatedExtraPrice = calculatedExtraPrice.add(specValue.getExtraPrice());
-                                        }
-                                        log.debug("找到规格【{}】，额外价格：{}", specText, specValue.getExtraPrice());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 验证前端传来的extraPrice是否正确
-            if (cartItem.getExtraPrice() == null) {
-                cartItem.setExtraPrice(BigDecimal.ZERO);
-            }
-
-            if (cartItem.getExtraPrice().subtract(calculatedExtraPrice).abs().compareTo(new BigDecimal("0.01")) > 0) {
-                throw new BusinessException(String.format(
-                        "菜品【%s】规格额外价格不正确，规格：%s，计算价格：%s，前端传入：%s",
-                        dish.getDishName(),
-                        cartItem.getSpecText(),
-                        calculatedExtraPrice,
-                        cartItem.getExtraPrice()
-                ));
-            }
-
-            log.info("菜品【{}】验证通过，服务端正常售价：{}，规格价格：{}",
-                    dish.getDishName(), dish.getEffectiveSalePrice(), cartItem.getExtraPrice());
+            CartSpecNormalizer.Selection selection = validateOrderLine(
+                    storeId, item.getDishId(), item.getSpecText(), item.getExtraPrice());
+            item.setSpecText(selection.text());
+            item.setExtraPrice(selection.extraPrice());
         }
-
-        log.info("购物车商品数据验证完成");
     }
 
+    private CartSpecNormalizer.Selection validateOrderLine(Long storeId, Long dishId,
+                                                           String specText, BigDecimal claimedExtraPrice) {
+        if (dishId == null) throw new BusinessException("菜品 ID 不能为空");
+        DishVO dish = dishService.getEffectiveDish(dishId, storeId, true);
+        if (dish.getEffectiveSalePrice() == null) {
+            throw new BusinessException("菜品【" + dish.getDishName() + "】价格未设置");
+        }
+        CartSpecNormalizer.Selection selection = CartSpecNormalizer.normalize(dish, specText);
+        BigDecimal claimed = claimedExtraPrice == null ? BigDecimal.ZERO : claimedExtraPrice;
+        if (claimed.subtract(selection.extraPrice()).abs().compareTo(new BigDecimal("0.01")) > 0) {
+            throw new BusinessException("菜品【" + dish.getDishName() + "】规格额外价格不正确");
+        }
+        return selection;
+    }
     /**
      * 根据门店配置打印订单
      * 当门店开启小票打印后，查询该门店启用的打印机，
