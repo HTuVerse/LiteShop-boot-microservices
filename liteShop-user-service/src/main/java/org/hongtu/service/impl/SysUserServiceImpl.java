@@ -108,6 +108,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Resource
     private RateLimitUtil rateLimitUtil;
     @Resource
+    private IpUtil ipUtil;
+    @Resource
     private SysTenantService sysTenantService;
     @Resource
     private SysUserStoreService sysUserStoreService;
@@ -1166,11 +1168,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (attributes == null) {
             return "unknown";
         }
-        String forwarded = attributes.getRequest().getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return attributes.getRequest().getRemoteAddr();
+        return ipUtil.getClientIp(attributes.getRequest());
     }
 
     private String randomPassword() {

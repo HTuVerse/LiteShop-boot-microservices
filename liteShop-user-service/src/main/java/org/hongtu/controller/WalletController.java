@@ -12,6 +12,7 @@ import org.hongtu.wallet.dto.WalletPlan;
 import org.hongtu.wallet.dto.WalletRechargeRequest;
 import org.hongtu.service.WalletService;
 import org.hongtu.tenant.TenantScope;
+import org.hongtu.utils.IpUtil;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -21,6 +22,7 @@ import java.util.Map;
 @RequestMapping("/wallet")
 public class WalletController {
     @Resource private WalletService wallet;
+    @Resource private IpUtil ipUtil;
 
     /** 管理端查看本租户所有储值档位。 */
     @GetMapping("/admin/plans")
@@ -88,8 +90,7 @@ public class WalletController {
     /** 获取本人待付款订单的微信 H5 支付地址。 */
     @PostMapping("/orders/{id}/wechat-h5-pay")
     public Result<Map<String, String>> wechatH5Pay(@PathVariable Long id, HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        String ip = forwarded == null ? request.getRemoteAddr() : forwarded.split(",")[0].trim();
+        String ip = ipUtil.getClientIp(request);
         return Result.success(Map.of("payUrl", wallet.wechatH5Pay(id, StpUtil.getLoginIdAsLong(), ip)));
     }
 
