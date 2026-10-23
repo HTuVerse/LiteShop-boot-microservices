@@ -22,7 +22,8 @@ public enum PaymentStatusEnum {
     CLOSED(5, "取消支付"),
     FAILED(6, "支付失败"),
     RECONCILING(7, "对账中"),
-    PAID_PENDING(8, "已收款待处理");
+    PAID_PENDING(8, "已收款待处理"),
+    CREATING(9, "支付交易创建中");
 
     @EnumValue
     private final Integer code;

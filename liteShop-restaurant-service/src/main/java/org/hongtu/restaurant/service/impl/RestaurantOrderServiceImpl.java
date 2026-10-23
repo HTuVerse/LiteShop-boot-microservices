@@ -627,29 +627,40 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      * 创建支付订单
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public PaymentResponse createPayment(Long orderId, Integer paymentType, String paymentScene,
                                          String openid, String authCode, String returnUrl, String payerClientIp) {
-
-        // 1. 锁定订单，避免同一订单并发创建多个支付或与线下结算竞争。
-        RestaurantOrder order = lockOrderForMutation(orderId);
-        if (order == null) {
-            throw new IllegalStateException("订单不存在");
-        }
-        if (order.getPaymentMode() != PaymentModeEnum.ONLINE) {
-            throw new BusinessException("该订单采用线下支付，请到收银台结算");
+        PaymentTypeEnum paymentTypeEnum = PaymentTypeEnum.getByCode(paymentType);
+        if (paymentTypeEnum != PaymentTypeEnum.WECHAT && paymentTypeEnum != PaymentTypeEnum.ALIPAY) {
+            throw new BusinessException("不支持的支付方式");
         }
 
-        // 2. 验证订单状态
-        if (order.getPaymentStatus() != null && order.getPaymentStatus() == PaymentStatusEnum.PAID) {
-            throw new IllegalStateException("订单已支付，请勿重复支付");
-        }
-        if (order.getStatus() == OrderStatusEnum.CANCELLED) {
-            throw new IllegalStateException("订单已取消，无法支付");
-        }
-        if (isOnlinePaymentExpired(order)) {
-            throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
-        }
+        // 本地事务只锁单并预留渠道；支付服务网络请求在提交后执行。
+        RestaurantOrder order = independentTx.execute(status -> {
+            RestaurantOrder locked = lockOrderForMutation(orderId);
+            if (locked == null) throw new BusinessException("订单不存在");
+            if (locked.getPaymentMode() != PaymentModeEnum.ONLINE)
+                throw new BusinessException("该订单采用线下支付，请到收银台结算");
+            if (locked.getPaymentStatus() != PaymentStatusEnum.UNPAID
+                    && locked.getPaymentStatus() != PaymentStatusEnum.FAILED)
+                throw new BusinessException("订单当前不可创建支付交易，请刷新状态");
+            if (locked.getStatus() == OrderStatusEnum.CANCELLED)
+                throw new BusinessException("订单已取消，无法支付");
+            if (isOnlinePaymentExpired(locked))
+                throw new BusinessException("订单支付已超时，正在自动取消，请刷新订单状态");
+            CashierAmountGuard.requireServerPayable(locked.getActualAmount(), locked.getTotalAmount());
+            if ((locked.getPaymentType() == PaymentTypeEnum.WECHAT
+                    || locked.getPaymentType() == PaymentTypeEnum.ALIPAY)
+                    && locked.getPaymentType() != paymentTypeEnum)
+                throw new BusinessException("该订单已创建其它支付渠道的交易，请先取消订单");
+            boolean reserved = this.update(new LambdaUpdateWrapper<RestaurantOrder>()
+                    .eq(RestaurantOrder::getId, orderId)
+                    .eq(RestaurantOrder::getPaymentStatus, locked.getPaymentStatus())
+                    .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.CREATING)
+                    .set(RestaurantOrder::getPaymentType, paymentTypeEnum)
+                    .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now()));
+            if (!reserved) throw new BusinessException("订单支付状态已变化，请刷新后重试");
+            return locked;
+        });
 
         BigDecimal serverPayable = CashierAmountGuard.requireServerPayable(
                 order.getActualAmount(), order.getTotalAmount());
@@ -662,21 +673,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 .paymentType(paymentType)
                 .paymentScene(paymentScene)
                 .expireSeconds(1800);
-
-        // 5. 根据支付方式调用对应的支付服务
-        PaymentTypeEnum paymentTypeEnum = PaymentTypeEnum.getByCode(paymentType);
-        if (paymentTypeEnum == null) {
-            throw new IllegalStateException("不支持的支付方式");
-        }
-        if ((order.getPaymentType() == PaymentTypeEnum.WECHAT
-                || order.getPaymentType() == PaymentTypeEnum.ALIPAY)
-                && order.getPaymentType() != paymentTypeEnum) {
-            throw new IllegalStateException("该订单已创建其它支付渠道的交易，请先取消订单");
-        }
-
-        if (paymentTypeEnum != PaymentTypeEnum.WECHAT && paymentTypeEnum != PaymentTypeEnum.ALIPAY) {
-            throw new IllegalStateException("不支持的支付方式");
-        }
 
         // 订单服务只提交可信金额和场景；渠道参数、网关与通知地址都由支付服务处理。
         PaymentCreateCommand command = new PaymentCreateCommand();
@@ -709,10 +705,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     .build());
         }
 
-        // 记录已创建的支付渠道订单，取消/超时任务才能正确关单。
-        order.setPaymentType(paymentTypeEnum);
-        order.setUpdatedAt(LocalDateTime.now());
-        this.updateById(order);
+        // 回调可能在此之前入账，条件更新绝不能把 PAID 覆盖回未支付。
+        independentTx.execute(status -> this.update(new LambdaUpdateWrapper<RestaurantOrder>()
+                .eq(RestaurantOrder::getId, orderId)
+                .eq(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.CREATING)
+                .eq(RestaurantOrder::getPaymentType, paymentTypeEnum)
+                .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.UNPAID)
+                .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now())));
 
         return responseBuilder.build();
     }
@@ -738,6 +737,23 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 ? queryAlipayPaymentStatus(order.getTenantId(), order.getOrderNo())
                 : null;
         if (channel == null || !channel.paid()) {
+            if (order.getPaymentStatus() == PaymentStatusEnum.CREATING
+                    && order.getUpdatedAt() != null
+                    && order.getUpdatedAt().isBefore(LocalDateTime.now().minusMinutes(2))) {
+                // 创建结果未知时先关单确认，只有渠道明确关闭才解除预留。
+                PaymentTransitionPolicy.Close close = resolveChannelClose(order);
+                if (close == PaymentTransitionPolicy.Close.CLOSED) {
+                    independentTx.execute(status -> this.update(new LambdaUpdateWrapper<RestaurantOrder>()
+                            .eq(RestaurantOrder::getId, orderId)
+                            .eq(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.CREATING)
+                            .eq(RestaurantOrder::getPaymentType, order.getPaymentType())
+                            .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.UNPAID)
+                            .set(RestaurantOrder::getPaymentType, null)
+                            .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now())));
+                } else if (close == PaymentTransitionPolicy.Close.PAID) {
+                    log.warn("支付交易创建结果显示已收款，等待带金额的渠道查单: orderId={}", orderId);
+                }
+            }
             return false;
         }
         if (!channel.accepted(order.getOrderNo())) {

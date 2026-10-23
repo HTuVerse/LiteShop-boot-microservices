@@ -21,7 +21,7 @@ public interface RestaurantOrderMapper extends BaseMapper<RestaurantOrder> {
     @Select("SELECT id, tenant_id AS tenantId FROM restaurant_order WHERE order_no = #{orderNo} LIMIT 1")
     OrderTenantRef findTenantByOrderNo(@Param("orderNo") String orderNo);
 
-    /** 未支付、支付失败或对账中，且订单未取消时标记已支付。 */
+    /** 未支付、支付失败、对账或创建交易中，且订单未取消时标记已支付。 */
     @Update("""
             UPDATE restaurant_order
             SET payment_status = 1,
@@ -33,7 +33,7 @@ public interface RestaurantOrderMapper extends BaseMapper<RestaurantOrder> {
                 stock_reserved = 1,
                 updated_at = NOW()
             WHERE id = #{id}
-              AND payment_status IN (0, 6, 7)
+              AND payment_status IN (0, 6, 7, 9)
               AND status <> 6
             """)
     int markPaidIfCapturable(@Param("id") Long id, @Param("paymentType") Integer paymentType,
@@ -50,7 +50,7 @@ public interface RestaurantOrderMapper extends BaseMapper<RestaurantOrder> {
                 actual_amount = #{actualAmount},
                 updated_at = NOW()
             WHERE id = #{id}
-              AND payment_status IN (0, 6, 7)
+              AND payment_status IN (0, 6, 7, 9)
               AND status <> 6
             """)
     int markPaidPendingIfCapturable(@Param("id") Long id, @Param("paymentType") Integer paymentType,
