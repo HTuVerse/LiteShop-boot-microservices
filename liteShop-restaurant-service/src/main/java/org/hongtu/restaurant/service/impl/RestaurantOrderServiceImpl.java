@@ -926,6 +926,10 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 3. 获取用户信息（Feign 调用 user-service）
         Long userId = StpUtil.getLoginIdAsLong();
+        // 在线余额支付仅允许订单会员本人付款；收银员代客结算应使用收银台会员余额入口。
+        if (order.getUserId() == null || !order.getUserId().equals(userId)) {
+            throw new BusinessException("余额支付仅支持订单会员本人，请使用收银台代客结算");
+        }
         UserBalanceDTO user = FeignResultUtil.unwrap(userFeignClient.getUserBalance(userId));
         if (user == null) {
             throw new BusinessException("用户不存在");
@@ -3619,12 +3623,13 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
         if (state == ChannelRefundState.BALANCE) {
             RestaurantOrder order = lockOrderForMutation(refund.getOrderId());
-            if (order.getUserId() == null) {
-                throw new BusinessException("余额支付订单缺少用户信息，无法退款");
+            Long payerUserId = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(order.getOrderNo()));
+            if (payerUserId == null) {
+                throw new BusinessException("未找到原余额支付流水，无法确认退款对象");
             }
-            Long operatorId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : order.getUserId();
+            Long operatorId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : payerUserId;
             changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
-                    .userId(order.getUserId()).amount(refund.getAmount()).type(3)
+                    .userId(payerUserId).amount(refund.getAmount()).type(3)
                     .orderNo(refund.getRefundNo()).sourceOrderNo(order.getOrderNo())
                     .operateUserId(operatorId).build());
         }

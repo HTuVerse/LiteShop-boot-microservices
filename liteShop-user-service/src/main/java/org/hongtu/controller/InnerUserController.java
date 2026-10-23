@@ -199,6 +199,12 @@ public class InnerUserController {
         return Result.success(innerBalanceService.changeBalance(dto));
     }
 
+    /** 退款只返回原余额消费流水的实际付款人，不从订单会员字段推断。 */
+    @GetMapping("/balance/expense-payer")
+    public Result<Long> balanceExpensePayer(@RequestParam String orderNo) {
+        return Result.success(innerBalanceService.expensePayer(orderNo));
+    }
+
     /** 查询本租户已提交的余额流水，不向调用方返回资金明细。 */
     @GetMapping("/balance/applied")
     public Result<Boolean> balanceChangeApplied(@RequestParam String orderNo,

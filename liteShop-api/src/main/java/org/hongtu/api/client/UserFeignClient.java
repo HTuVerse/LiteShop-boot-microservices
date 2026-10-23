@@ -91,6 +91,10 @@ public interface UserFeignClient {
     @PostMapping("/inner/user/balance/change")
     Result<BigDecimal> changeBalance(@RequestBody BalanceChangeDTO dto);
 
+    /** 查询原余额消费流水的实际付款人，退款不得使用订单会员ID猜测。 */
+    @GetMapping("/inner/user/balance/expense-payer")
+    Result<Long> balanceExpensePayer(@RequestParam("orderNo") String orderNo);
+
     /** 查询指定余额流水是否已实际入账，供跨服务对账。 */
     @GetMapping("/inner/user/balance/applied")
     Result<Boolean> balanceChangeApplied(@RequestParam("orderNo") String orderNo,

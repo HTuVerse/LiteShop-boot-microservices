@@ -34,6 +34,18 @@ public class InnerBalanceService {
     @Resource
     private SurplusRecordMapper surplusRecordMapper;
 
+    /** 根据原消费流水确定实际付款人，供餐饮退款与历史代付订单对账。 */
+    public Long expensePayer(String orderNo) {
+        if (orderNo == null || orderNo.isBlank() || orderNo.length() > 64) {
+            throw new BusinessException("原余额支付订单号无效");
+        }
+        UserSurplusRecord payment = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, orderNo)
+                .eq(UserSurplusRecord::getType, BalanceResourceEnum.EXPENSE)
+                .last("LIMIT 1"));
+        return payment == null ? null : payment.getUserId();
+    }
+
     /** 锁定会员后按商户订单号入账，余额和赠送子余额保持一致。 */
     @Transactional(rollbackFor = Exception.class)
     public BigDecimal creditWallet(WalletCreditDTO dto) {
