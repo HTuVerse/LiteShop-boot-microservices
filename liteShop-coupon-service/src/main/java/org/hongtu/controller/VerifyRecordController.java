@@ -67,6 +67,7 @@ public class VerifyRecordController {
      * @return 分页结果
      */
     @GetMapping("/list")
+    @SaCheckPermission(value = {"operations:verify-record", "marketing:coupon", "operations:direct-cashier", "operations:table-cashier"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Page<VerifyRecord>> getVerifyRecordList(
             @RequestParam(defaultValue = "1") Integer currentPage,
             @RequestParam(defaultValue = "10") Integer pageSize,
@@ -74,7 +75,9 @@ public class VerifyRecordController {
             @RequestParam(required = false) Integer status) {
         
             VerifyStatusEnum statusEnum = status != null ? VerifyStatusEnum.getByCode(status) : null;
-            return verifyRecordService.getVerifyRecordList(currentPage, pageSize, merchantId, statusEnum);
+            // 非营销管理员仅可查看自己的核销记录，不能通过 merchantId 枚举其他操作人。
+            Long scopedMerchantId = canViewAllRecords() ? merchantId : Long.valueOf(StpUtil.getLoginIdAsLong());
+            return verifyRecordService.getVerifyRecordList(currentPage, pageSize, scopedMerchantId, statusEnum);
         
     }
 
@@ -84,9 +87,14 @@ public class VerifyRecordController {
      * @return 记录详情
      */
     @GetMapping("/detail")
+    @SaCheckPermission(value = {"operations:verify-record", "marketing:coupon", "operations:direct-cashier", "operations:table-cashier"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<VerifyRecord> getVerifyRecordById(@RequestParam Long id) {
-        
-            return verifyRecordService.getVerifyRecordById(id);
+            Result<VerifyRecord> result = verifyRecordService.getVerifyRecordById(id);
+            if (result.getData() != null && !canViewAllRecords()
+                    && !Long.valueOf(StpUtil.getLoginIdAsLong()).equals(result.getData().getMerchantId())) {
+                return Result.error(403, "无权查看该核销记录");
+            }
+            return result;
         
     }
 
@@ -105,6 +113,11 @@ public class VerifyRecordController {
             Long merchantId = StpUtil.getLoginIdAsLong();
             return verifyRecordService.getVerifyRecordList(currentPage, pageSize, merchantId, null);
         
+    }
+
+    /** 营销管理员可查看本租户全部核销记录，普通核销员仅可查看自己的记录。 */
+    private boolean canViewAllRecords() {
+        return StpUtil.hasRole("SUPER_ADMIN") || StpUtil.hasPermission("marketing:coupon");
     }
 
 }
