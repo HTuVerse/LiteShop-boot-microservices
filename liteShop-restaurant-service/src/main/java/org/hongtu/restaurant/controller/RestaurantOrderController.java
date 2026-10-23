@@ -22,6 +22,7 @@ import org.hongtu.restaurant.service.TableSessionService;
 import org.hongtu.restaurant.security.TableSessionTokenService;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.utils.IpUtil;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,6 +57,8 @@ public class RestaurantOrderController {
     private UserFeignClient userFeignClient;
     @Resource
     private HttpServletRequest currentRequest;
+    @Resource
+    private IpUtil ipUtil;
     @Resource private org.hongtu.restaurant.config.TenantRestaurantConfig tenantRestaurantConfig;
 
     /** 顾客端读取当前支付模式，用于显示正确的支付入口。 */
@@ -447,12 +450,7 @@ public class RestaurantOrderController {
     }
 
     private String paymentClientIp() {
-        String forwarded = currentRequest.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            String first = forwarded.split(",", 2)[0].trim();
-            if (first.matches("[0-9a-fA-F:.]{3,45}")) return first;
-        }
-        return currentRequest.getRemoteAddr();
+        return ipUtil.getClientIp(currentRequest);
     }
 
     private String validatedPaymentReturnUrl(String returnUrl) {
