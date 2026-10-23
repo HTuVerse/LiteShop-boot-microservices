@@ -17,7 +17,7 @@ import org.hongtu.tenant.TenantConstants;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantScope;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
@@ -32,6 +32,9 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
 
     @Resource
     private RestaurantFeignClient restaurantFeignClient;
+
+    @Resource
+    private TransactionTemplate transactionTemplate;
 
     @Override
     public com.baomidou.mybatisplus.extension.plugins.pagination.Page<org.hongtu.VO.UserStoreAuthorizationVO> authorizationPage(
@@ -63,9 +66,8 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public Result<Void> assignStores(Long userId, List<Long> storeIds, Long defaultStoreId) {
-        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>().eq(SysUser::getId, userId).last("FOR UPDATE"));
+        SysUser user = sysUserMapper.selectById(userId);
         if (user == null) {
             return Result.error("用户不存在或不在当前租户");
         }
@@ -74,10 +76,8 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
         }
         boolean platformTenantScope = TenantContext.isSuperAdmin()
                 && TenantContext.getTenantIdOrNull() == null;
-        if (platformTenantScope) {
-            return TenantScope.call(user.getTenantId(),
-                    () -> assignStoresInCurrentTenant(user, storeIds, defaultStoreId));
-        }
+        if (platformTenantScope) return TenantScope.call(user.getTenantId(),
+                () -> assignStoresInCurrentTenant(user, storeIds, defaultStoreId));
         return assignStoresInCurrentTenant(user, storeIds, defaultStoreId);
     }
 
@@ -92,6 +92,16 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
             return Result.error("授权门店不存在或不属于当前租户");
         }
 
+        // 跨服务校验在事务外完成，避免持有用户行锁等待餐厅服务。
+        return transactionTemplate.execute(status -> persistStoreAssignment(user, normalized, defaultStoreId));
+    }
+
+    private Result<Void> persistStoreAssignment(SysUser user, List<Long> normalized, Long defaultStoreId) {
+        SysUser locked = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, user.getId()).last("FOR UPDATE"));
+        if (locked == null || !user.getTenantId().equals(locked.getTenantId())) {
+            return Result.error("用户已不存在或租户已变更");
+        }
         remove(new LambdaQueryWrapper<SysUserStore>().eq(SysUserStore::getUserId, user.getId()));
         if (!normalized.isEmpty()) {
             List<SysUserStore> rows = normalized.stream().map(storeId -> new SysUserStore()
