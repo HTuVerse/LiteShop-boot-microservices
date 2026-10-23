@@ -319,23 +319,51 @@ public class PricingService {
         if (request.getItems() == null || request.getItems().isEmpty()) throw new BusinessException("试价商品不能为空");
         storeDataScopeService.checkStoreAccess(request.getStoreId());
         Integer memberLevel = resolveMemberLevel(request);
+        return quote(request, memberLevel, loadQuoteContext(request.getStoreId(), request.getItems(), memberLevel));
+    }
+
+    /** 同一页菜单复用活动、菜品、门店配置和会员价查询，单品仍按独立购物车行试价。 */
+    public void enrichMenuPrices(List<DishVO> dishes, Long storeId) {
+        if (dishes == null || dishes.isEmpty() || storeId == null) return;
+        List<DishVO> available = dishes.stream()
+                .filter(dish -> dish.getId() != null && Integer.valueOf(1).equals(dish.getListingStatus())
+                        && !Integer.valueOf(1).equals(dish.getSoldOut()))
+                .toList();
+        if (available.isEmpty()) return;
+        storeDataScopeService.checkStoreAccess(storeId);
+        List<PricingQuoteRequest.Item> items = available.stream().map(dish -> {
+            PricingQuoteRequest.Item item = new PricingQuoteRequest.Item();
+            item.setDishId(dish.getId());
+            item.setQuantity(1);
+            item.setSpecExtraPrice(BigDecimal.ZERO);
+            return item;
+        }).toList();
+        QuoteContext context = loadQuoteContext(storeId, items, null);
+        for (int i = 0; i < available.size(); i++) {
+            PricingQuoteRequest request = new PricingQuoteRequest();
+            request.setStoreId(storeId);
+            request.setItems(List.of(items.get(i)));
+            applyMenuLine(available.get(i), quote(request, null, context).getLines().getFirst());
+        }
+    }
+
+    private PricingQuoteVO quote(PricingQuoteRequest request, Integer memberLevel, QuoteContext context) {
         LocalDateTime now = LocalDateTime.now();
-        List<PricingCampaign> campaigns = activeCampaigns(now);
-        Map<Long, PricingRule> rules = campaigns.isEmpty() ? Map.of()
-                : childrenByCampaign(ruleMapper.selectList(new LambdaQueryWrapper<PricingRule>()
-                .in(PricingRule::getCampaignId, ids(campaigns))), PricingRule::getCampaignId);
-        Map<Long, List<PricingCampaignScope>> scopes = groupedScopes(campaigns);
-        Map<Long, List<PricingCampaignAudience>> audiences = groupedAudiences(campaigns);
-        Map<Long, Set<Long>> groupStores = groupedStoreIds(scopes);
+        List<PricingCampaign> campaigns = context.campaigns();
+        Map<Long, PricingRule> rules = context.rules();
+        Map<Long, List<PricingCampaignScope>> scopes = context.scopes();
+        Map<Long, List<PricingCampaignAudience>> audiences = context.audiences();
+        Map<Long, Set<Long>> groupStores = context.groupStores();
 
         PricingQuoteVO result = new PricingQuoteVO().setStoreId(request.getStoreId())
                 .setUserId(request.getUserId()).setMemberLevelCode(memberLevel)
                 .setListAmount(ZERO).setCampaignDiscountAmount(ZERO).setPayableAmount(ZERO);
         for (PricingQuoteRequest.Item item : request.getItems()) {
             result.getLines().add(priceLine(request, item, memberLevel, now, campaigns, rules, scopes,
-                    audiences, groupStores));
+                    audiences, groupStores, context));
         }
-        applyOrderAmountCampaigns(result, request, memberLevel, campaigns, rules, scopes, audiences, groupStores);
+        applyOrderAmountCampaigns(result, request, memberLevel, campaigns, rules, scopes, audiences, groupStores,
+                context);
         BigDecimal listAmount = result.getLines().stream().map(PricingQuoteVO.Line::getLineListAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP);
         BigDecimal payable = result.getLines().stream().map(PricingQuoteVO.Line::getLinePayableAmount)
@@ -347,14 +375,10 @@ public class PricingService {
     /** 菜单列表使用数量1、匿名人群试价；数量活动在购物车试价时才体现。 */
     public void enrichMenuPrice(DishVO dish, Long storeId) {
         if (dish == null || storeId == null || dish.getId() == null) return;
-        PricingQuoteRequest request = new PricingQuoteRequest();
-        request.setStoreId(storeId);
-        PricingQuoteRequest.Item item = new PricingQuoteRequest.Item();
-        item.setDishId(dish.getId());
-        item.setQuantity(1);
-        item.setSpecExtraPrice(BigDecimal.ZERO);
-        request.setItems(List.of(item));
-        PricingQuoteVO.Line line = quote(request).getLines().getFirst();
+        enrichMenuPrices(List.of(dish), storeId);
+    }
+
+    private void applyMenuLine(DishVO dish, PricingQuoteVO.Line line) {
         dish.setCampaignPrice(line.getUnitSellingPrice().compareTo(line.getUnitListPrice()) < 0
                 ? line.getUnitSellingPrice() : null);
         dish.setDisplayPrice(line.getUnitSellingPrice());
@@ -372,15 +396,13 @@ public class PricingService {
                                            List<PricingCampaign> campaigns, Map<Long, PricingRule> rules,
                                            Map<Long, List<PricingCampaignScope>> scopes,
                                            Map<Long, List<PricingCampaignAudience>> audiences,
-                                           Map<Long, Set<Long>> groupStores) {
+                                           Map<Long, Set<Long>> groupStores, QuoteContext context) {
         if (item.getDishId() == null || item.getQuantity() == null || item.getQuantity() <= 0) {
             throw new BusinessException("试价商品和数量不正确");
         }
-        Dish dish = dishMapper.selectById(item.getDishId());
+        Dish dish = context.dishes().get(item.getDishId());
         if (dish == null || Integer.valueOf(1).equals(dish.getDeleted())) throw new BusinessException("菜品不存在");
-        StoreDish config = storeDishMapper.selectOne(new LambdaQueryWrapper<StoreDish>()
-                .eq(StoreDish::getStoreId, request.getStoreId()).eq(StoreDish::getDishId, dish.getId())
-                .eq(StoreDish::getDeleted, 0).last("LIMIT 1"));
+        StoreDish config = context.configs().get(dish.getId());
         validateDishAvailable(request.getStoreId(), dish, config);
         BigDecimal normal = config != null && config.getSalePriceOverride() != null
                 ? config.getSalePriceOverride() : dish.getSalePrice();
@@ -393,7 +415,7 @@ public class PricingService {
                 ? "STORE_OVERRIDE" : "HEADQUARTERS";
         List<PricingQuoteVO.Adjustment> adjustments = new ArrayList<>();
 
-        DirectPriceCandidate best = memberCandidate(request.getStoreId(), dish.getId(), memberLevel, now, extra);
+        DirectPriceCandidate best = memberCandidate(dish.getId(), memberLevel, extra, context.memberPrices());
         for (PricingCampaign campaign : campaigns) {
             PricingRule rule = rules.get(campaign.getId());
             if (rule == null || rule.getConditionType() != ConditionType.ALWAYS) continue;
@@ -479,7 +501,7 @@ public class PricingService {
                                             Map<Long, PricingRule> rules,
                                             Map<Long, List<PricingCampaignScope>> scopes,
                                             Map<Long, List<PricingCampaignAudience>> audiences,
-                                            Map<Long, Set<Long>> groupStores) {
+                                            Map<Long, Set<Long>> groupStores, QuoteContext context) {
         Set<String> appliedGroups = new HashSet<>();
         for (PricingCampaign campaign : campaigns) {
             PricingRule rule = rules.get(campaign.getId());
@@ -492,8 +514,8 @@ public class PricingService {
             if (appliedGroups.contains(group)) continue;
 
             List<PricingQuoteVO.Line> eligible = result.getLines().stream().filter(line -> {
-                Dish dish = dishMapper.selectById(line.getDishId());
-                StoreDish config = dish == null ? null : findStoreDish(request.getStoreId(), dish.getId());
+                Dish dish = context.dishes().get(line.getDishId());
+                StoreDish config = context.configs().get(line.getDishId());
                 return dish != null && matchesScope(scopes.get(campaign.getId()), request.getStoreId(), dish,
                         config, groupStores);
             }).toList();
@@ -543,18 +565,10 @@ public class PricingService {
         }
     }
 
-    private DirectPriceCandidate memberCandidate(Long storeId, Long dishId, Integer level,
-                                                  LocalDateTime now, BigDecimal extra) {
+    private DirectPriceCandidate memberCandidate(Long dishId, Integer level, BigDecimal extra,
+                                                  Map<Long, List<MemberDishPrice>> memberPrices) {
         if (level == null) return null;
-        List<MemberDishPrice> prices = memberPriceMapper.selectList(new LambdaQueryWrapper<MemberDishPrice>()
-                .eq(MemberDishPrice::getDishId, dishId).eq(MemberDishPrice::getMemberLevelCode, level)
-                .eq(MemberDishPrice::getStatus, 1).eq(MemberDishPrice::getDeleted, 0)
-                .and(w -> w.isNull(MemberDishPrice::getStoreId).or().eq(MemberDishPrice::getStoreId, storeId))
-                .and(w -> w.isNull(MemberDishPrice::getStartTime).or().le(MemberDishPrice::getStartTime, now))
-                .and(w -> w.isNull(MemberDishPrice::getEndTime).or().gt(MemberDishPrice::getEndTime, now))
-                .orderByDesc(MemberDishPrice::getStoreId)
-                .orderByDesc(MemberDishPrice::getPriority)
-                .orderByDesc(MemberDishPrice::getId));
+        List<MemberDishPrice> prices = memberPrices.getOrDefault(dishId, List.of());
         if (prices.isEmpty()) return null;
         // 门店专属配置优先于总部配置，同一层级再按 priority 和 ID 取首条。
         MemberDishPrice value = prices.getFirst();
@@ -580,6 +594,53 @@ public class PricingService {
                 .and(w -> w.isNull(PricingCampaign::getStartTime).or().le(PricingCampaign::getStartTime, now))
                 .and(w -> w.isNull(PricingCampaign::getEndTime).or().gt(PricingCampaign::getEndTime, now))
                 .orderByDesc(PricingCampaign::getPriority).orderByAsc(PricingCampaign::getId));
+    }
+
+    /** 批量装载一次试价所需的可信行数据，避免每个菜品重复访问数据库。 */
+    private QuoteContext loadQuoteContext(Long storeId, List<PricingQuoteRequest.Item> items, Integer memberLevel) {
+        LocalDateTime now = LocalDateTime.now();
+        List<PricingCampaign> campaigns = activeCampaigns(now);
+        Map<Long, PricingRule> rules = campaigns.isEmpty() ? Map.of()
+                : childrenByCampaign(ruleMapper.selectList(new LambdaQueryWrapper<PricingRule>()
+                .in(PricingRule::getCampaignId, ids(campaigns))), PricingRule::getCampaignId);
+        Map<Long, List<PricingCampaignScope>> scopes = groupedScopes(campaigns);
+        Map<Long, List<PricingCampaignAudience>> audiences = groupedAudiences(campaigns);
+        Map<Long, Set<Long>> groupStores = groupedStoreIds(scopes);
+        List<Long> dishIds = items.stream().map(PricingQuoteRequest.Item::getDishId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, Dish> dishes = new HashMap<>();
+        Map<Long, StoreDish> configs = new HashMap<>();
+        Map<Long, List<MemberDishPrice>> memberPrices = new HashMap<>();
+        for (int offset = 0; offset < dishIds.size(); offset += 500) {
+            List<Long> batch = dishIds.subList(offset, Math.min(offset + 500, dishIds.size()));
+            dishMapper.selectBatchIds(batch).forEach(dish -> dishes.put(dish.getId(), dish));
+            storeDishMapper.selectList(new LambdaQueryWrapper<StoreDish>()
+                    .eq(StoreDish::getStoreId, storeId).in(StoreDish::getDishId, batch)
+                    .eq(StoreDish::getDeleted, 0)).forEach(config -> configs.put(config.getDishId(), config));
+            if (memberLevel != null) {
+                memberPriceMapper.selectList(new LambdaQueryWrapper<MemberDishPrice>()
+                        .in(MemberDishPrice::getDishId, batch)
+                        .eq(MemberDishPrice::getMemberLevelCode, memberLevel)
+                        .eq(MemberDishPrice::getStatus, 1).eq(MemberDishPrice::getDeleted, 0)
+                        .and(w -> w.isNull(MemberDishPrice::getStoreId).or().eq(MemberDishPrice::getStoreId, storeId))
+                        .and(w -> w.isNull(MemberDishPrice::getStartTime).or().le(MemberDishPrice::getStartTime, now))
+                        .and(w -> w.isNull(MemberDishPrice::getEndTime).or().gt(MemberDishPrice::getEndTime, now))
+                        .orderByDesc(MemberDishPrice::getStoreId)
+                        .orderByDesc(MemberDishPrice::getPriority)
+                        .orderByDesc(MemberDishPrice::getId))
+                        .forEach(price -> memberPrices.computeIfAbsent(price.getDishId(), key -> new ArrayList<>())
+                                .add(price));
+            }
+        }
+        return new QuoteContext(campaigns, rules, scopes, audiences, groupStores, dishes, configs, memberPrices);
+    }
+
+    private record QuoteContext(List<PricingCampaign> campaigns, Map<Long, PricingRule> rules,
+                                Map<Long, List<PricingCampaignScope>> scopes,
+                                Map<Long, List<PricingCampaignAudience>> audiences,
+                                Map<Long, Set<Long>> groupStores, Map<Long, Dish> dishes,
+                                Map<Long, StoreDish> configs,
+                                Map<Long, List<MemberDishPrice>> memberPrices) {
     }
 
     private Map<Long, List<PricingCampaignScope>> groupedScopes(List<PricingCampaign> campaigns) {

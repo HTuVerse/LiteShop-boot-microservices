@@ -595,7 +595,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
                 .collect(Collectors.toMap(Dish::getId, item -> item));
         List<DishVO> records = configPage.getRecords().stream()
                 .filter(config -> dishes.containsKey(config.getDishId()))
-                .map(config -> toEffectiveVO(dishes.get(config.getDishId()), config, false))
+                .map(config -> toEffectiveVO(dishes.get(config.getDishId()), config, false, false))
                 .toList();
         if (records.isEmpty()) {
             Page<DishVO> empty = new Page<>(configPage.getCurrent(), configPage.getSize(), configPage.getTotal());
@@ -615,6 +615,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
             DishCategory category = categories.get(record.getCategoryId());
             record.setCategoryName(category == null ? null : category.getCategoryName());
         }
+        pricingService.enrichMenuPrices(records, storeId);
         Page<DishVO> result = new Page<>(configPage.getCurrent(), configPage.getSize(), configPage.getTotal());
         result.setRecords(records);
         return result;
@@ -693,6 +694,10 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
     }
 
     private DishVO toEffectiveVO(Dish dish, StoreDish config, boolean withDetails) {
+        return toEffectiveVO(dish, config, withDetails, true);
+    }
+
+    private DishVO toEffectiveVO(Dish dish, StoreDish config, boolean withDetails, boolean withPricing) {
         DishVO vo = BeanCopyUtils.copyBean(dish, DishVO.class);
         vo.setStoreDishId(config.getId());
         vo.setStoreId(config.getStoreId());
@@ -727,7 +732,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
         if (config.getNewOverride() != null) vo.setIsNew(BooleanEnum.getByCode(config.getNewOverride()));
         if (config.getSortOrderOverride() != null) vo.setSortOrder(config.getSortOrderOverride());
         if (withDetails) fillDetails(vo);
-        if (effectiveListingStatus == 1 && !Integer.valueOf(1).equals(config.getSoldOut())) {
+        if (withPricing && effectiveListingStatus == 1 && !Integer.valueOf(1).equals(config.getSoldOut())) {
             pricingService.enrichMenuPrice(vo, config.getStoreId());
         }
         return vo;
