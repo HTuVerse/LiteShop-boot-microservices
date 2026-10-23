@@ -71,7 +71,7 @@ FeignResultUtil.check(couponFeignClient.verifyCouponOnOrder(ucId, orderId));
 单体里一个 `@Transactional` 方法跨模块改多张表，全部原子回滚。现在 **`@Transactional` 只覆盖本服务自己的数据库操作，Feign 调用不参与回滚**。写涉及远程调用的事务方法时按优先级选择：
 
 1. **首选：把远程写操作放在本地事务的最后一步。** 远程失败抛异常 → 本地整体回滚；本地先前的操作还没提交 → 无损。例：收银台下单把 `changeBalance` 放在库存扣减之后（见 `RestaurantOrderServiceImpl.cashierDirectOrder`）。
-2. **次选：远程写在前时，为"远程成功+本地失败"写补偿。** 例：`payByBalance` 扣款后若本地处理失败，调用退款类型的 `changeBalance` 回补（见 `refundBalanceCompensate`）。
+2. **资金操作采用短事务预留与持久对账。** 例：`payByBalance` 先短事务预留订单，事务外按订单号幂等扣款，再短事务入账；响应不明时由对账任务查余额流水，确认无扣款后封闭订单号并释放预留。
 3. **被调方要保证幂等**：涉及资金/状态的内部接口用业务键（如 orderNo）做幂等，补偿重试才安全。
 4. 多个远程写没法排到最后 → 该上 MQ 最终一致或 Seata 了，先在 MIGRATION.md 记技术债。
 
