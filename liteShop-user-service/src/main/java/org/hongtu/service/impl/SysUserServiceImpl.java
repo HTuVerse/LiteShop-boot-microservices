@@ -1127,14 +1127,17 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Result addUserPoints(Long userId, Integer points,String remark) {
         return addUserPoints(userId, points, PointsSourceEnum.OTHERS,remark);
     }
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Result addUserPoints(Long userId, Integer points, PointsSourceEnum sourceType) {
         return addUserPoints(userId, points,sourceType,null);
     }
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Result addUserPoints(Long userId, Integer points) {
         return addUserPoints(userId, points,PointsSourceEnum.OTHERS,null);
     }
