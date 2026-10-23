@@ -32,6 +32,7 @@ import org.hongtu.service.SysUserService;
 import org.hongtu.service.SysTenantService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.UserLevelService;
+import org.hongtu.security.AdminTargetPolicy;
 import org.hongtu.saas.service.SaasSubscriptionService;
 import org.hongtu.api.client.RestaurantFeignClient;
 import org.hongtu.api.dto.StoreSummaryDTO;
@@ -892,13 +893,28 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     private Result adminEditUserInCurrentTenant(SysUser sysUser) {
         // 切入目标租户后重新读取，后续用户名、手机号、角色和等级校验都只能命中该租户。
-        SysUser existingUser = getById(sysUser.getId());
+        SysUser existingUser = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, sysUser.getId()).last("FOR UPDATE"));
         if (existingUser == null) {
             return Result.error("用户不存在或不在当前租户");
         }
+        // 与角色分配共用层级规则，并在目标用户行锁内检查，避免资料修改与角色提升并发交错。
+        if (!StpUtil.hasRole("SUPER_ADMIN") && !StpUtil.hasPermission("system:user:edit")) {
+            return Result.error("无权限编辑用户");
+        }
+        String denialReason = AdminTargetPolicy.denialReason(sysRoleMapper.selectRoleCodesByUserId(sysUser.getId()));
+        if (denialReason != null) return Result.error(denialReason);
         // 管理端同样只写业务允许编辑的字段，防止附带字段越权和旧余额覆盖。
         String username = sysUser.getUsername() == null ? existingUser.getUsername() : sysUser.getUsername();
         StatusEnum status = sysUser.getStatus() == null ? existingUser.getStatus() : sysUser.getStatus();
+        // 登录标识变更需要重置密码权限，普通资料编辑权限不足以接管其他账号。
+        boolean loginIdentityChanged = !Objects.equals(existingUser.getUsername(), username)
+                || (sysUser.getPhone() != null && !Objects.equals(existingUser.getPhone(), sysUser.getPhone()))
+                || (sysUser.getEmail() != null && !Objects.equals(existingUser.getEmail(), sysUser.getEmail()));
+        if (loginIdentityChanged && !StpUtil.hasRole("SUPER_ADMIN")
+                && !StpUtil.hasPermission("system:user:reset-password")) {
+            return Result.error("修改登录标识需要重置密码权限");
+        }
         // 如果修改了用户名，检查是否与其他用户冲突
         if (!existingUser.getUsername().equals(username)) {
             if(hongTuUtil.containsChinese(username)){
@@ -910,22 +926,6 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                     .one();
             if (usernameCheck != null) {
                 return Result.error("用户名已被使用");
-            }
-        }
-
-        //状态修改判断
-        if (!existingUser.getStatus().equals(status)) {
-            List<String> targetId = sysRoleMapper.selectRoleCodesByUserId(sysUser.getId());
-            if(StpUtil.hasRole("SUPER_ADMIN")){
-                if( targetId.contains("SUPER_ADMIN")){
-                    return Result.error("无法编辑其它的超级管理员");
-                }
-            } else if (StpUtil.hasPermission("system:user:edit")) {
-                if( targetId.contains("SUPER_ADMIN")||targetId.contains("ADMIN")){
-                    return Result.error("无法编辑超级管理员以及其它的管理员");
-                }
-            }else {
-                return Result.error("无权限编辑用户");
             }
         }
 

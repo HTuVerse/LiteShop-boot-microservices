@@ -12,6 +12,7 @@ import org.hongtu.DTO.SysRole;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.SysUserRole;
 import org.hongtu.Result.Result;
+import org.hongtu.security.AdminTargetPolicy;
 import org.hongtu.service.SysUserRoleService;
 import org.hongtu.tenant.TenantConstants;
 import org.springframework.stereotype.Service;
@@ -54,11 +55,9 @@ public class SysUserRoleServiceImpl extends ServiceImpl<SysUserRoleMapper, SysUs
             // 2. 查询该用户现有的角色ID列表
             List<Long> existingRoleIds = baseMapper.selectRoleIdsByUserId(userId);
             boolean platformAdmin = StpUtil.hasRole("SUPER_ADMIN");
-            boolean tenantAdmin = StpUtil.hasRole("ADMIN");
             List<String> targetCodes = sysRoleMapper.selectRoleCodesByUserId(userId);
-            if (!platformAdmin && (targetCodes.contains("SUPER_ADMIN")
-                    || (!tenantAdmin && targetCodes.contains("ADMIN"))))
-                return Result.error("无权修改管理员账号的角色");
+            String denialReason = AdminTargetPolicy.denialReason(targetCodes);
+            if (denialReason != null) return Result.error(denialReason);
             roleIds = roleIds == null ? List.of() : roleIds.stream().distinct().toList();
             if (roleIds.stream().anyMatch(Objects::isNull)) return Result.error("角色ID不能为空");
 
@@ -85,7 +84,7 @@ public class SysUserRoleServiceImpl extends ServiceImpl<SysUserRoleMapper, SysUs
             if (roles.stream().anyMatch(role -> role.getStatus() != org.hongtu.enums.StatusEnum.NORMAL))
                 return Result.error("不能分配已停用的角色");
             if (!platformAdmin && roles.stream().anyMatch(role -> "SUPER_ADMIN".equals(role.getRoleCode())
-                    || (!tenantAdmin && "ADMIN".equals(role.getRoleCode()))))
+                    || (!StpUtil.hasRole("ADMIN") && "ADMIN".equals(role.getRoleCode()))))
                 return Result.error("无权分配管理员角色");
             if (!platformAdmin) {
                 var ownPermissions = new java.util.HashSet<>(StpUtil.getPermissionList());
