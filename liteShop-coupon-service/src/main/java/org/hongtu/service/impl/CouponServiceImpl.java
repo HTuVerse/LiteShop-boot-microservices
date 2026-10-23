@@ -99,6 +99,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon == null || !StringUtils.hasText(coupon.getName())) {
             return Result.error("优惠券名称不能为空");
         }
+        if (coupon.getRecallTime() != null) {
+            return Result.error("回收时间只能通过优惠券回收功能设置");
+        }
         if (coupon.getType() == null) {
             return Result.error("优惠券类型不能为空");
         }
@@ -118,11 +121,14 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             }
         }
         // 设置默认值
+        coupon.setId(null);
         coupon.setRemainCount(coupon.getTotalCount());
         coupon.setCreateTime(LocalDateTime.now());
         if (coupon.getStatus() == null) {
             coupon.setStatus(OnOrOffShelfEnum.OFF_SHELF); // 默认下架
         }
+        org.hongtu.security.OperationPermission.requireChange(
+                "marketing:coupon:status", OnOrOffShelfEnum.OFF_SHELF, coupon.getStatus());
         // 保存优惠券主表
         boolean saved = save(coupon);
         if (saved) {
@@ -145,6 +151,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
     public Result<Coupon> updateCoupon(Coupon coupon) {
         if (coupon == null || coupon.getId() == null) {
             return Result.error("优惠券ID不能为空");
+        }
+        if (coupon.getRecallTime() != null) {
+            return Result.error("回收时间只能通过优惠券回收功能设置");
         }
         // 检查是否存在
         Coupon existCoupon = getById(coupon.getId());
@@ -169,10 +178,9 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
         if (coupon.getTotalCount() != null && !coupon.getTotalCount().equals(existCoupon.getTotalCount())) {
             return Result.error("请通过库存调整功能增减剩余库存");
         }
-        coupon.setTotalCount(null);
-        coupon.setRemainCount(null);
-        // 更新主表
-        boolean updated = updateById(coupon);
+        // 只提交允许编辑的字段，避免请求体里的审计时间或后续新增字段直接写入主表。
+        Coupon changes = editableCouponFields(coupon);
+        boolean updated = updateById(changes);
         if (updated) {
             // 更新关联菜品（如果传了dishItems，则重新保存）
             if (usesDishItems(targetType, coupon.getDishItems())) {
@@ -191,6 +199,27 @@ public class CouponServiceImpl extends ServiceImpl<CouponMapper, Coupon> impleme
             return Result.success("更新成功", result);
         }
         return Result.error("更新失败");
+    }
+
+    /** 仅复制普通编辑允许写入的模板字段，库存和回收状态由专用流程维护。 */
+    private Coupon editableCouponFields(Coupon source) {
+        return new Coupon().setId(source.getId())
+                .setName(source.getName())
+                .setDescription(source.getDescription())
+                .setType(source.getType())
+                .setValue(source.getValue())
+                .setMinAmount(source.getMinAmount())
+                .setStoreIds(source.getStoreIds())
+                .setUseWeekdays(source.getUseWeekdays())
+                .setUnavailableDates(source.getUnavailableDates())
+                .setUnavailableHolidays(source.getUnavailableHolidays())
+                .setUseStartTime(source.getUseStartTime())
+                .setUseEndTime(source.getUseEndTime())
+                .setStartTime(source.getStartTime())
+                .setEndTime(source.getEndTime())
+                .setStatus(source.getStatus())
+                .setStackable(source.getStackable())
+                .setExclusiveGroup(source.getExclusiveGroup());
     }
 
     /**
