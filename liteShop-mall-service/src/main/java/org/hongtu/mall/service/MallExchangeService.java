@@ -10,6 +10,7 @@ import org.hongtu.api.dto.MallPointsChangeDTO;
 import org.hongtu.api.dto.PaymentRefundNotifyResult;
 import org.hongtu.api.dto.WeChatNotifyParseDTO;
 import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.api.error.MallErrorCodes;
 import org.hongtu.DTO.PaymentNotifyResult;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.mall.dto.MallExchangeRequest;
@@ -122,7 +123,8 @@ public class MallExchangeService {
                 FeignResultUtil.unwrap(userClient.changeMallPoints(change(order, "SPEND")));
             } catch (BusinessException rejected) {
                 // 明确余额不足时释放库存；远程结果不明时继续用同一幂等键重试。
-                if ("积分不足或用户不存在".equals(rejected.getMessage()) || "用户不存在".equals(rejected.getMessage()))
+                if (rejected.getCode() == MallErrorCodes.POINTS_INSUFFICIENT
+                        || rejected.getCode() == MallErrorCodes.POINTS_USER_MISSING)
                     failWithoutSpend(order, rejected.getMessage());
                 else log.warn("兑换扣分结果待确认，orderId={}", id, rejected);
                 return get(id, null);
@@ -145,7 +147,7 @@ public class MallExchangeService {
             jdbc.update("UPDATE mall_exchange_order SET status='SUCCESS',user_coupon_id=?,processing_until=NULL,updated_at=NOW() WHERE id=? AND tenant_id=? AND status IN ('SPENT','PAID')",
                     couponId, id, TenantContext.getTenantId());
         } catch (BusinessException rejected) {
-            if (definitiveCouponFailure(rejected.getMessage())) {
+            if (definitiveCouponFailure(rejected.getCode())) {
                 jdbc.update("UPDATE mall_exchange_order SET status='REFUNDING',payment_status=IF(payment_status='PAID','REFUNDING',payment_status),failure_reason=?,processing_until=NULL,updated_at=NOW() WHERE id=? AND tenant_id=? AND status IN ('SPENT','PAID')",
                         trimReason(rejected.getMessage()), id, TenantContext.getTenantId());
                 return refund(get(id, null));
@@ -204,11 +206,10 @@ public class MallExchangeService {
         return reason == null ? "兑换失败" : reason.substring(0, Math.min(200, reason.length()));
     }
 
-    private boolean definitiveCouponFailure(String reason) {
-        return reason != null && (reason.contains("库存不足") || reason.contains("抢完")
-                || reason.contains("未上架") || reason.contains("已过期")
-                || reason.contains("优惠券不存在") || reason.contains("用户不存在")
-                || reason.contains("过期时间必须晚于"));
+    private boolean definitiveCouponFailure(Integer code) {
+        return code != null && (code == MallErrorCodes.COUPON_USER_MISSING
+                || code == MallErrorCodes.COUPON_UNAVAILABLE
+                || code == MallErrorCodes.COUPON_TIME_INVALID);
     }
 
     /** 发起微信小程序预支付；只允许订单所属会员支付未过期订单。 */

@@ -2,6 +2,7 @@ package org.hongtu.api.util;
 
 import org.hongtu.Result.Result;
 import org.hongtu.exception.BusinessException;
+import org.hongtu.exception.RemoteDependencyException;
 
 /**
  * Feign 调用结果工具
@@ -20,10 +21,14 @@ public class FeignResultUtil {
      */
     public static <T> T unwrap(Result<T> result) {
         if (result == null) {
-            throw new BusinessException("远程服务调用失败：无响应");
+            throw new RemoteDependencyException("远程服务无响应");
         }
         if (!Result.CODE_SUCCESS.equals(result.getCode())) {
-            throw new BusinessException(result.getMsg() == null ? "远程服务调用失败" : result.getMsg());
+            if (result.getCode() == null || result.getCode() == 500 || result.getCode() == 503) {
+                throw new RemoteDependencyException("远程服务处理失败");
+            }
+            throw new BusinessException(result.getCode(),
+                    result.getMsg() == null ? "远程服务调用失败" : result.getMsg());
         }
         return result.getData();
     }

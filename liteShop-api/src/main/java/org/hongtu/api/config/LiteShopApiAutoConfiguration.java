@@ -27,17 +27,22 @@ public class LiteShopApiAutoConfiguration {
     }
 
     @Bean
+    public RemoteAccessGuard remoteAccessGuard() {
+        return new RemoteAccessGuard();
+    }
+
+    @Bean
     @ConditionalOnBean(UserFeignClient.class)
     @ConditionalOnMissingBean(StpInterface.class)
-    public StpInterface remoteStpInterface(UserFeignClient userFeignClient) {
-        return new RemoteStpInterface(userFeignClient);
+    public StpInterface remoteStpInterface(UserFeignClient userFeignClient, RemoteAccessGuard guard) {
+        return new RemoteStpInterface(userFeignClient, guard);
     }
 
     @Bean
     @ConditionalOnBean(UserFeignClient.class)
     @ConditionalOnMissingBean(TenantAccessValidator.class)
-    public TenantAccessValidator remoteTenantAccessValidator(UserFeignClient userFeignClient) {
-        return tenantId -> Boolean.TRUE.equals(
-                FeignResultUtil.unwrap(userFeignClient.isTenantActive(tenantId)));
+    public TenantAccessValidator remoteTenantAccessValidator(UserFeignClient userFeignClient, RemoteAccessGuard guard) {
+        return tenantId -> Boolean.TRUE.equals(guard.call(() ->
+                FeignResultUtil.unwrap(userFeignClient.isTenantActive(tenantId))));
     }
 }

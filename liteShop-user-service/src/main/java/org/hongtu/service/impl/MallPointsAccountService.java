@@ -7,6 +7,7 @@ import org.hongtu.DAO.UserPointsRecordMapper;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.UserPointsRecord;
 import org.hongtu.api.dto.MallPointsChangeDTO;
+import org.hongtu.api.error.MallErrorCodes;
 import org.hongtu.enums.PointsOperationEnum;
 import org.hongtu.enums.PointsSourceEnum;
 import org.hongtu.exception.BusinessException;
@@ -47,11 +48,11 @@ public class MallPointsAccountService {
                 throw new BusinessException("兑换扣减记录不存在，不能退回积分");
         }
         SysUser before = userMapper.lockMallPointsUser(tenantId, dto.getUserId());
-        if (before == null) throw new BusinessException("用户不存在");
+        if (before == null) throw new BusinessException(MallErrorCodes.POINTS_USER_MISSING, "用户不存在");
         int changed = "SPEND".equals(dto.getAction())
                 ? userMapper.deductMallPoints(tenantId, dto.getUserId(), dto.getPoints())
                 : userMapper.refundMallPoints(tenantId, dto.getUserId(), dto.getPoints());
-        if (changed != 1) throw new BusinessException("积分不足或用户不存在");
+        if (changed != 1) throw new BusinessException(MallErrorCodes.POINTS_INSUFFICIENT, "积分不足或用户不存在");
         SysUser after = userMapper.selectById(dto.getUserId());
         UserPointsRecord record = new UserPointsRecord();
         record.setUserId(dto.getUserId()).setUsername(after.getUsername())

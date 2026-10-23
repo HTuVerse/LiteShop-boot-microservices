@@ -15,6 +15,7 @@ import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.api.error.MallErrorCodes;
 import org.hongtu.DTO.*;
 import org.hongtu.Result.Result;
 import org.hongtu.VO.UserCouponVO;
@@ -296,24 +297,24 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
             if (user == null) {
                 log.warn("发放优惠券失败：用户不存在，userId={}", userId);
-                return Result.error("用户不存在或不属于当前租户，请从当前租户的用户列表选择");
+                return Result.error(MallErrorCodes.COUPON_USER_MISSING, "用户不存在或不属于当前租户，请从当前租户的用户列表选择");
             }
             // 检查优惠券是否存在
             Coupon coupon = couponMapper.selectById(couponId);
             if (coupon == null) {
                 log.warn("发放优惠券失败：优惠券不存在，couponId={}", couponId);
-                return Result.error("优惠券不存在");
+                return Result.error(MallErrorCodes.COUPON_UNAVAILABLE, "优惠券不存在");
             }
             // 检查优惠券是否上架可用
             if (coupon.getRecallTime() != null || coupon.getStatus() != OnOrOffShelfEnum.ON_SHELF) {
                 log.warn("发放优惠券失败：优惠券未上架，couponId={}", couponId);
-                return Result.error("优惠券未上架，不可发放");
+                return Result.error(MallErrorCodes.COUPON_UNAVAILABLE, "优惠券未上架，不可发放");
             }
             // 检查优惠券是否在有效期内
             LocalDateTime now = LocalDateTime.now();
             if (coupon.getEndTime() != null && coupon.getEndTime().isBefore(now)) {
                 log.warn("发放优惠券失败：优惠券已过期，couponId={}", couponId);
-                return Result.error("优惠券已过期");
+                return Result.error(MallErrorCodes.COUPON_UNAVAILABLE, "优惠券已过期");
             }
             // 先校验有效期，再扣库存。独立处理两个可选时间，避免只填一个时被忽略。
             LocalDateTime couponStartTime = startTime == null ? now : LocalDateTimeUtil.of(startTime);
@@ -324,23 +325,23 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             LocalDateTime couponExpireTime = expiredTime == null ? coupon.getEndTime() : LocalDateTimeUtil.of(expiredTime);
             if (couponExpireTime != null && (!couponExpireTime.isAfter(couponStartTime)
                     || !couponExpireTime.isAfter(now))) {
-                return Result.error("过期时间必须晚于生效时间及当前时间");
+                return Result.error(MallErrorCodes.COUPON_TIME_INVALID, "过期时间必须晚于生效时间及当前时间");
             }
             if ((coupon.getStartTime() != null && couponStartTime.isBefore(coupon.getStartTime()))
                     || (coupon.getEndTime() != null && couponExpireTime != null
                     && couponExpireTime.isAfter(coupon.getEndTime()))) {
-                return Result.error("发放有效期必须在优惠券的有效期范围内");
+                return Result.error(MallErrorCodes.COUPON_TIME_INVALID, "发放有效期必须在优惠券的有效期范围内");
             }
             // 检查库存是否充足
             if (coupon.getRemainCount() == null || coupon.getRemainCount() <= 0) {
                 log.warn("发放优惠券失败：优惠券库存不足，couponId={}, remainCount={}", couponId, coupon.getRemainCount());
-                return Result.error("优惠券库存不足");
+                return Result.error(MallErrorCodes.COUPON_UNAVAILABLE, "优惠券库存不足");
             }
             // 扣减库存（使用乐观锁，确保并发安全）
             int affected = couponMapper.decreaseStock(couponId, 1);
             if (affected <= 0) {
                 log.warn("发放优惠券失败：库存扣减失败（可能已被抢完），couponId={}", couponId);
-                return Result.error("优惠券已被抢完，请稍后再试");
+                return Result.error(MallErrorCodes.COUPON_UNAVAILABLE, "优惠券已被抢完，请稍后再试");
             }
             // 创建用户优惠券记录
             UserCoupon userCoupon = new UserCoupon();

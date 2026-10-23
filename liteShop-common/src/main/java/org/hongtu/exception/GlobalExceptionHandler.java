@@ -10,6 +10,7 @@ import org.springframework.validation.BindException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -58,14 +59,26 @@ public class GlobalExceptionHandler {
         return Result.error(CodeMsg.PARAM_ERROR.getCode(), e.getMessage());
     }
 
-    /**
-     * 订单等业务规则使用 IllegalStateException 表达可展示原因。
-     */
+    /** 内部状态异常可能包含配置和依赖信息，统一按服务器错误隐藏细节。 */
     @ExceptionHandler(IllegalStateException.class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public Result<Void> handleIllegalStateException(IllegalStateException e) {
-        logger.warn("业务状态异常: {}", e.getMessage());
-        return Result.error(CodeMsg.PARAM_ERROR.getCode(), e.getMessage());
+        logger.error("内部状态异常", e);
+        return Result.error(CodeMsg.SERVER_ERROR.getCode(), "系统异常，请稍后重试");
+    }
+
+    @ExceptionHandler(RemoteDependencyException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    public Result<Void> handleRemoteDependencyException(RemoteDependencyException e) {
+        logger.error("内部依赖不可用", e);
+        return Result.error(503, "依赖服务暂不可用，请稍后重试");
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Result<Void> handleHttpMessageNotReadableException(HttpMessageNotReadableException e) {
+        logger.debug("请求体解析失败", e);
+        return Result.error(CodeMsg.PARAM_ERROR.getCode(), "请求体格式错误");
     }
 
     @ExceptionHandler(SecurityException.class)

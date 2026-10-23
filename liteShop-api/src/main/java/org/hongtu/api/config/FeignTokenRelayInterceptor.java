@@ -4,6 +4,7 @@ import feign.RequestInterceptor;
 import feign.RequestTemplate;
 import jakarta.servlet.http.HttpServletRequest;
 import org.hongtu.tenant.StoreContext;
+import org.hongtu.exception.RemoteDependencyException;
 import org.hongtu.tenant.TenantConstants;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -23,7 +24,7 @@ public class FeignTokenRelayInterceptor implements RequestInterceptor {
     @Override
     public void apply(RequestTemplate template) {
         if (internalCallSecret.isBlank()) {
-            throw new IllegalStateException("未配置 liteshop.internal-call.secret");
+            throw new RemoteDependencyException("内部调用凭据未配置");
         }
         for (String header : new String[]{TenantConstants.HEADER_TENANT_ID,
                 TenantConstants.HEADER_SUPER_ADMIN, TenantConstants.HEADER_STORE_RESTRICTED,

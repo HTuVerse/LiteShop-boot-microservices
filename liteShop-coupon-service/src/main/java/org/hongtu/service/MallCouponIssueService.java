@@ -27,8 +27,10 @@ public class MallCouponIssueService {
             return existing.getId();
         }
         Result<?> result = userCouponService.sendCouponToUser(userId, couponId);
-        if (!Result.CODE_SUCCESS.equals(result.getCode()) || !(result.getData() instanceof UserCoupon issued))
-            throw new BusinessException(result.getMsg() == null ? "优惠券发放失败" : result.getMsg());
+        if (result == null || !Result.CODE_SUCCESS.equals(result.getCode())
+                || !(result.getData() instanceof UserCoupon issued))
+            throw new BusinessException(result == null ? 500 : result.getCode(),
+                    result == null || result.getMsg() == null ? "优惠券发放失败" : result.getMsg());
         issued.setSourceOrderId(orderId);
         if (userCouponMapper.updateById(issued) != 1) throw new BusinessException("优惠券发放记录更新失败");
         return issued.getId();
