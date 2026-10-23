@@ -9,6 +9,8 @@ import cn.hutool.core.util.StrUtil;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import org.hongtu.DTO.SysUser;
+import org.hongtu.controller.request.AdminUserRequest;
+import org.hongtu.controller.request.UserProfileUpdateRequest;
 import org.hongtu.DTO.UserLevel;
 import org.hongtu.DAO.UserLevelMapper;
 import org.hongtu.Result.Result;
@@ -16,6 +18,7 @@ import org.hongtu.VO.CashierMemberVO;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.service.SysUserService;
 import org.hongtu.utils.IpUtil;
+import org.hongtu.utils.BeanCopyUtils;
 import org.hongtu.utils.hongTuUtil;
 import org.springframework.web.bind.annotation.*;
 
@@ -36,7 +39,7 @@ public class SysUserController {
     @GetMapping("/admin/captcha")
     @SaIgnore
     public Result<?> adminCaptcha(HttpServletRequest request) {
-        return Result.success(adminLoginSecurity.captcha(request.getRemoteAddr()));
+        return Result.success(adminLoginSecurity.captcha(ipUtil.getClientIp(request)));
     }
     @Resource
     IpUtil ipUtil;
@@ -182,12 +185,13 @@ public class SysUserController {
      * 用户更新用户个人信息
      * */
     @PostMapping("/updateUserInfo")
-    public Result updateUserInfo(@RequestBody SysUser sysUser){
+    public Result updateUserInfo(@RequestBody UserProfileUpdateRequest request){
+        if (request == null) return Result.error("用户信息不能为空");
         long loginId = StpUtil.getLoginIdAsLong();
-        if (sysUser.getId() == null || sysUser.getId() != loginId) {
+        if (request.getId() == null || request.getId() != loginId) {
             return Result.error(401,"您无权限更新其它用户的信息");
         }
-        return sysUserService.updateUserInfo(sysUser);
+        return sysUserService.updateUserInfo(BeanCopyUtils.copyBean(request, SysUser.class));
     }
 
     /**
@@ -302,10 +306,12 @@ public class SysUserController {
      */
     @PutMapping("/admin/edit")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
-    public Result adminEditUser(@RequestBody SysUser sysUser) {
-        if (sysUser == null || sysUser.getId() == null) {
+    public Result adminEditUser(@RequestBody AdminUserRequest request) {
+        if (request == null || request.getId() == null) {
             return Result.error("用户ID不能为空");
         }
+        SysUser sysUser = BeanCopyUtils.copyBean(request, SysUser.class);
+        sysUser.setPassword(null);
         return sysUserService.adminEditUser(sysUser);
     }
 
@@ -355,10 +361,12 @@ public class SysUserController {
      */
     @PostMapping("/add")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
-    public Result addUser(@RequestBody SysUser sysUser) {
-        if (sysUser == null) {
+    public Result addUser(@RequestBody AdminUserRequest request) {
+        if (request == null) {
             return Result.error("用户信息不能为空");
         }
+        SysUser sysUser = BeanCopyUtils.copyBean(request, SysUser.class);
+        sysUser.setId(null);
         if (StrUtil.isBlank(sysUser.getUsername())) {
             return Result.error("用户名不能为空");
         }
