@@ -8,6 +8,8 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.util.Collections;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -75,6 +77,42 @@ public class RateLimitUtil {
                     "    end " +
                     "    return 1 " +
                     "end";
+
+    /** 多个配额在同一个 Redis 脚本中检查和占用；调用方须保证集群模式下各键位于同一 hash slot。 */
+    private static final String MULTI_RATE_LIMIT_SCRIPT =
+            "for i=1,#KEYS do "
+                    + "if tonumber(redis.call('GET', KEYS[i]) or '0') >= tonumber(ARGV[2*i-1]) then return 0 end "
+                    + "end "
+                    + "for i=1,#KEYS do "
+                    + "local count=redis.call('INCR', KEYS[i]) "
+                    + "if count == 1 then redis.call('EXPIRE', KEYS[i], tonumber(ARGV[2*i])) end "
+                    + "end return 1";
+
+    public boolean isAllowedAll(String[] keys, int[] limits, int[] windows) {
+        if (keys == null || keys.length == 0 || limits.length != keys.length || windows.length != keys.length) {
+            throw new IllegalArgumentException("限流参数不匹配");
+        }
+        for (int i = 0; i < keys.length; i++) {
+            if (limits[i] <= 0 || windows[i] <= 0) {
+                throw new IllegalArgumentException("限流阈值和窗口必须大于零");
+            }
+        }
+        try {
+            DefaultRedisScript<Long> script = new DefaultRedisScript<>();
+            script.setScriptText(MULTI_RATE_LIMIT_SCRIPT);
+            script.setResultType(Long.class);
+            List<String> redisKeys = Arrays.stream(keys).map(key -> RATE_LIMIT_PREFIX + key).toList();
+            Object[] args = new Object[keys.length * 2];
+            for (int i = 0; i < keys.length; i++) {
+                args[2 * i] = limits[i];
+                args[2 * i + 1] = windows[i];
+            }
+            return Long.valueOf(1L).equals(redisTemplate.execute(script, redisKeys, args));
+        } catch (Exception e) {
+            log.error("组合限流检查失败，拒绝访问", e);
+            return false;
+        }
+    }
 
     /**
      * 按当前租户构造限流键。没有租户上下文时使用固定段，不和其它租户共用桶。

@@ -11,6 +11,7 @@ import org.hongtu.tenant.TenantContext;
 import org.hongtu.utils.DesensitizationUtil;
 import org.hongtu.utils.IpUtil;
 import org.hongtu.utils.RateLimitUtil;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -42,6 +43,13 @@ public class SendController {
 
     @Resource
     private RateLimitUtil rateLimitUtil;
+
+    @Resource
+    private IpUtil ipUtil;
+
+    /** 全平台每日发送预算，防止大量账号分摊绕过单账号限额。 */
+    @Value("${liteshop.message.global-daily-send-limit:20000}")
+    private int globalDailySendLimit;
 
     /**
      * 发送手机/邮箱验证码（自动识别）
@@ -141,45 +149,32 @@ public class SendController {
     private Result sendAndRecordLimit(String tenantScope, String account, HttpServletRequest request,
                                       java.util.function.Supplier<Result> sendAction) {
         // 获取客户端IP
-        String clientIp = IpUtil.getClientIp(request);
+        String clientIp = ipUtil.getClientIp(request);
 
-        // IP级别限流检查
-        String ipLimitKey = RateLimitUtil.globalKey(IP_LIMIT_PREFIX, clientIp);
-        if (!rateLimitUtil.isUnderLimit(ipLimitKey, IP_MAX_SEND_LIMIT, IP_WINDOW_SEC)) {
-            log.warn("IP限流触发, IP: {}, account: {}", clientIp, DesensitizationUtil.desensitizeAccount(account));
-            return Result.error("操作过于频繁，请" + IP_LIMIT_WINDOW_HOURS + "小时后再试");
-        }
-
-        // 账号级别限流检查
-        String rateLimitKey = SEND_COUNT_CODE_PREFIX + tenantScope + ":" + account;
-        if (!rateLimitUtil.isUnderLimit(rateLimitKey, MAX_SEND_LIMIT, SEND_WINDOW_SEC)) {
-            log.warn("账号限流触发, account: {}", DesensitizationUtil.desensitizeAccount(account));
-            return Result.error("发送次数过多，请" + SEND_RESET_TIME + "小时后再试");
-        }
-
-        // 发送间隔检查（60秒内不能重复发送）
-        String intervalKey = SEND_INTERVAL_PREFIX + tenantScope + ":" + account;
-        if (!rateLimitUtil.setIdempotentMark(intervalKey, SEND_INTERVAL_SECONDS)) {
-            log.warn("发送间隔限制触发, account: {}", DesensitizationUtil.desensitizeAccount(account));
-            return Result.error("操作过于频繁，请" + SEND_INTERVAL_SECONDS + "秒后再试");
+        // 同一 hash slot 保证 Redis Cluster 可执行组合 Lua；所有配额在实际发送前一次性占用。
+        String scope = "{message-send}:";
+        String[] keys = {
+                scope + "interval:" + tenantScope + ":" + account,
+                scope + "ip:" + clientIp,
+                scope + "account:" + tenantScope + ":" + account,
+                scope + "global"
+        };
+        int[] limits = {1, IP_MAX_SEND_LIMIT, MAX_SEND_LIMIT, globalDailySendLimit};
+        int[] windows = {SEND_INTERVAL_SECONDS, IP_WINDOW_SEC, SEND_WINDOW_SEC, 86400};
+        if (!rateLimitUtil.isAllowedAll(keys, limits, windows)) {
+            log.warn("验证码发送限额触发, account: {}, IP: {}", DesensitizationUtil.desensitizeAccount(account), clientIp);
+            return Result.error("操作过于频繁，请稍后重试");
         }
 
         try {
             Result result = sendAction.get();
-            if (Result.CODE_SUCCESS.equals(result.getCode())) {
-                // 发送成功后增加限流计数
-                rateLimitUtil.incrementQuota(rateLimitKey, SEND_WINDOW_SEC);
-                rateLimitUtil.incrementQuota(ipLimitKey, IP_WINDOW_SEC);
+            if (result != null && Result.CODE_SUCCESS.equals(result.getCode())) {
                 log.info("验证码发送成功, account: {}, IP: {}", DesensitizationUtil.desensitizeAccount(account), clientIp);
             } else {
-                // 发送失败则删除间隔标记，允许重试
-                rateLimitUtil.removeIdempotentMark(intervalKey);
                 log.warn("验证码发送失败, account: {}", DesensitizationUtil.desensitizeAccount(account));
             }
             return result;
         } catch (Exception e) {
-            // 异常时删除间隔标记，允许重试
-            rateLimitUtil.removeIdempotentMark(intervalKey);
             log.error("发送验证码异常, account: {}", DesensitizationUtil.desensitizeAccount(account), e);
             return Result.error("发送失败，请稍后重试");
         }

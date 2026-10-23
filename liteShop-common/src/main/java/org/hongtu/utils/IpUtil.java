@@ -9,6 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.net.InetAddress;
+
 /**
  * IP工具类
  * 提供IP获取、归属地查询等功能
@@ -26,6 +28,10 @@ public class IpUtil {
     @Value("${ip.location.enabled:false}")
     private boolean ipLocationEnabled;
 
+    /** 仅这些代理的转发头可参与客户端 IP 解析；默认不信任任何代理。 */
+    @Value("${liteshop.security.trusted-proxies:}")
+    private String trustedProxyCidrs;
+
     /**
      * 获取客户端真实IP地址
      * 支持代理、负载均衡、CDN等场景
@@ -33,53 +39,30 @@ public class IpUtil {
      * @param request HTTP请求对象
      * @return 客户端真实IP地址
      */
-    public static String getClientIp(HttpServletRequest request) {
+    public String getClientIp(HttpServletRequest request) {
         if (request == null) {
             return "unknown";
         }
-
-        String ip = request.getHeader("X-Forwarded-For");
-        if (isValidIp(ip)) {
-            // X-Forwarded-For可能包含多个IP,取第一个
-            return getFirstIp(ip);
+        String remote = normalize(request.getRemoteAddr());
+        if (!isTrusted(remote)) {
+            return remote;
         }
-
-        ip = request.getHeader("X-Real-IP");
-        if (isValidIp(ip)) {
-            return ip;
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (StrUtil.isNotBlank(forwarded) && forwarded.length() <= 2048) {
+            String[] hops = forwarded.split(",", -1);
+            String client = remote;
+            // 从可信代理开始向左剥离；遇到第一个不可信地址即停止。
+            for (int i = hops.length - 1; i >= 0 && isTrusted(client); i--) {
+                String hop = normalize(hops[i].trim());
+                if (!isValidIp(hop)) {
+                    return remote;
+                }
+                client = hop;
+            }
+            return client;
         }
-
-        ip = request.getHeader("Proxy-Client-IP");
-        if (isValidIp(ip)) {
-            return ip;
-        }
-
-        ip = request.getHeader("WL-Proxy-Client-IP");
-        if (isValidIp(ip)) {
-            return ip;
-        }
-
-        ip = request.getHeader("HTTP_CLIENT_IP");
-        if (isValidIp(ip)) {
-            return ip;
-        }
-
-        ip = request.getHeader("HTTP_X_FORWARDED_FOR");
-        if (isValidIp(ip)) {
-            return getFirstIp(ip);
-        }
-
-        ip = request.getRemoteAddr();
-        if (StrUtil.isBlank(ip)) {
-            ip = "unknown";
-        }
-
-        // 本地地址处理
-        if ("0:0:0:0:0:0:0:1".equals(ip) || "::1".equals(ip)) {
-            ip = "127.0.0.1";
-        }
-
-        return ip;
+        String realIp = normalize(request.getHeader("X-Real-IP"));
+        return isValidIp(realIp) ? realIp : remote;
     }
 
     /**
@@ -89,9 +72,21 @@ public class IpUtil {
      * @return true-有效, false-无效
      */
     private static boolean isValidIp(String ip) {
-        return StrUtil.isNotBlank(ip) 
-            && !"unknown".equalsIgnoreCase(ip) 
-            && !"null".equalsIgnoreCase(ip);
+        if (StrUtil.isBlank(ip)) return false;
+        if (ip.contains(".")) {
+            String[] parts = ip.split("\\.", -1);
+            if (parts.length != 4) return false;
+            for (String part : parts) {
+                if (!part.matches("[0-9]{1,3}") || Integer.parseInt(part) > 255) return false;
+            }
+            return true;
+        }
+        if (!ip.contains(":") || !ip.matches("[0-9a-fA-F:]+")) return false;
+        try {
+            return InetAddress.getByName(ip).getAddress().length == 16;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     /**
@@ -100,18 +95,37 @@ public class IpUtil {
      * @param ips IP字符串(可能包含多个IP,用逗号分隔)
      * @return 第一个有效IP
      */
-    private static String getFirstIp(String ips) {
-        if (StrUtil.isBlank(ips)) {
-            return "unknown";
-        }
-        String[] ipArray = ips.split(",");
-        for (String ip : ipArray) {
-            String trimmedIp = ip.trim();
-            if (isValidIp(trimmedIp)) {
-                return trimmedIp;
+    private static String normalize(String ip) {
+        if ("0:0:0:0:0:0:0:1".equals(ip) || "::1".equals(ip)) return "127.0.0.1";
+        return isValidIp(ip) ? ip : "unknown";
+    }
+
+    private boolean isTrusted(String ip) {
+        if (!isValidIp(ip) || StrUtil.isBlank(trustedProxyCidrs)) return false;
+        for (String cidr : trustedProxyCidrs.split(",")) {
+            String[] parts = cidr.trim().split("/", -1);
+            if (parts.length > 2 || !isValidIp(parts[0])) continue;
+            try {
+                byte[] address = InetAddress.getByName(ip).getAddress();
+                byte[] network = InetAddress.getByName(parts[0]).getAddress();
+                if (address.length != network.length) continue;
+                int bits = parts.length == 1 ? address.length * 8 : Integer.parseInt(parts[1]);
+                if (bits < 0 || bits > address.length * 8) continue;
+                boolean matches = true;
+                for (int i = 0; i < address.length; i++) {
+                    int mask = Math.max(0, Math.min(8, bits - i * 8));
+                    int byteMask = (0xff << (8 - mask)) & 0xff;
+                    if ((address[i] & byteMask) != (network[i] & byteMask)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) return true;
+            } catch (Exception ignored) {
+                // 无效配置不扩大可信范围。
             }
         }
-        return ips.split(",")[0].trim();
+        return false;
     }
 
     /**
