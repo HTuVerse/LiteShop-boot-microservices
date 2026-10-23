@@ -20,6 +20,8 @@ logs/
 
 # 上传文件
 uploads/
+runtime/*.mmdb
+runtime/audit-anchors.jsonl
 
 # 系统文件
 .DS_Store
