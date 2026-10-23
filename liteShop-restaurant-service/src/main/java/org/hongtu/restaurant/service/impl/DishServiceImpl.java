@@ -642,10 +642,25 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
 
     /** 为新门店和存量数据补齐总部菜品关联，保证总部新增门店后无需复制菜品。 */
     private void ensureStoreBindings(Long storeId) {
+        Long tenantId = TenantContext.getTenantId();
         while (true) {
-            List<Dish> missing = baseMapper.selectMissingStoreBindings(TenantContext.getTenantId(), storeId, 200);
+            List<Dish> missing = baseMapper.selectMissingStoreBindings(tenantId, storeId, 200);
             if (missing.isEmpty()) return;
-            for (Dish dish : missing) createStoreBindingIfMissing(dish, storeId);
+            List<StoreDish> rows = missing.stream().map(dish -> new StoreDish()
+                    .setId(IdWorker.getId())
+                    .setStoreId(storeId)
+                    .setDishId(dish.getId())
+                    .setListingStatus(dish.getSaleStatus() == null ? 1 : dish.getSaleStatus().getCode())
+                    .setSoldOut(0)
+                    .setInventoryMode(1)
+                    .setStock(defaultInt(dish.getStock(), 0))
+                    .setSalesCount(defaultInt(dish.getSalesCount(), 0))
+                    .setInheritedVersion(defaultInt(dish.getVersion(), 1))
+                    .setConfigVersion(1)
+                    .setDeleted(0)
+                    .setCreatedAt(LocalDateTime.now())
+                    .setUpdatedAt(LocalDateTime.now())).toList();
+            storeDishMapper.insertMissingBindings(tenantId, rows);
             if (missing.size() < 200) return;
         }
     }

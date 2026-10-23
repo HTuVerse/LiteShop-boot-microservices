@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -14,6 +15,25 @@ import org.hongtu.restaurant.DTO.StoreDish;
  */
 @Mapper
 public interface StoreDishMapper extends BaseMapper<StoreDish> {
+
+    /** 首次访问门店时按批写入缺失关联，唯一索引处理并发创建。 */
+    @InterceptorIgnore(tenantLine = "true")
+    @Insert("""
+            <script>
+            INSERT INTO store_dish (id, tenant_id, store_id, dish_id, listing_status, sold_out,
+                inventory_mode, stock, sales_count, inherited_version, config_version, deleted,
+                created_at, updated_at)
+            VALUES
+            <foreach collection="rows" item="row" separator=",">
+                (#{row.id}, #{tenantId}, #{row.storeId}, #{row.dishId}, #{row.listingStatus},
+                 #{row.soldOut}, #{row.inventoryMode}, #{row.stock}, #{row.salesCount},
+                 #{row.inheritedVersion}, #{row.configVersion}, #{row.deleted},
+                 #{row.createdAt}, #{row.updatedAt})
+            </foreach>
+            ON DUPLICATE KEY UPDATE id=id
+            </script>
+            """)
+    int insertMissingBindings(@Param("tenantId") Long tenantId, @Param("rows") java.util.List<StoreDish> rows);
 
     /** 在数据库联表过滤后分页，避免先把全部菜品 ID 拉到 JVM 再拼大型 IN。 */
     @InterceptorIgnore(tenantLine = "true")
