@@ -1,8 +1,11 @@
 package org.hongtu.restaurant.DAO;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.hongtu.restaurant.DTO.StoreDish;
 
@@ -11,6 +14,40 @@ import org.hongtu.restaurant.DTO.StoreDish;
  */
 @Mapper
 public interface StoreDishMapper extends BaseMapper<StoreDish> {
+
+    /** 在数据库联表过滤后分页，避免先把全部菜品 ID 拉到 JVM 再拼大型 IN。 */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+            <script>
+            SELECT sd.* FROM store_dish sd
+            INNER JOIN dish d ON d.id=sd.dish_id AND d.tenant_id=sd.tenant_id
+            WHERE sd.tenant_id=#{tenantId} AND sd.store_id=#{storeId} AND sd.deleted=0 AND d.deleted=0
+              AND (d.source_type=0 OR d.owner_store_id=#{storeId}
+                   OR (d.source_type IS NULL AND d.store_id=#{storeId}))
+            <if test="params.categoryId != null">AND d.category_id=#{params.categoryId}</if>
+            <if test="params.dishName != null and params.dishName != ''">
+                AND d.dish_name LIKE CONCAT('%',#{params.dishName},'%')
+            </if>
+            <if test="params.isRecommend != null">AND d.is_recommend=#{params.isRecommend}</if>
+            <if test="params.isHot != null">AND d.is_hot=#{params.isHot}</if>
+            <if test="params.isNew != null">AND d.is_new=#{params.isNew}</if>
+            <if test="params.sceneType != null">AND d.scene_type=#{params.sceneType}</if>
+            <if test="params.sourceType != null">AND d.source_type=#{params.sourceType}</if>
+            <choose>
+              <when test="params.saleStatus == 0">
+                AND (sd.listing_status=0 OR COALESCE(d.master_status,1) != 1)
+              </when>
+              <when test="params.saleStatus != null">
+                AND sd.listing_status=#{params.saleStatus}
+                <if test="params.saleStatus == 1">AND d.master_status=1</if>
+              </when>
+            </choose>
+            ORDER BY sd.sort_order_override ASC, sd.id DESC
+            </script>
+            """)
+    Page<StoreDish> selectStoreDishPage(Page<StoreDish> page, @Param("tenantId") Long tenantId,
+                                        @Param("storeId") Long storeId,
+                                        @Param("params") java.util.Map<String, Object> params);
 
     /** 未支付预占：只减库存，不加销量。 */
     @Update("UPDATE store_dish SET stock = CASE WHEN inventory_mode = 1 THEN stock - #{quantity} ELSE stock END, " +

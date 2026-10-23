@@ -33,6 +33,7 @@ import org.hongtu.utils.BeanCopyUtils;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.exception.BusinessException;
+import org.hongtu.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -582,49 +583,38 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
     private Page<DishVO> getStoreDishPage(Map<String, Object> params, Page<Dish> page, Long storeId) {
         requireStore(storeId);
         ensureStoreBindings(storeId);
-        Integer saleStatus = (Integer) params.get("saleStatus");
-        LambdaQueryWrapper<Dish> candidateQuery = masterQuery(params)
-                .eq(Integer.valueOf(1).equals(saleStatus), Dish::getMasterStatus, 1)
-                .and(wrapper -> wrapper.eq(Dish::getSourceType, 0)
-                        .or().eq(Dish::getOwnerStoreId, storeId)
-                        .or(legacy -> legacy.isNull(Dish::getSourceType).eq(Dish::getStoreId, storeId)));
-        List<Dish> candidateDishes = baseMapper.selectList(candidateQuery);
-        List<Long> dishIds = candidateDishes.stream().map(Dish::getId).toList();
-        if (dishIds.isEmpty()) {
-            Page<DishVO> empty = new Page<>(page.getCurrent(), page.getSize(), 0);
+        Page<StoreDish> configPage = new Page<>(page.getCurrent(), page.getSize());
+        storeDishMapper.selectStoreDishPage(configPage, TenantContext.getTenantId(), storeId, params);
+        if (configPage.getRecords().isEmpty()) {
+            Page<DishVO> empty = new Page<>(configPage.getCurrent(), configPage.getSize(), configPage.getTotal());
             empty.setRecords(List.of());
             return empty;
         }
-        Page<StoreDish> configPage = new Page<>(page.getCurrent(), page.getSize());
-        LambdaQueryWrapper<StoreDish> configQuery = new LambdaQueryWrapper<StoreDish>()
-                .eq(StoreDish::getStoreId, storeId)
-                .in(StoreDish::getDishId, dishIds)
-                .eq(StoreDish::getDeleted, 0);
-        if (Integer.valueOf(0).equals(saleStatus)) {
-            List<Long> globallyDisabledIds = candidateDishes.stream()
-                    .filter(item -> !Integer.valueOf(1).equals(defaultInt(item.getMasterStatus(), 1)))
-                    .map(Dish::getId)
-                    .toList();
-            configQuery.and(wrapper -> {
-                wrapper.eq(StoreDish::getListingStatus, 0);
-                if (!globallyDisabledIds.isEmpty()) {
-                    wrapper.or().in(StoreDish::getDishId, globallyDisabledIds);
-                }
-            });
-        } else if (saleStatus != null) {
-            configQuery.eq(StoreDish::getListingStatus, saleStatus);
-        }
-        configQuery
-                .orderByAsc(StoreDish::getSortOrderOverride)
-                .orderByDesc(StoreDish::getId);
-        storeDishMapper.selectPage(configPage, configQuery);
         Map<Long, Dish> dishes = baseMapper.selectBatchIds(configPage.getRecords().stream()
                         .map(StoreDish::getDishId).toList()).stream()
                 .collect(Collectors.toMap(Dish::getId, item -> item));
         List<DishVO> records = configPage.getRecords().stream()
                 .filter(config -> dishes.containsKey(config.getDishId()))
-                .map(config -> toEffectiveVO(dishes.get(config.getDishId()), config))
+                .map(config -> toEffectiveVO(dishes.get(config.getDishId()), config, false))
                 .toList();
+        if (records.isEmpty()) {
+            Page<DishVO> empty = new Page<>(configPage.getCurrent(), configPage.getSize(), configPage.getTotal());
+            empty.setRecords(List.of());
+            return empty;
+        }
+        // 规格和分类按本页 ID 批量装载，避免每行两次明细查询。
+        List<Long> recordIds = records.stream().map(DishVO::getId).toList();
+        Map<Long, List<DishSpecOption>> optionsByDish = dishSpecOptionService.list(
+                new LambdaQueryWrapper<DishSpecOption>().in(DishSpecOption::getDishId, recordIds)
+                        .orderByAsc(DishSpecOption::getSortOrder)).stream()
+                .collect(Collectors.groupingBy(DishSpecOption::getDishId));
+        Map<Long, DishCategory> categories = categoryMap(records.stream()
+                .map(DishVO::getCategoryId).filter(Objects::nonNull).collect(Collectors.toSet()));
+        for (DishVO record : records) {
+            record.setSpecOptions(optionsByDish.getOrDefault(record.getId(), List.of()));
+            DishCategory category = categories.get(record.getCategoryId());
+            record.setCategoryName(category == null ? null : category.getCategoryName());
+        }
         Page<DishVO> result = new Page<>(configPage.getCurrent(), configPage.getSize(), configPage.getTotal());
         result.setRecords(records);
         return result;
@@ -651,18 +641,11 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
 
     /** 为新门店和存量数据补齐总部菜品关联，保证总部新增门店后无需复制菜品。 */
     private void ensureStoreBindings(Long storeId) {
-        List<Dish> candidates = baseMapper.selectList(new LambdaQueryWrapper<Dish>()
-                .eq(Dish::getDeleted, 0)
-                .and(wrapper -> wrapper.eq(Dish::getSourceType, 0)
-                        .or().eq(Dish::getOwnerStoreId, storeId)
-                        .or(legacy -> legacy.isNull(Dish::getSourceType).eq(Dish::getStoreId, storeId))));
-        if (candidates.isEmpty()) return;
-        Set<Long> existingIds = storeDishMapper.selectList(new LambdaQueryWrapper<StoreDish>()
-                        .eq(StoreDish::getStoreId, storeId)
-                        .in(StoreDish::getDishId, candidates.stream().map(Dish::getId).toList()))
-                .stream().map(StoreDish::getDishId).collect(Collectors.toSet());
-        for (Dish dish : candidates) {
-            if (!existingIds.contains(dish.getId())) createStoreBindingIfMissing(dish, storeId);
+        while (true) {
+            List<Dish> missing = baseMapper.selectMissingStoreBindings(TenantContext.getTenantId(), storeId, 200);
+            if (missing.isEmpty()) return;
+            for (Dish dish : missing) createStoreBindingIfMissing(dish, storeId);
+            if (missing.size() < 200) return;
         }
     }
 
@@ -706,6 +689,10 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
     }
 
     private DishVO toEffectiveVO(Dish dish, StoreDish config) {
+        return toEffectiveVO(dish, config, true);
+    }
+
+    private DishVO toEffectiveVO(Dish dish, StoreDish config, boolean withDetails) {
         DishVO vo = BeanCopyUtils.copyBean(dish, DishVO.class);
         vo.setStoreDishId(config.getId());
         vo.setStoreId(config.getStoreId());
@@ -739,7 +726,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper, Dish> implements Di
         if (config.getHotOverride() != null) vo.setIsHot(BooleanEnum.getByCode(config.getHotOverride()));
         if (config.getNewOverride() != null) vo.setIsNew(BooleanEnum.getByCode(config.getNewOverride()));
         if (config.getSortOrderOverride() != null) vo.setSortOrder(config.getSortOrderOverride());
-        fillDetails(vo);
+        if (withDetails) fillDetails(vo);
         if (effectiveListingStatus == 1 && !Integer.valueOf(1).equals(config.getSoldOut())) {
             pricingService.enrichMenuPrice(vo, config.getStoreId());
         }
