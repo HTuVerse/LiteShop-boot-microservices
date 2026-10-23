@@ -125,8 +125,7 @@ public class CouponMessageConsumer {
         try {
             // 参数校验
             if (message == null || message.getCouponId() == null || message.getUserId() == null) {
-                log.warn("优惠券过期消息参数无效: {}", message);
-                return;
+                throw new IllegalArgumentException("优惠券过期消息参数无效");
             }
             // 处理优惠券过期逻辑
             userCouponService.expireUserCoupon(message.getCouponId(), message.getUserId());
@@ -162,6 +161,8 @@ public class CouponMessageConsumer {
             log.info("已发送优惠券数量响应: userId={}, count={}", userId, couponCount);
         } catch (Exception e) {
             log.error("处理优惠券数量查询请求异常", e);
+            // 抛给容器触发拒绝和死信；成功响应未送达时不能确认请求。
+            throw new IllegalStateException("优惠券数量查询处理失败", e);
         }
     }
 }

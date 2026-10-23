@@ -19,6 +19,7 @@ import org.hongtu.enums.CouponMsgOperateTypeEnum;
 import org.hongtu.tenant.TenantIgnore;
 import org.hongtu.tenant.TenantScope;
 import org.hongtu.utils.RabbitMQUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -41,18 +42,54 @@ public class LotteryPrizePublisher {
     @Resource
     private UserFeignClient userFeignClient;
 
+    @Value("${liteshop.lottery.prize-confirm-timeout-seconds:120}")
+    private long confirmTimeoutSeconds;
+
     @Scheduled(fixedDelay = 5000)
     public void publishPending() {
+        reconcileStale();
         List<LotteryPrizeOutbox> pending = TenantIgnore.get(() -> lotteryPrizeOutboxMapper.selectList(
                 new LambdaQueryWrapper<LotteryPrizeOutbox>()
                         .eq(LotteryPrizeOutbox::getStatus, "PENDING")
                         .lt(LotteryPrizeOutbox::getAttempts, 8)
+                        .orderByAsc(LotteryPrizeOutbox::getUpdatedAt)
                         .last("LIMIT 50")));
         for (LotteryPrizeOutbox event : pending) {
             if (event.getTenantId() == null) {
                 continue;
             }
             TenantScope.run(event.getTenantId(), () -> publishOne(event));
+        }
+    }
+
+    /** 已投递但长期无业务回执时使用同一 eventId 重投；幂等凭据防止重复发券。 */
+    private void reconcileStale() {
+        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(Math.max(30, confirmTimeoutSeconds));
+        List<LotteryPrizeOutbox> stale = TenantIgnore.get(() -> lotteryPrizeOutboxMapper.selectList(
+                new LambdaQueryWrapper<LotteryPrizeOutbox>()
+                        .and(w -> w.eq(LotteryPrizeOutbox::getStatus, "SENT")
+                                .lt(LotteryPrizeOutbox::getUpdatedAt, cutoff)
+                                .or().eq(LotteryPrizeOutbox::getStatus, "PENDING")
+                                .ge(LotteryPrizeOutbox::getAttempts, 8))
+                        .orderByAsc(LotteryPrizeOutbox::getUpdatedAt)
+                        .last("LIMIT 50")));
+        for (LotteryPrizeOutbox event : stale) {
+            if (event.getTenantId() == null) continue;
+            TenantScope.run(event.getTenantId(), () -> {
+                boolean exhausted = event.getAttempts() != null && event.getAttempts() >= 8;
+                String next = exhausted ? "FAILED" : "PENDING";
+                int changed = lotteryPrizeOutboxMapper.update(null, new LambdaUpdateWrapper<LotteryPrizeOutbox>()
+                        .eq(LotteryPrizeOutbox::getId, event.getId())
+                        .eq(LotteryPrizeOutbox::getStatus, event.getStatus())
+                        .eq(LotteryPrizeOutbox::getUpdatedAt, event.getUpdatedAt())
+                        .set(LotteryPrizeOutbox::getStatus, next)
+                        .set(LotteryPrizeOutbox::getUpdatedAt, LocalDateTime.now())
+                        .set(LotteryPrizeOutbox::getLastError, exhausted ? "发奖重试次数耗尽，需人工处理死信" : "回执超时，等待重投"));
+                if (changed == 1 && exhausted) {
+                    log.error("发奖重试耗尽，需人工核对死信并处理: eventId={}, tenantId={}",
+                            event.getEventId(), event.getTenantId());
+                }
+            });
         }
     }
 
@@ -77,11 +114,11 @@ public class LotteryPrizePublisher {
                         RabbitMQConstants.Coupon.ISSUE_KEY,
                         couponMessage(event))) {
                     event.setLastError("消息服务器未确认");
-                    lotteryPrizeOutboxMapper.updateById(event);
+                    updatePending(event);
                     return;
                 }
                 event.setStatus("SENT");
-                lotteryPrizeOutboxMapper.updateById(event);
+                updatePending(event);
                 return;
             }
             if ("POINTS".equals(event.getPrizeType())) {
@@ -91,16 +128,28 @@ public class LotteryPrizePublisher {
                 if (result == null || !Result.CODE_SUCCESS.equals(result.getCode())) {
                     event.setStatus("FAILED");
                     event.setLastError(result == null ? "积分接口无响应" : result.getMsg());
-                    lotteryPrizeOutboxMapper.updateById(event);
+                    updatePending(event);
+                    log.error("积分发奖被远程服务拒绝，需人工核对: eventId={}", event.getEventId());
                     return;
                 }
                 markRecordReceived(event);
             }
         } catch (Exception exception) {
             event.setLastError(exception.getMessage());
-            lotteryPrizeOutboxMapper.updateById(event);
+            updatePending(event);
             log.error("发奖投递失败: eventId={}", event.getEventId(), exception);
         }
+    }
+
+    /** 回执可能先于 MQ confirm 到达，因此只能更新仍为 PENDING 的行。 */
+    private void updatePending(LotteryPrizeOutbox event) {
+        lotteryPrizeOutboxMapper.update(null, new LambdaUpdateWrapper<LotteryPrizeOutbox>()
+                .eq(LotteryPrizeOutbox::getId, event.getId())
+                .eq(LotteryPrizeOutbox::getStatus, "PENDING")
+                .set(LotteryPrizeOutbox::getStatus, event.getStatus())
+                .set(LotteryPrizeOutbox::getAttempts, event.getAttempts())
+                .set(LotteryPrizeOutbox::getUpdatedAt, event.getUpdatedAt())
+                .set(LotteryPrizeOutbox::getLastError, event.getLastError()));
     }
 
     private CouponMessageDTO couponMessage(LotteryPrizeOutbox event) {
@@ -117,8 +166,11 @@ public class LotteryPrizePublisher {
         lotteryRecordMapper.update(null, new LambdaUpdateWrapper<LotteryRecord>()
                 .eq(LotteryRecord::getId, event.getRecordId())
                 .set(LotteryRecord::getIsReceived, BooleanEnum.YES));
-        event.setStatus("DONE");
-        event.setUpdatedAt(LocalDateTime.now());
-        lotteryPrizeOutboxMapper.updateById(event);
+        lotteryPrizeOutboxMapper.update(null, new LambdaUpdateWrapper<LotteryPrizeOutbox>()
+                .eq(LotteryPrizeOutbox::getId, event.getId())
+                .ne(LotteryPrizeOutbox::getStatus, "DONE")
+                .set(LotteryPrizeOutbox::getStatus, "DONE")
+                .set(LotteryPrizeOutbox::getUpdatedAt, LocalDateTime.now())
+                .set(LotteryPrizeOutbox::getLastError, null));
     }
 }

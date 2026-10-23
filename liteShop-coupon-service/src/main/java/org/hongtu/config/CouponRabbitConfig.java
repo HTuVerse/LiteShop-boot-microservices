@@ -88,7 +88,22 @@ public class CouponRabbitConfig {
      */
     @Bean
     public Queue couponExpireQueue() {
-        return QueueBuilder.durable(RabbitMQConstants.Coupon.EXPIRE_QUEUE).build();
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.EXPIRE_QUEUE)
+                .deadLetterExchange(RabbitMQConstants.Coupon.DEAD_LETTER_EXCHANGE)
+                .deadLetterRoutingKey(RabbitMQConstants.Coupon.EXPIRE_DEAD_KEY)
+                .build();
+    }
+
+    @Bean
+    public Queue couponExpireDeadQueue() {
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.EXPIRE_DEAD_QUEUE).build();
+    }
+
+    @Bean
+    public Binding bindingCouponExpireDeadQueue(
+            @Qualifier("couponExpireDeadQueue") Queue queue,
+            @Qualifier("couponDeadLetterExchange") DirectExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with(RabbitMQConstants.Coupon.EXPIRE_DEAD_KEY);
     }
 
 
@@ -97,7 +112,22 @@ public class CouponRabbitConfig {
      */
     @Bean
     public Queue couponCountQueue() {
-        return QueueBuilder.durable(RabbitMQConstants.Coupon.COUNT_QUERY_QUEUE).build();
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.COUNT_QUERY_QUEUE)
+                .deadLetterExchange(RabbitMQConstants.Coupon.DEAD_LETTER_EXCHANGE)
+                .deadLetterRoutingKey(RabbitMQConstants.Coupon.COUNT_DEAD_KEY)
+                .build();
+    }
+
+    @Bean
+    public Queue couponCountDeadQueue() {
+        return QueueBuilder.durable(RabbitMQConstants.Coupon.COUNT_DEAD_QUEUE).build();
+    }
+
+    @Bean
+    public Binding bindingCouponCountDeadQueue(
+            @Qualifier("couponCountDeadQueue") Queue queue,
+            @Qualifier("couponDeadLetterExchange") DirectExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with(RabbitMQConstants.Coupon.COUNT_DEAD_KEY);
     }
 
 
