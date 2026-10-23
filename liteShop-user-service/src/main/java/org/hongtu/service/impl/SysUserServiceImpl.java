@@ -454,13 +454,15 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Override
     public Result listUsers(Integer currentPage, Integer pageSize, String keyWord,Integer level) {
+        int safeCurrent = currentPage == null ? 1 : Math.max(1, currentPage);
+        int safeSize = pageSize == null ? 10 : Math.min(100, Math.max(1, pageSize));
         // 构建查询条件
         LambdaQueryWrapper<SysUser> queryWrapper = new LambdaQueryWrapper<>();
         if (StrUtil.isNotBlank(keyWord)) {
-            queryWrapper.like(SysUser::getUsername, keyWord)
+            queryWrapper.and(w -> w.like(SysUser::getUsername, keyWord)
                     .or().like(SysUser::getNickname, keyWord)
                     .or().like(SysUser::getPhone, keyWord)
-                    .or().like(SysUser::getEmail, keyWord);
+                    .or().like(SysUser::getEmail, keyWord));
         }
         if(level!=null){
             queryWrapper.eq(SysUser::getLevel, level);
@@ -469,7 +471,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         queryWrapper.orderByDesc(SysUser::getCreateTime);
 
         // 分页查询
-        Page<SysUser> page = new Page<>(currentPage, pageSize);
+        Page<SysUser> page = new Page<>(safeCurrent, safeSize);
         Page<SysUser> sysUserPage = sysUserMapper.selectPage(page, queryWrapper);
 
         List<SysUser> records = sysUserPage.getRecords();
@@ -477,8 +479,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             Map<String, Object> result = new HashMap<>();
             result.put("total", 0);
             result.put("pages", 0);
-            result.put("current", currentPage);
-            result.put("size", pageSize);
+            result.put("current", safeCurrent);
+            result.put("size", safeSize);
             result.put("records", new ArrayList<>());
             return Result.success(result);
         }
@@ -489,11 +491,16 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         List<SysUserRole> userRoles = sysUserRoleMapper.selectList(
                 new LambdaQueryWrapper<SysUserRole>().in(SysUserRole::getUserId, userIds)
         );
+        Set<Long> roleIds = userRoles.stream().map(SysUserRole::getRoleId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> roleCodes = roleIds.isEmpty() ? Map.of()
+                : sysRoleMapper.selectBatchIds(roleIds).stream()
+                .collect(Collectors.toMap(SysRole::getId, SysRole::getRoleCode));
         for (SysUserRole userRole : userRoles) {
             Long userId = userRole.getUserId();
-            SysRole role = sysRoleMapper.selectById(userRole.getRoleId());
-            if (role != null) {
-                userRolesMap.computeIfAbsent(userId, k -> new ArrayList<>()).add(role.getRoleCode());
+            String roleCode = roleCodes.get(userRole.getRoleId());
+            if (roleCode != null) {
+                userRolesMap.computeIfAbsent(userId, k -> new ArrayList<>()).add(roleCode);
             }
         }
 
