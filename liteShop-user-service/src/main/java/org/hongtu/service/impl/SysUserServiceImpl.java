@@ -789,34 +789,28 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         if (userId == null || points == null || points <= 0) {
             return Result.error("参数错误");
         }
-        try {
-            // 查询用户
-            SysUser user = getById(userId);
-            if (user == null) {
-                return Result.error("用户不存在");
-            }
-            // 更新用户积分
-            int i = sysUserMapper.addUserPoints(userId, points);
-            if (i>0) {
-                // 查询更新后的用户信息并记录积分变动详情
-                SysUser updatedUser = getById(userId);
-                UserPointsRecord userPointsRecord = new UserPointsRecord();
-                userPointsRecord.setUserId(userId);
-                userPointsRecord.setUsername(updatedUser.getUsername());
-                userPointsRecord.setAfterPoints(updatedUser.getPoints());
-                userPointsRecord.setBeforePoints(user.getPoints());
-                userPointsRecord.setOperationType(PointsOperationEnum.INCREASE);
-                userPointsRecord.setPoints(points);
-                userPointsRecord.setSource(sourceType);
-                userPointsRecord.setRemark(remark);
-                userPointsRecordMapper.insert(userPointsRecord);
-                return Result.success("积分增加成功", updatedUser.getPoints());
-            } else {
-                return Result.error("积分增加失败");
-            }
-        } catch (Exception e) {
-            return Result.error("系统异常，积分增加失败");
+        // 锁定积分账户，使前后积分和流水在并发增加时保持对应。
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, userId).last("FOR UPDATE"));
+        if (user == null) {
+            return Result.error("用户不存在");
         }
+        int updated = sysUserMapper.addUserPoints(userId, points);
+        if (updated != 1) throw new org.hongtu.exception.BusinessException(500, "积分增加失败");
+        SysUser updatedUser = getById(userId);
+        UserPointsRecord record = new UserPointsRecord();
+        record.setUserId(userId);
+        record.setUsername(updatedUser.getUsername());
+        record.setAfterPoints(updatedUser.getPoints());
+        record.setBeforePoints(user.getPoints());
+        record.setOperationType(PointsOperationEnum.INCREASE);
+        record.setPoints(points);
+        record.setSource(sourceType);
+        record.setRemark(remark);
+        // 流水写入失败必须向事务拦截器抛异常，回滚已增加的积分。
+        if (userPointsRecordMapper.insert(record) != 1)
+            throw new org.hongtu.exception.BusinessException(500, "积分流水保存失败");
+        return Result.success("积分增加成功", updatedUser.getPoints());
     }
 
     /**
