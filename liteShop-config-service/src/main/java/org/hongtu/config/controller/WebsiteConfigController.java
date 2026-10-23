@@ -6,6 +6,8 @@ import cn.dev33.satoken.stp.StpUtil;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.hongtu.Result.Result;
+import org.hongtu.audit.AuditChanges;
+import org.hongtu.audit.AuditOperation;
 import org.hongtu.api.dto.WebsiteConfigDTO;
 import org.hongtu.config.service.WebsiteConfigService;
 import org.springframework.web.bind.annotation.*;
@@ -17,6 +19,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class WebsiteConfigController {
     private final WebsiteConfigService service;
+    private final AuditChanges auditChanges;
 
     @SaIgnore
     @GetMapping("/config/website/public")
@@ -58,8 +61,14 @@ public class WebsiteConfigController {
 
     @SaCheckRole("SUPER_ADMIN")
     @PutMapping("/config/website/admin")
+    @AuditOperation(module = "platform:website", type = "CONFIG_UPDATE", objectType = "WEBSITE_CONFIG", summary = "修改平台网站配置")
     public Result<WebsiteConfigDTO> publish(@Valid @RequestBody WebsiteConfigDTO config) {
-        return Result.success(service.publish(config, StpUtil.getLoginIdAsLong()));
+        WebsiteConfigDTO before = service.getForEdit();
+        WebsiteConfigDTO after = service.publish(config, StpUtil.getLoginIdAsLong());
+        auditChanges.capture(before, after, "systemName", "description", "captchaEnabled",
+                "maxLoginAttempts", "lockMinutes", "maintenanceEnabled", "maintenanceMessage",
+                "watermarkEnabled", "watermarkMode", "defaultLanguage");
+        return Result.success(after);
     }
 
     // The gateway blocks /inner/**; TenantInterceptor authenticates the internal-call secret.

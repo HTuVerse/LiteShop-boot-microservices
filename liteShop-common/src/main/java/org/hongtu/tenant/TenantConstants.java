@@ -4,6 +4,8 @@ package org.hongtu.tenant;
 public final class TenantConstants {
     public static final String SESSION_TENANT_ID = "tenantId";
     public static final String SESSION_SUPER_ADMIN = "superAdmin";
+    /** 审计事件使用登录时账号快照，避免账号改名后异步投递产生错误归属。 */
+    public static final String SESSION_AUDIT_ACCOUNT = "auditAccount";
     public static final String SESSION_STORE_RESTRICTED = "storeRestricted";
     /** 当前店长已选择的唯一门店。授权门店列表与当前工作门店必须分开保存。 */
     public static final String SESSION_ACTIVE_STORE_ID = "activeStoreId";

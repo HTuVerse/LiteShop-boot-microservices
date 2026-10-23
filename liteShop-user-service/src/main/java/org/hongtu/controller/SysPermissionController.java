@@ -6,6 +6,9 @@ import cn.dev33.satoken.stp.StpUtil;
 import cn.hutool.core.util.StrUtil;
 import jakarta.annotation.Resource;
 import org.hongtu.DTO.SysPermission;
+import org.hongtu.audit.AuditChanges;
+import org.hongtu.audit.AuditContext;
+import org.hongtu.audit.AuditOperation;
 import org.hongtu.Result.Result;
 import org.hongtu.enums.PermissionTypeEnum;
 import org.hongtu.service.SysPermissionService;
@@ -23,6 +26,8 @@ public class SysPermissionController {
 
     @Resource
     private SysPermissionService sysPermissionService;
+    @Resource
+    private AuditChanges auditChanges;
 
     /**
      * 获取权限树
@@ -37,6 +42,7 @@ public class SysPermissionController {
      * 添加权限
      */
     @PostMapping("/add")
+    @AuditOperation(module = "platform:permission", type = "CREATE", objectType = "PERMISSION", summary = "新增系统权限")
     @SaCheckRole("SUPER_ADMIN")
     public Result addPermission(@RequestBody SysPermission permission) {
         if (permission == null) {
@@ -65,13 +71,17 @@ public class SysPermissionController {
             }
         }
 
-        return sysPermissionService.addPermission(permission);
+        Result result = sysPermissionService.addPermission(permission);
+        if (Result.CODE_SUCCESS.equals(result.getCode()) && permission.getId() != null)
+            AuditContext.target(String.valueOf(permission.getId()), null);
+        return result;
     }
 
     /**
      * 更新权限
      */
     @PutMapping("/update")
+    @AuditOperation(module = "platform:permission", type = "UPDATE", objectType = "PERMISSION", summary = "修改系统权限", objectIdArgument = 0)
     @SaCheckRole("SUPER_ADMIN")
     public Result updatePermission(@RequestBody SysPermission permission) {
         // 检查必填字段
@@ -91,19 +101,30 @@ public class SysPermissionController {
                 && (permission.getParentId() == null || permission.getParentId() <= 0)) {
             return Result.error("按钮和API权限必须选择上级菜单");
         }
-        return sysPermissionService.updatePermission(permission);
+        SysPermission before = sysPermissionService.getById(permission.getId());
+        Result result = sysPermissionService.updatePermission(permission);
+        if (Result.CODE_SUCCESS.equals(result.getCode()))
+            auditChanges.capture(before, sysPermissionService.getById(permission.getId()),
+                    "permissionName", "permissionCode", "permissionType", "parentId", "status");
+        return result;
     }
 
     /**
      * 删除权限
      */
     @DeleteMapping("/{id}")
+    @AuditOperation(module = "platform:permission", type = "DELETE", objectType = "PERMISSION", summary = "删除系统权限", objectIdArgument = 0)
     @SaCheckRole("SUPER_ADMIN")
     public Result deletePermission(@PathVariable Long id) {
-        return sysPermissionService.deletePermission(id);
+        SysPermission before = sysPermissionService.getById(id);
+        Result result = sysPermissionService.deletePermission(id);
+        if (Result.CODE_SUCCESS.equals(result.getCode()))
+            auditChanges.capture(before, null, "permissionName", "permissionCode", "permissionType", "status");
+        return result;
     }
 
     @PutMapping("/hierarchy")
+    @AuditOperation(module = "platform:permission", type = "HIERARCHY", objectType = "PERMISSION_TREE", summary = "调整权限层级")
     @SaCheckRole("SUPER_ADMIN")
     public Result updateHierarchy(@RequestBody org.hongtu.DTO.PermissionHierarchyRequest request) {
         return sysPermissionService.updateHierarchy(request);

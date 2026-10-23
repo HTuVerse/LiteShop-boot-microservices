@@ -27,6 +27,12 @@
             <groupId>org.hongtu</groupId>
             <artifactId>liteShop-api</artifactId>
         </dependency>
+        <!-- 离线读取部署目录中的 GeoLite2-City.mmdb。 -->
+        <dependency>
+            <groupId>com.maxmind.geoip2</groupId>
+            <artifactId>geoip2</artifactId>
+            <version>5.2.0</version>
+        </dependency>
 
         <!-- Nacos 服务发现 -->
         <dependency>
