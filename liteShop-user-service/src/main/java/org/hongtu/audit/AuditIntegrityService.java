@@ -1,5 +1,7 @@
 package org.hongtu.audit;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,10 +13,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.sql.ResultSet;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /** 验证审计日志的顺序、前驱摘要和内容 HMAC，并导出每日链头锚点。 */
 @Slf4j
@@ -23,29 +28,32 @@ import java.util.Map;
 public class AuditIntegrityService {
     private final JdbcTemplate jdbc;
     private final AuditSink sink;
+    private final ObjectMapper mapper;
 
     @Value("${liteshop.audit.anchor-path:}")
     private String anchorPath;
 
     public Map<String, Object> verify(long tenantScopeId) {
         // 使用结果集逐条验证，避免完整性扫描时将整个租户的日志载入内存。
-        Map<String, Object> scan = jdbc.query("SELECT chain_sequence,previous_hash,entry_hash,"
-                        + "canonical_payload FROM sys_operation_audit "
+        Map<String, Object> scan = jdbc.query("SELECT * FROM sys_operation_audit "
                         + "WHERE tenant_scope_id=? ORDER BY chain_sequence",
                 rs -> {
                     long sequence = 0;
                     String previous = "";
                     while (rs.next()) {
-                        long current = rs.getLong(1);
+                        long current = rs.getLong("chain_sequence");
                         try {
-                            if (current != sequence + 1 || !previous.equals(rs.getString(2))
-                                    || !sink.sign(previous + "\n" + rs.getString(4)).equals(rs.getString(3)))
+                            if (current != sequence + 1 || !previous.equals(rs.getString("previous_hash"))
+                                    || !sink.sign(previous + "\n" + rs.getString("canonical_payload"))
+                                    .equals(rs.getString("entry_hash")))
                                 return result(tenantScopeId, false, current, "序号、前驱摘要或内容校验失败");
+                            if (!columnsMatch(rs))
+                                return result(tenantScopeId, false, current, "落库字段与签名原文不一致");
                         } catch (Exception error) {
                             throw new IllegalStateException("审计日志完整性校验失败", error);
                         }
                         sequence = current;
-                        previous = rs.getString(3);
+                        previous = rs.getString("entry_hash");
                     }
                     return result(tenantScopeId, true, sequence, previous);
                 }, tenantScopeId);
@@ -59,6 +67,51 @@ public class AuditIntegrityService {
                 || !previous.equals(cursors.getFirst().get("hash")))
             return result(tenantScopeId, false, sequence, "链头游标与日志内容不一致");
         return result(tenantScopeId, true, sequence, previous);
+    }
+
+    /** 对照签名原文检查所有可查询字段，防止只改展示列却绕过 HMAC 校验。 */
+    private boolean columnsMatch(ResultSet rs) throws Exception {
+        JsonNode snapshot = mapper.readTree(rs.getString("canonical_payload"));
+        JsonNode event = snapshot.path("event");
+        String subjectTenant = value(event, "subjectTenantId");
+        String scope = subjectTenant == null ? "0" : subjectTenant;
+        String signedDiff = value(snapshot, "safeDiff");
+        String storedDiff = rs.getString("diff_json");
+        boolean diffMatches = signedDiff == null ? storedDiff == null
+                : storedDiff != null && mapper.readTree(signedDiff).equals(mapper.readTree(storedDiff));
+        return Objects.equals(rs.getString("id"), value(snapshot, "recordId"))
+                && Objects.equals(rs.getString("tenant_scope_id"), scope)
+                && Objects.equals(rs.getString("chain_sequence"), value(snapshot, "chainSequence"))
+                && Objects.equals(rs.getString("key_version"), value(snapshot, "keyVersion"))
+                && rs.getTimestamp("received_at").toInstant().equals(Instant.parse(value(snapshot, "receivedAt")))
+                && Objects.equals(rs.getString("event_id"), value(event, "eventId"))
+                && Objects.equals(rs.getString("actor_tenant_id"), value(event, "actorTenantId"))
+                && Objects.equals(rs.getString("scope_tenant_id"), value(event, "scopeTenantId"))
+                && Objects.equals(rs.getString("store_id"), value(event, "storeId"))
+                && Objects.equals(rs.getString("actor_user_id"), value(event, "actorUserId"))
+                && Objects.equals(rs.getString("actor_account"), value(snapshot, "actorAccount"))
+                && rs.getTimestamp("occurred_at").toInstant().equals(
+                Instant.parse(value(event, "occurredAt")).truncatedTo(ChronoUnit.MILLIS))
+                && Objects.equals(rs.getString("client_ip"), value(event, "clientIp"))
+                && Objects.equals(rs.getString("ip_location"), value(snapshot, "ipLocation"))
+                && Objects.equals(rs.getString("geo_database_version"), value(snapshot, "geoDatabaseVersion"))
+                && Objects.equals(rs.getString("service_name"), value(event, "serviceName"))
+                && Objects.equals(rs.getString("module_code"), value(event, "moduleCode"))
+                && Objects.equals(rs.getString("operation_type"), value(event, "operationType"))
+                && Objects.equals(rs.getString("object_type"), value(event, "objectType"))
+                && Objects.equals(rs.getString("object_id"), value(event, "objectId"))
+                && Objects.equals(rs.getString("summary"), value(event, "summary"))
+                && Objects.equals(rs.getString("result"), value(event, "result"))
+                && Objects.equals(rs.getString("result_message"), value(event, "resultMessage"))
+                && Objects.equals(rs.getString("request_id"), value(event, "requestId"))
+                && Objects.equals(rs.getString("request_path"), value(event, "requestPath"))
+                && Objects.equals(value(event, "diffJson"), signedDiff)
+                && diffMatches;
+    }
+
+    private String value(JsonNode node, String name) {
+        JsonNode value = node.path(name);
+        return value.isMissingNode() || value.isNull() ? null : value.asText();
     }
 
     private Map<String, Object> result(long scope, boolean valid, long sequence, String detail) {

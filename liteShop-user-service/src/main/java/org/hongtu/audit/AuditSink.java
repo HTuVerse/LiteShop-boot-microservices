@@ -15,6 +15,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -67,6 +68,9 @@ public class AuditSink {
         GeoCityLookup.Location location = geo.lookup(event.clientIp());
         String actorAccount = actorAccount(event);
         String safeDiff = AuditSanitizer.safeDiff(mapper, event.diffJson());
+        long sequence = chain.sequence() + 1;
+        long recordId = ids.nextId(event).longValue();
+        Instant receivedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS);
         AuditEvent safeEvent = new AuditEvent(event.eventId(), event.occurredAt(),
                 event.actorUserId(), event.actorAccount(), event.actorTenantId(),
                 event.scopeTenantId(), event.subjectTenantId(), event.storeId(), event.clientIp(),
@@ -74,6 +78,11 @@ public class AuditSink {
                 event.objectId(), event.summary(), event.result(), event.resultMessage(),
                 event.requestId(), event.requestPath(), safeDiff);
         Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("recordId", String.valueOf(recordId));
+        snapshot.put("tenantScopeId", String.valueOf(scope));
+        snapshot.put("chainSequence", sequence);
+        snapshot.put("keyVersion", keyVersion);
+        snapshot.put("receivedAt", receivedAt.toString());
         snapshot.put("event", safeEvent);
         snapshot.put("actorAccount", actorAccount);
         snapshot.put("ipLocation", location.name());
@@ -82,17 +91,17 @@ public class AuditSink {
         String canonical = mapper.writeValueAsString(snapshot);
         String previous = chain.hash();
         String digest = sign(previous + "\n" + canonical);
-        long sequence = chain.sequence() + 1;
 
         jdbc.update("INSERT INTO sys_operation_audit (id,event_id,tenant_scope_id,actor_tenant_id,"
-                        + "scope_tenant_id,store_id,actor_user_id,actor_account,occurred_at,client_ip,"
+                        + "scope_tenant_id,store_id,actor_user_id,actor_account,occurred_at,received_at,client_ip,"
                         + "ip_location,geo_database_version,service_name,module_code,operation_type,"
                         + "object_type,object_id,summary,result,result_message,request_id,request_path,"
                         + "diff_json,canonical_payload,chain_sequence,previous_hash,entry_hash,key_version) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                ids.nextId(event).longValue(), event.eventId(), scope, event.actorTenantId(),
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                recordId, event.eventId(), scope, event.actorTenantId(),
                 event.scopeTenantId(), event.storeId(), event.actorUserId(), actorAccount,
-                Timestamp.from(Instant.parse(event.occurredAt())), event.clientIp(), location.name(),
+                Timestamp.from(Instant.parse(event.occurredAt())), Timestamp.from(receivedAt),
+                event.clientIp(), location.name(),
                 location.databaseVersion(), event.serviceName(), event.moduleCode(), event.operationType(),
                 event.objectType(), event.objectId(), event.summary(), event.result(), event.resultMessage(),
                 event.requestId(), event.requestPath(), safeDiff, canonical, sequence, previous, digest,
