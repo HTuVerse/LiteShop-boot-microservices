@@ -10,7 +10,9 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.CouponMapper;
 import org.hongtu.DAO.CouponRevokeRecordMapper;
+import org.hongtu.DAO.CouponRevokeBatchMapper;
 import org.hongtu.DAO.CouponStackPairMapper;
+import org.hongtu.DAO.CouponPartnerRow;
 import org.hongtu.DAO.UserCouponMapper;
 import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.api.client.UserFeignClient;
@@ -25,11 +27,14 @@ import org.hongtu.exception.BusinessException;
 import org.hongtu.service.CouponDishItemService;
 import org.hongtu.service.UserCouponService;
 import org.springframework.beans.BeanUtils;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -46,6 +51,9 @@ import java.util.stream.Collectors;
 @Service
 public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCoupon> implements UserCouponService {
 
+    private static final SecureRandom CODE_RANDOM = new SecureRandom();
+    private static final int CODE_RETRY_LIMIT = 5;
+
     @Resource
     CouponMapper couponMapper;
     @Resource
@@ -60,6 +68,12 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
     VerifyRecordMapper verifyRecordMapper;
     @Resource
     CouponRevokeRecordMapper revokeRecordMapper;
+    @Resource
+    CouponRevokeBatchMapper revokeBatchMapper;
+    @Resource
+    TransactionTemplate transactionTemplate;
+
+    private static final int REVOKE_BATCH_SIZE = 100;
 
     // ==================== 用户优惠券查询 ====================
 
@@ -124,10 +138,13 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
             Map<Long, List<Long>> stackPartners = new HashMap<>();
             Set<Long> partnerIds = new HashSet<>();
             Long tenantId = org.hongtu.tenant.TenantContext.getTenantId();
-            for (Coupon coupon : coupons) {
-                List<Long> ids = stackPairMapper.listPartnerIds(tenantId, coupon.getId());
-                stackPartners.put(coupon.getId(), ids);
-                partnerIds.addAll(ids);
+            if (!coupons.isEmpty()) {
+                for (CouponPartnerRow row : stackPairMapper.listPartnersByCouponIds(tenantId,
+                        coupons.stream().map(Coupon::getId).toList())) {
+                    stackPartners.computeIfAbsent(row.getCouponId(), ignored -> new ArrayList<>())
+                            .add(row.getPartnerId());
+                    partnerIds.add(row.getPartnerId());
+                }
             }
             Map<Long, String> partnerNames = partnerIds.isEmpty() ? Map.of()
                     : couponMapper.selectByIds(partnerIds).stream()
@@ -237,26 +254,84 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         return Result.success("回收成功");
     }
 
-    /** 模板回收先锁定模板并停止发券，再逐张 CAS 回收并写入审计记录。 */
+    /** 停止发券和创建可恢复任务同事务提交，用户券按小批量回收。 */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public Result revokeTemplateCoupons(Long couponId, String reason, Long operatorId) {
         String error = validateRevokeReason(reason);
         if (error != null || couponId == null) return Result.error(error == null ? "优惠券模板ID不能为空" : error);
-        Coupon template = couponMapper.selectById(couponId);
-        if (template == null) return Result.error("优惠券模板不存在");
-        if (couponMapper.recallTemplate(couponId) != 1) return Result.error("该模板已批量回收，请刷新后重试");
-        // 锁定读取取最新已提交的券，避免 REPEATABLE READ 的旧快照漏掉刚发放的券。
-        List<UserCoupon> items = userCouponMapper.selectList(revocableQuery(couponId).last("FOR UPDATE"));
-        String batchId = UUID.randomUUID().toString();
+        CouponRevokeBatch batch = transactionTemplate.execute(status -> {
+            Coupon template = couponMapper.selectForUpdate(couponId);
+            if (template == null) throw new BusinessException("优惠券模板不存在");
+            CouponRevokeBatch existing = revokeBatchMapper.selectOne(new LambdaQueryWrapper<CouponRevokeBatch>()
+                    .eq(CouponRevokeBatch::getCouponId, couponId).last("LIMIT 1"));
+            if (existing != null) return existing;
+            if (template.getRecallTime() == null && couponMapper.recallTemplate(couponId) != 1)
+                throw new BusinessException("模板回收状态已变化，请重试");
+            CouponRevokeBatch created = new CouponRevokeBatch();
+            created.setBatchId(UUID.randomUUID().toString());
+            created.setTenantId(org.hongtu.tenant.TenantContext.getTenantId());
+            created.setCouponId(couponId);
+            created.setOperatorId(operatorId);
+            created.setReason(reason.trim());
+            created.setStatus(0);
+            created.setCreatedAt(LocalDateTime.now());
+            created.setUpdatedAt(LocalDateTime.now());
+            revokeBatchMapper.insert(created);
+            return created;
+        });
         int revoked = 0;
-        for (UserCoupon item : items) {
-            if (userCouponMapper.casRevokeCoupon(item.getId()) == 1) {
-                saveRevokeRecord(item, operatorId, reason.trim(), batchId);
-                revoked++;
+        for (int i = 0; i < 5 && batch != null && batch.getStatus() == 0; i++) {
+            int count = processRecallBatch(batch.getBatchId());
+            revoked += count;
+            if (count < REVOKE_BATCH_SIZE) break;
+        }
+        CouponRevokeBatch current = revokeBatchMapper.selectById(batch.getBatchId());
+        return Result.success(current != null && current.getStatus() == 1
+                ? "模板已回收" : "模板已停止发放，回收任务正在按批处理", Map.of(
+                "revokedCount", revoked, "batchId", batch.getBatchId()));
+    }
+
+    @Override
+    public int reconcilePendingRecalls() {
+        List<CouponRevokeBatch> pending = revokeBatchMapper.selectList(new LambdaQueryWrapper<CouponRevokeBatch>()
+                .eq(CouponRevokeBatch::getStatus, 0)
+                .orderByAsc(CouponRevokeBatch::getUpdatedAt).last("LIMIT 20"));
+        int total = 0;
+        for (CouponRevokeBatch batch : pending) {
+            try {
+                total += processRecallBatch(batch.getBatchId());
+            } catch (RuntimeException e) {
+                log.error("模板回收任务失败，下轮继续: batchId={}", batch.getBatchId(), e);
+                try {
+                    revokeBatchMapper.deferPending(batch.getBatchId());
+                } catch (RuntimeException deferFailure) {
+                    log.error("模板回收任务延期失败: batchId={}", batch.getBatchId(), deferFailure);
+                }
             }
         }
-        return Result.success("已回收 " + revoked + " 张未使用券，模板已停止发放", Map.of("revokedCount", revoked, "batchId", batchId));
+        return total;
+    }
+
+    private int processRecallBatch(String batchId) {
+        Integer count = transactionTemplate.execute(status -> {
+            CouponRevokeBatch batch = revokeBatchMapper.selectOne(new LambdaQueryWrapper<CouponRevokeBatch>()
+                    .eq(CouponRevokeBatch::getBatchId, batchId).last("FOR UPDATE"));
+            if (batch == null || batch.getStatus() != 0) return 0;
+            List<UserCoupon> items = userCouponMapper.selectList(revocableQuery(batch.getCouponId())
+                    .orderByAsc(UserCoupon::getId).last("LIMIT " + REVOKE_BATCH_SIZE + " FOR UPDATE"));
+            int revoked = 0;
+            for (UserCoupon item : items) {
+                if (userCouponMapper.casRevokeCoupon(item.getId()) == 1) {
+                    saveRevokeRecord(item, batch.getOperatorId(), batch.getReason(), batchId);
+                    revoked++;
+                }
+            }
+            if (items.size() < REVOKE_BATCH_SIZE) batch.setStatus(1);
+            batch.setUpdatedAt(LocalDateTime.now());
+            revokeBatchMapper.updateById(batch);
+            return revoked;
+        });
+        return count == null ? 0 : count;
     }
 
     private String validateRevokeReason(String reason) {
@@ -361,16 +436,9 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
                 userCoupon.setStatus(CouponStatusEnum.NOT_USE);
             }
             // 保存用户优惠券
-            boolean saved = save(userCoupon);
-            if (saved) {
-                log.info("优惠券发放成功：userId={}, couponId={}, userCouponId={}", userId, couponId, userCoupon.getId());
-                return Result.success("优惠券发送成功", userCoupon);
-            } else {
-                // 发放失败，恢复库存
-                couponMapper.increaseStock(couponId, 1);
-                log.error("发放优惠券失败：保存用户优惠券记录失败，userId={}, couponId={}", userId, couponId);
-                return Result.error("优惠券发送失败");
-            }
+            insertWithUniqueCode(userCoupon);
+            log.info("优惠券发放成功：userId={}, couponId={}, userCouponId={}", userId, couponId, userCoupon.getId());
+            return Result.success("优惠券发送成功", userCoupon);
         } catch (Exception e) {
             log.error("发放优惠券异常：userId={}, couponId={}", userId, couponId, e);
             throw new RuntimeException("系统异常，优惠券发送失败", e);
@@ -379,40 +447,22 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
 
     // ==================== 私有工具方法 ====================
 
-    /**
-     * 生成优惠券唯一码（15位纯数字）
-     * 格式：时间戳后8位 + 7位随机数
-     */
-    private String generateCouponCode() {
-        int maxRetry = 10;
-        for (int i = 0; i < maxRetry; i++) {
-            String code = generateNumericCode();
-            // 检查是否已存在
-            LambdaQueryWrapper<UserCoupon> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(UserCoupon::getCode, code);
-            Long count = userCouponMapper.selectCount(queryWrapper);
-            if (count == 0) {
-                return code;
+    /** 数据库唯一约束负责并发判重；碰撞时在当前事务内换码重试。 */
+    private void insertWithUniqueCode(UserCoupon userCoupon) {
+        for (int attempt = 0; attempt < CODE_RETRY_LIMIT; attempt++) {
+            try {
+                userCouponMapper.insert(userCoupon);
+                return;
+            } catch (DuplicateKeyException e) {
+                if (attempt == CODE_RETRY_LIMIT - 1) throw e;
+                userCoupon.setCode(generateCouponCode());
             }
-            log.warn("优惠券码冲突，重新生成：code={}, retry={}", code, i + 1);
         }
-        // 极端情况：使用更长的时间戳确保唯一
-        String fallbackCode = String.valueOf(System.currentTimeMillis()) + String.format("%02d", (int) (Math.random() * 100));
-        return fallbackCode.substring(fallbackCode.length() - 15);
     }
 
-    /**
-     * 生成15位纯数字码
-     * @return 15位数字字符串
-     */
-    private String generateNumericCode() {
-        // 时间戳后8位（毫秒级，确保时间维度唯一性）
-        String timestamp = String.valueOf(System.currentTimeMillis());
-        String timePart = timestamp.substring(timestamp.length() - 8);
-        // 7位随机数（0000000-9999999）
-        int randomNum = (int) (Math.random() * 10000000);
-        String randomPart = String.format("%07d", randomNum);
-        return timePart + randomPart;
+    /** 生成固定 15 位纯数字券码。 */
+    private String generateCouponCode() {
+        return String.format("%015d", CODE_RANDOM.nextLong(1_000_000_000_000_000L));
     }
 
     /**
@@ -654,8 +704,14 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         }
 
         // 3.5 重置券码：避免同一张券再次核销时与 verify_record 表 verify_code 唯一索引冲突（历史记录仍保留原码）
-        String newCode = generateCouponCode();
-        userCouponMapper.updateCodeById(userCouponId, newCode);
+        for (int attempt = 0; attempt < CODE_RETRY_LIMIT; attempt++) {
+            try {
+                userCouponMapper.updateCodeById(userCouponId, generateCouponCode());
+                break;
+            } catch (DuplicateKeyException e) {
+                if (attempt == CODE_RETRY_LIMIT - 1) throw e;
+            }
+        }
 
         // 4. 只撤销当前订单对应的核销记录。
         record.setStatus(VerifyStatusEnum.NOT_VERIFY);

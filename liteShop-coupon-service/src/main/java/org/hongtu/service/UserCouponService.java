@@ -44,6 +44,9 @@ public interface UserCouponService extends IService<UserCoupon> {
     /** 回收指定模板的全部未使用券并永久停止继续发放。 */
     Result revokeTemplateCoupons(Long couponId, String reason, Long operatorId);
 
+    /** 每轮推进当前租户未完成的模板回收任务。 */
+    int reconcilePendingRecalls();
+
     /**
      * 发送优惠券给用户
      * @param userId 用户ID

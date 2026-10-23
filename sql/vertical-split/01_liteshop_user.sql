@@ -213,3 +213,12 @@ CREATE TABLE `user_surplus_record` (
   UNIQUE INDEX `uk_order_no`(`order_no`),
   INDEX `idx_user_time`(`user_id`, `created_at`)
 ) ENGINE = InnoDB COMMENT = '余额变动历史表';
+
+-- 超时余额支付的订单号栅栏；status=1 后迟到扣款必须被拒绝。
+CREATE TABLE `balance_payment_fence` (
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `order_no` varchar(64) NOT NULL COMMENT '餐饮订单号',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0允许扣款，1已封闭',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`tenant_id`, `order_no`)
+) ENGINE=InnoDB COMMENT='余额支付订单号栅栏';

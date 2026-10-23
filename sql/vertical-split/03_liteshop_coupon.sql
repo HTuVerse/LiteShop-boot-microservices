@@ -103,11 +103,27 @@ CREATE TABLE `user_coupon` (
   INDEX `idx_user_status`(`user_id`, `status`),
   INDEX `idx_user_coupon`(`user_id`, `coupon_id`),
   INDEX `idx_coupon_id`(`coupon_id`),
-  INDEX `idx_code`(`code`),
+  UNIQUE INDEX `uk_tenant_coupon_code`(`tenant_id`, `code`),
   INDEX `idx_status_expire`(`status`, `expire_time`),
   INDEX `idx_tenant_status_expire` (`tenant_id`, `status`, `expire_time`),
   INDEX `idx_tenant_status_start` (`tenant_id`, `status`, `start_time`)
 ) ENGINE = InnoDB COMMENT = '用户优惠券关联表';
+
+-- 模板回收任务持久化；中断后继续按批处理。
+DROP TABLE IF EXISTS `coupon_revoke_batch`;
+CREATE TABLE `coupon_revoke_batch` (
+  `batch_id` varchar(36) NOT NULL COMMENT '回收任务ID',
+  `tenant_id` bigint NOT NULL COMMENT '租户ID',
+  `coupon_id` bigint NOT NULL COMMENT '模板ID',
+  `operator_id` bigint NULL COMMENT '操作人ID',
+  `reason` varchar(200) NOT NULL COMMENT '回收原因',
+  `status` tinyint NOT NULL DEFAULT 0 COMMENT '0处理中，1已完成',
+  `created_at` datetime NOT NULL COMMENT '创建时间',
+  `updated_at` datetime NOT NULL COMMENT '更新时间',
+  PRIMARY KEY (`batch_id`),
+  UNIQUE KEY `uk_tenant_revoke_coupon` (`tenant_id`, `coupon_id`),
+  KEY `idx_tenant_revoke_status` (`tenant_id`, `status`, `updated_at`)
+) ENGINE=InnoDB COMMENT='优惠券模板回收任务';
 
 -- 每张回收券的操作记录，管理员可追溯批次、原因和操作人。
 DROP TABLE IF EXISTS `coupon_revoke_record`;
@@ -140,7 +156,7 @@ CREATE TABLE `verify_record` (
   `status` tinyint NULL DEFAULT NULL COMMENT '核销状态 0：未核销 1：已核销',
   `tenant_id` bigint NOT NULL DEFAULT 1 COMMENT '租户ID（多租户预留）',
   PRIMARY KEY (`id`),
-  UNIQUE INDEX `uk_verify_code`(`verify_code`),
+  UNIQUE INDEX `uk_tenant_verify_code`(`tenant_id`, `verify_code`),
   INDEX `idx_merchant_time`(`merchant_id`, `verify_time`),
   INDEX `idx_user_coupon_id`(`user_coupon_id`),
   UNIQUE INDEX `uk_tenant_coupon_order`(`tenant_id`, `user_coupon_id`, `order_id`)

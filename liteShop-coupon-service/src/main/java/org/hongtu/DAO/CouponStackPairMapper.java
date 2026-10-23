@@ -12,6 +12,16 @@ import java.util.List;
 @Mapper
 public interface CouponStackPairMapper {
 
+    /** 本页模板的有向配对关系；每组无向配对返回两端命中的记录。 */
+    @Select("<script>SELECT coupon_id_low AS couponId, coupon_id_high AS partnerId " +
+            "FROM coupon_stack_pair WHERE tenant_id = #{tenantId} AND coupon_id_low IN " +
+            "<foreach collection='couponIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> " +
+            "UNION ALL SELECT coupon_id_high AS couponId, coupon_id_low AS partnerId " +
+            "FROM coupon_stack_pair WHERE tenant_id = #{tenantId} AND coupon_id_high IN " +
+            "<foreach collection='couponIds' item='id' open='(' separator=',' close=')'>#{id}</foreach></script>")
+    List<CouponPartnerRow> listPartnersByCouponIds(@Param("tenantId") Long tenantId,
+                                                   @Param("couponIds") List<Long> couponIds);
+
     /** 查询一张券已明确允许叠加的其他券。 */
     @Select("SELECT CASE WHEN coupon_id_low = #{couponId} THEN coupon_id_high ELSE coupon_id_low END " +
             "FROM coupon_stack_pair WHERE tenant_id = #{tenantId} " +

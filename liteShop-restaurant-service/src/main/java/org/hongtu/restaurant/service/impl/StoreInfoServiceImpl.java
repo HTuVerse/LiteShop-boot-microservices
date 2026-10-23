@@ -100,6 +100,10 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
                 storeInfo.getStoreImageResourceIds(), storeInfo.getStoreImages());
         storeInfo.setStoreImages(resourceBindings.resolvedMulti(imagePlan, storeInfo.getStoreImages()));
         String reservationKey = "store:create:" + storeInfo.getId();
+        // 门店数量由所属服务单向推送，权益服务不再同步反查餐厅服务。
+        Result<Void> baseline = userFeignClient.ensureStoreCountBaseline(baseMapper.selectCount(new LambdaQueryWrapper<StoreInfo>()));
+        if (baseline == null || !Result.CODE_SUCCESS.equals(baseline.getCode()))
+            throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE, "门店用量初始化失败，请稍后重试");
         reserveQuota(reservationKey, BigDecimal.ONE);
 
         // 设置创建时间和更新时间

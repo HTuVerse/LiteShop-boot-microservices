@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.DAO.SurplusRecordMapper;
+import org.hongtu.DAO.BalancePaymentFenceMapper;
 import org.hongtu.DAO.SysUserMapper;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.UserSurplusRecord;
@@ -34,6 +35,9 @@ public class InnerBalanceService {
     @Resource
     private SurplusRecordMapper surplusRecordMapper;
 
+    @Resource
+    private BalancePaymentFenceMapper paymentFenceMapper;
+
     /** 根据原消费流水确定实际付款人，供餐饮退款与历史代付订单对账。 */
     public Long expensePayer(String orderNo) {
         if (orderNo == null || orderNo.isBlank() || orderNo.length() > 64) {
@@ -44,6 +48,23 @@ public class InnerBalanceService {
                 .eq(UserSurplusRecord::getType, BalanceResourceEnum.EXPENSE)
                 .last("LIMIT 1"));
         return payment == null ? null : payment.getUserId();
+    }
+
+    /** 与扣款按订单号串行；确定无流水后拒绝迟到扣款。 */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean abortPendingExpense(String orderNo) {
+        if (orderNo == null || orderNo.isBlank() || orderNo.length() > 64)
+            throw new BusinessException("余额支付订单号无效");
+        Long tenantId = TenantContext.getTenantId();
+        paymentFenceMapper.ensure(tenantId, orderNo);
+        paymentFenceMapper.lockStatus(tenantId, orderNo);
+        UserSurplusRecord payment = surplusRecordMapper.selectOne(new LambdaQueryWrapper<UserSurplusRecord>()
+                .eq(UserSurplusRecord::getOrderNo, orderNo)
+                .eq(UserSurplusRecord::getType, BalanceResourceEnum.EXPENSE)
+                .last("LIMIT 1"));
+        if (payment != null) return false;
+        paymentFenceMapper.abort(tenantId, orderNo);
+        return true;
     }
 
     /** 锁定会员后按商户订单号入账，余额和赠送子余额保持一致。 */
@@ -103,6 +124,12 @@ public class InnerBalanceService {
         // orderNo 是跨服务幂等键。远程调用超时后重试时直接返回第一次结果，不能再次加减余额。
         if (dto.getOrderNo() == null || dto.getOrderNo().isBlank()) {
             throw new BusinessException("余额变动必须提供幂等订单号");
+        }
+        if (type == BalanceResourceEnum.EXPENSE) {
+            Long tenantId = TenantContext.getTenantId();
+            paymentFenceMapper.ensure(tenantId, dto.getOrderNo());
+            if (Integer.valueOf(1).equals(paymentFenceMapper.lockStatus(tenantId, dto.getOrderNo())))
+                throw new BusinessException(409, "该余额支付已取消，请重新下单");
         }
         // 同一会员的扣款、退款、充值串行化，分摊比例始终取扣款前余额。
         SysUser locked = sysUserMapper.lockMallPointsUser(TenantContext.getTenantId(), dto.getUserId());

@@ -97,6 +97,17 @@ public class InnerUserController {
                 .setNickname(user.getNickname()).setPhone(user.getPhone()));
     }
 
+    /** 按本租户会员手机号精确查找用户 ID，不传输完整用户资料。 */
+    @GetMapping("/by-phone/id")
+    public Result<Long> findUserIdByPhone(@RequestParam String phone) {
+        if (phone == null || phone.isBlank() || phone.length() > 32) {
+            return Result.error("手机号无效");
+        }
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId).eq(SysUser::getPhone, phone.trim()).last("LIMIT 1"));
+        return Result.success(user == null ? null : user.getId());
+    }
+
     @GetMapping("/{id}/balance")
     public Result<UserBalanceDTO> getUserBalance(@PathVariable("id") Long id) {
         SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
@@ -203,6 +214,12 @@ public class InnerUserController {
     @GetMapping("/balance/expense-payer")
     public Result<Long> balanceExpensePayer(@RequestParam String orderNo) {
         return Result.success(innerBalanceService.expensePayer(orderNo));
+    }
+
+    /** 对账确认无扣款后封闭该订单号，阻止迟到的余额扣款。 */
+    @PostMapping("/balance/expense-abort")
+    public Result<Boolean> abortPendingBalanceExpense(@RequestParam("orderNo") String orderNo) {
+        return Result.success(innerBalanceService.abortPendingExpense(orderNo));
     }
 
     /** 查询本租户已提交的余额流水，不向调用方返回资金明细。 */

@@ -26,6 +26,14 @@ public class InnerSaasController {
     @PostMapping("/consume") public Result<EntitlementDecisionDTO> consume(@RequestBody EntitlementMutationDTO dto) {
         return Result.success(copy(service.consume(TenantContext.getTenantId(), dto.getFeatureCode(), dto.getAmount(), dto.getIdempotencyKey())));
     }
+
+    /** 占额前同步门店基线，避免用户服务回调餐厅服务形成同步调用环。 */
+    @PostMapping("/store-count/baseline")
+    public Result<Void> ensureStoreCountBaseline(@RequestParam("count") Long count) {
+        if (count == null) throw new org.hongtu.exception.BusinessException(400, "门店数量不能为空");
+        service.ensureStoreCountBaseline(TenantContext.getTenantId(), count);
+        return Result.success();
+    }
     @PostMapping("/release") public Result<EntitlementDecisionDTO> release(@RequestBody EntitlementMutationDTO dto) {
         if (dto.getConsumeKey() == null || dto.getConsumeKey().isBlank()
                 || dto.getIdempotencyKey() == null || dto.getIdempotencyKey().isBlank()) {

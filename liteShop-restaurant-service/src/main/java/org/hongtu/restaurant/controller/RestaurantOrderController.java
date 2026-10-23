@@ -375,6 +375,14 @@ public class RestaurantOrderController {
         
     }
 
+    /** 切换支付方式前确认并关闭原渠道交易。 */
+    @PostMapping("/switchPayment")
+    public Result<Boolean> switchPayment(@RequestParam Long orderId, @RequestParam Integer paymentType) {
+        requireOrderAccess(orderId, null, "settle");
+        PaymentTypeEnum nextMethod = PaymentTypeEnum.getByCode(paymentType);
+        return Result.success(restaurantOrderService.switchPaymentMethod(orderId, nextMethod));
+    }
+
 
     /**
      * 发起支付（创建支付订单）

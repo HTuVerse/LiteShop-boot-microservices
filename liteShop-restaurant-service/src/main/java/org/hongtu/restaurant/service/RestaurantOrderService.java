@@ -59,6 +59,9 @@ public interface RestaurantOrderService extends IService<RestaurantOrder> {
      */
     boolean cancelOrder(Long orderId, String cancelReason);
 
+    /** 关停原渠道未付款交易后，允许顾客为同一订单选择其它支付方式。 */
+    boolean switchPaymentMethod(Long orderId, PaymentTypeEnum nextMethod);
+
     /**
      * 创建支付订单
      * @param orderId 订单ID

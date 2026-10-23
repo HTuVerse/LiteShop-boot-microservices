@@ -260,6 +260,15 @@ public class SaasEntitlementService implements EntitlementService {
         return decide(item, featureCode, item == null ? null : item.getUsed(), requested);
     }
 
+    /** 门店服务在占额前推送本地已提交门店数量，仅提升基线以免覆盖并发占额。 */
+    public void ensureStoreCountBaseline(Long tenantId, long count) {
+        assertTenantAccess(tenantId);
+        if (count < 0) throw new BusinessException(400, "门店数量不能为负数");
+        counters.ensureAtLeast(IdWorker.getId(), tenantId, SaasFeatureKeys.STORE_COUNT,
+                LocalDate.of(1970, 1, 1).atStartOfDay(),
+                LocalDate.of(9999, 12, 31).atTime(23, 59, 59), BigDecimal.valueOf(count));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public EntitlementDecision consume(Long tenantId, String featureCode, BigDecimal amount, String idempotencyKey) {
         validateMutation(featureCode, amount, idempotencyKey);

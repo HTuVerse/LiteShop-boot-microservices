@@ -151,6 +151,8 @@
 - 部署 P2 查询优化时，在餐饮库执行 `54_restaurant_p2_indexes.sql`，在优惠券库执行 `55_coupon_p2_indexes.sql`；上线后结合真实慢 SQL 和 `EXPLAIN` 复核索引使用情况。
 - 启用租户直连支付前，在配置库执行 `52_tenant_payment_account.sql`，在用户库执行 `54_payment_account_menu.sql`，并为配置服务设置固定的 `CONFIG_CREDENTIAL_ENCRYPTION_KEY`。微信、支付宝支付回调地址还需分别配置为 HTTPS 公网地址；租户总部保存并启用渠道后，其下门店自动沿用且无权查看密钥。
 - 上线会员成长明细前，在用户库执行 `93_user_exp_records.sql`，创建经验流水表并为已有经验的会员写入期初记录；随后同步部署用户服务和包含 `/user-exp-record/**` 的网关路由。
+- 上线本轮优惠券修复前，在优惠券库执行 `97_user_coupon_code_unique.sql`、`98_coupon_revoke_batch.sql`。先运行 `97` 文件开头的重复券码检查 SQL 并处理重复记录；新库初始化脚本 `03_liteshop_coupon.sql` 已包含对应表和约束。
+- 上线余额支付短事务修复前，在用户库执行 `100_balance_payment_fence.sql`；新库初始化脚本 `01_liteshop_user.sql` 已包含栅栏表。用户服务须先于餐饮服务发布，避免对账无法封闭迟到扣款。
 - 同步升级顾客点餐端：桌台列表/详情返回的 `scanToken` 必须随首次 `/table-session/scan` 请求提交；扫码成功后保存返回的 `sessionToken`，后续共享购物车、会话订单接口使用 `X-Table-Session-Token` 请求头，WebSocket 使用 `sessionNo` 与 `token` 查询参数。旧二维码若未携带 `scanToken` 将被拒绝，需重新生成。
 - 需要重置本地测试环境时，执行 `46_seed_current_demo.sql`；`32_cleanup_old_test_tenants.sql` 仅用于需要清理测试租户但不生成新数据的场景。
 

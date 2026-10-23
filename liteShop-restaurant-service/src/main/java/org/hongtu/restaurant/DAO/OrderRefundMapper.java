@@ -19,4 +19,8 @@ public interface OrderRefundMapper extends BaseMapper<OrderRefund> {
             """)
     int compareAndSetOpen(@Param("id") Long id, @Param("status") Integer status,
                           @Param("channelRefundId") String channelRefundId);
+
+    /** 渠道暂不可用时推迟此单，避免固定窗口中的失败单持续占满对账批次。 */
+    @Update("UPDATE order_refund SET updated_at = NOW() WHERE id = #{id} AND status IN (0, 1)")
+    int deferOpen(@Param("id") Long id);
 }

@@ -2,6 +2,7 @@ package org.hongtu.config;
 
 import org.hongtu.job.CouponAutoOffShelfJob;
 import org.hongtu.job.CouponCleanupJob;
+import org.hongtu.job.CouponRevokeJob;
 import org.hongtu.job.CouponStatusUpdateJob;
 import org.hongtu.job.LotteryCouponReceiptJob;
 import org.quartz.*;
@@ -16,6 +17,21 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration("couponQuartzConfig")
 public class QuartzConfig {
+
+    /** 未完成的模板回收每分钟推进一批。 */
+    @Bean
+    public JobDetail couponRevokeJobDetail() {
+        return JobBuilder.newJob(CouponRevokeJob.class)
+                .withIdentity("couponRevokeJob", "couponGroup").storeDurably().build();
+    }
+
+    @Bean
+    public Trigger couponRevokeTrigger() {
+        return TriggerBuilder.newTrigger().forJob(couponRevokeJobDetail())
+                .withIdentity("couponRevokeTrigger", "couponGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInMinutes(1).repeatForever()).build();
+    }
 
     /** 已提交发券事件的抽奖领取通知，每 30 秒对账一次。 */
     @Bean

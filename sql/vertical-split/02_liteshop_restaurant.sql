@@ -479,6 +479,7 @@ CREATE TABLE `restaurant_order` (
   INDEX `idx_store_status_time`(`store_id`, `status`, `created_at`),
   INDEX `idx_store_payment_time`(`tenant_id`, `store_id`, `payment_status`, `payment_time`),
   INDEX `idx_tenant_payment_date_store`(`tenant_id`, `payment_time`, `store_id`, `payment_status`),
+  INDEX `idx_payment_reconcile`(`payment_mode`, `payment_status`, `payment_type`, `id`),
   INDEX `idx_store_cancel_time`(`tenant_id`, `store_id`, `status`, `cancel_time`),
   INDEX `idx_store_table_status`(`store_id`, `table_id`, `status`),
   INDEX `idx_user_session_status`(`user_id`, `session_no`, `status`),

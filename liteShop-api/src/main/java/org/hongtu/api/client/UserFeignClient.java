@@ -38,6 +38,10 @@ public interface UserFeignClient {
     @GetMapping("/inner/user/{id}")
     Result<UserContactDTO> getUserById(@PathVariable("id") Long id);
 
+    /** 按当前租户会员手机号精确查找用户，供订单列表筛选使用。 */
+    @GetMapping("/inner/user/by-phone/id")
+    Result<Long> findUserIdByPhone(@RequestParam("phone") String phone);
+
     /** 只供支付前余额提示；提交时必须再做原子扣减。 */
     @GetMapping("/inner/user/{id}/balance")
     Result<UserBalanceDTO> getUserBalance(@PathVariable("id") Long id);
@@ -95,6 +99,10 @@ public interface UserFeignClient {
     @GetMapping("/inner/user/balance/expense-payer")
     Result<Long> balanceExpensePayer(@RequestParam("orderNo") String orderNo);
 
+    /** 对账确认未扣款时封闭订单号，防止超时请求迟到扣款。 */
+    @PostMapping("/inner/user/balance/expense-abort")
+    Result<Boolean> abortPendingBalanceExpense(@RequestParam("orderNo") String orderNo);
+
     /** 查询指定余额流水是否已实际入账，供跨服务对账。 */
     @GetMapping("/inner/user/balance/applied")
     Result<Boolean> balanceChangeApplied(@RequestParam("orderNo") String orderNo,
@@ -142,6 +150,10 @@ public interface UserFeignClient {
     /** 原子消费配额；idempotencyKey 必须由业务操作唯一标识。 */
     @PostMapping("/inner/saas/consume")
     Result<EntitlementDecisionDTO> consumeEntitlement(@RequestBody EntitlementMutationDTO dto);
+
+    /** 门店服务单向推送当前已提交数量，作为本地权益计数器基线。 */
+    @PostMapping("/inner/saas/store-count/baseline")
+    Result<Void> ensureStoreCountBaseline(@RequestParam("count") Long count);
 
     /** 业务撤销或删除资源时，幂等释放已占用配额。 */
     @PostMapping("/inner/saas/release")

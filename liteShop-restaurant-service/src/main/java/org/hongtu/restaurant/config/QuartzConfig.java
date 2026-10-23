@@ -2,6 +2,8 @@ package org.hongtu.restaurant.config;
 
 import org.hongtu.restaurant.job.LocalOutboxReconcileJob;
 import org.hongtu.restaurant.job.OrderTimeoutJob;
+import org.hongtu.restaurant.job.PendingPaymentReconcileJob;
+import org.hongtu.restaurant.job.StoreCountBaselineJob;
 import org.hongtu.restaurant.job.PrintJobDispatchJob;
 import org.hongtu.restaurant.job.MenuChangeEffectiveJob;
 import org.hongtu.restaurant.job.TenantAnalysisRefreshJob;
@@ -18,6 +20,41 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration("restaurantQuartzConfig")
 public class QuartzConfig {
+
+    /** 启动后及之后每小时同步存量门店基线。 */
+    @Bean
+    public JobDetail storeCountBaselineJobDetail() {
+        return JobBuilder.newJob(StoreCountBaselineJob.class)
+                .withIdentity("storeCountBaselineJob", "restaurantGroup").storeDurably().build();
+    }
+
+    @Bean
+    public Trigger storeCountBaselineTrigger(JobDetail storeCountBaselineJobDetail) {
+        return TriggerBuilder.newTrigger().forJob(storeCountBaselineJobDetail)
+                .withIdentity("storeCountBaselineTrigger", "restaurantGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInHours(1).repeatForever()).build();
+    }
+
+    /** 回调丢失后的渠道补查任务。 */
+    @Bean
+    public JobDetail pendingPaymentReconcileJobDetail() {
+        return JobBuilder.newJob(PendingPaymentReconcileJob.class)
+                .withIdentity("pendingPaymentReconcileJob", "orderGroup")
+                .storeDurably()
+                .build();
+    }
+
+    /** 每30秒轮流核对未支付、支付失败和对账中的线上订单。 */
+    @Bean
+    public Trigger pendingPaymentReconcileTrigger(JobDetail pendingPaymentReconcileJobDetail) {
+        return TriggerBuilder.newTrigger()
+                .forJob(pendingPaymentReconcileJobDetail)
+                .withIdentity("pendingPaymentReconcileTrigger", "orderGroup")
+                .withSchedule(SimpleScheduleBuilder.simpleSchedule()
+                        .withIntervalInSeconds(30).repeatForever())
+                .build();
+    }
 
     /** 租户经营分析日汇总任务定义。 */
     @Bean
