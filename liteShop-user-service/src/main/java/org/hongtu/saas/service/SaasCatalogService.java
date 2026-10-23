@@ -9,6 +9,7 @@ import org.hongtu.saas.constant.SaasFeatureType;
 import org.hongtu.saas.domain.*;
 import org.hongtu.saas.mapper.*;
 import org.hongtu.saas.view.PublishedPlanOptionView;
+import org.hongtu.saas.view.PlanVersionConfigurationRequest;
 import org.hongtu.tenant.TenantContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -213,6 +214,34 @@ public class SaasCatalogService {
         requirePlatform();
         return versions.selectList(new LambdaQueryWrapper<SaasPlanVersion>()
                 .eq(SaasPlanVersion::getPlanId, planId).orderByDesc(SaasPlanVersion::getVersionNo));
+    }
+
+    /** 一次读取平台全部套餐版本，避免按套餐逐个请求。 */
+    public List<SaasPlanVersion> listAllVersions() {
+        requirePlatform();
+        return versions.selectList(new LambdaQueryWrapper<SaasPlanVersion>()
+                .orderByAsc(SaasPlanVersion::getPlanId).orderByDesc(SaasPlanVersion::getVersionNo));
+    }
+
+    /** 批量读取对比表所需版本的权益。 */
+    public List<SaasPlanEntitlement> listEntitlementsForVersions(List<Long> versionIds) {
+        requirePlatform();
+        if (versionIds == null || versionIds.isEmpty()) return List.of();
+        return planEntitlements.selectList(new LambdaQueryWrapper<SaasPlanEntitlement>()
+                .in(SaasPlanEntitlement::getPlanVersionId, versionIds)
+                .orderByAsc(SaasPlanEntitlement::getPlanVersionId)
+                .orderByAsc(SaasPlanEntitlement::getFeatureId));
+    }
+
+    /** 同一事务保存价格和权益，任何校验或写入失败都回滚。 */
+    @Transactional(rollbackFor = Exception.class)
+    public SaasPlanVersion saveVersionConfiguration(Long versionId, PlanVersionConfigurationRequest request) {
+        if (request == null || request.version() == null) {
+            throw new BusinessException(400, "套餐版本配置不能为空");
+        }
+        SaasPlanVersion version = saveVersionCommercial(versionId, request.version());
+        saveEntitlements(versionId, request.entitlements());
+        return version;
     }
 
     @Transactional(rollbackFor = Exception.class)

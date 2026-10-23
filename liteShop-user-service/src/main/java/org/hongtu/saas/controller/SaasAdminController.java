@@ -7,6 +7,7 @@ import org.hongtu.saas.domain.*;
 import org.hongtu.saas.service.SaasCatalogService;
 import org.hongtu.saas.service.SaasEntitlementService;
 import org.hongtu.saas.service.SaasSubscriptionService;
+import org.hongtu.saas.view.PlanVersionConfigurationRequest;
 import org.hongtu.saas.view.PublishedPlanOptionView;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,8 +33,14 @@ public class SaasAdminController {
     @PostMapping("/plans") public Result<SaasPlan> addPlan(@RequestBody SaasPlan row) { row.setId(null); return Result.success(catalog.savePlan(row)); }
     @PutMapping("/plans") public Result<SaasPlan> updatePlan(@RequestBody SaasPlan row) { return Result.success(catalog.savePlan(row)); }
     @GetMapping("/plans/{planId}/versions") public Result<List<SaasPlanVersion>> versions(@PathVariable Long planId) { return Result.success(catalog.listVersions(planId)); }
+    /** 批量读取所有套餐版本。 */
+    @GetMapping("/plan-versions") public Result<List<SaasPlanVersion>> allVersions() { return Result.success(catalog.listAllVersions()); }
+    /** 批量读取指定版本的权益。 */
+    @PostMapping("/plan-versions/entitlements/batch") public Result<List<SaasPlanEntitlement>> batchEntitlements(@RequestBody List<Long> versionIds) { return Result.success(catalog.listEntitlementsForVersions(versionIds)); }
     @PostMapping("/plans/{planId}/versions") public Result<SaasPlanVersion> createVersion(@PathVariable Long planId, @RequestParam(required = false) Long copyFromVersionId) { return Result.success(catalog.createVersion(planId, copyFromVersionId)); }
     @PutMapping("/plan-versions/{versionId}") public Result<SaasPlanVersion> updateVersion(@PathVariable Long versionId, @RequestBody SaasPlanVersion row) { return Result.success(catalog.saveVersionCommercial(versionId, row)); }
+    /** 原子保存套餐草稿价格及权益。 */
+    @PutMapping("/plan-versions/{versionId}/configuration") public Result<SaasPlanVersion> saveVersionConfiguration(@PathVariable Long versionId, @RequestBody PlanVersionConfigurationRequest request) { return Result.success(catalog.saveVersionConfiguration(versionId, request)); }
     @DeleteMapping("/plan-versions/{versionId}") public Result<Void> deleteVersion(@PathVariable Long versionId) { catalog.deleteDraftVersion(versionId); return Result.success("套餐草稿已删除", null); }
     @GetMapping("/plan-versions/{versionId}/entitlements") public Result<List<SaasPlanEntitlement>> planRules(@PathVariable Long versionId) { return Result.success(catalog.entitlements(versionId)); }
     @PutMapping("/plan-versions/{versionId}/entitlements") public Result<List<SaasPlanEntitlement>> savePlanRules(@PathVariable Long versionId, @RequestBody List<SaasPlanEntitlement> rows) { return Result.success(catalog.saveEntitlements(versionId, rows)); }

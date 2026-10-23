@@ -8,6 +8,7 @@ import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.util.AttributeKey;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.restaurant.VO.WsMessage;
@@ -21,6 +22,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Netty WebSocket 处理器
@@ -32,6 +34,8 @@ import java.util.Map;
 @Component
 @ChannelHandler.Sharable
 public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSocketFrame> {
+
+    private static final AttributeKey<String> PENDING_SESSION = AttributeKey.valueOf("pendingSessionNo");
 
     @Resource
     private NettyChannelManager channelManager;
@@ -63,14 +67,43 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
             String uri = handshake.requestUri();
             // WebSocket 直连 Netty 端口，不经过 HTTP 租户拦截器，租户必须从签名票据中恢复。
             HandshakeParams params = extractHandshakeParams(uri);
-            String sessionNo = params == null ? null : params.sessionNo();
-
             if (params == null) {
-                log.error("WebSocket 缺少有效 sessionNo/token，关闭连接");
-                ctx.close();
+                QueryStringDecoder decoder = new QueryStringDecoder(uri);
+                String sessionNo = firstQueryValue(decoder, "sessionNo");
+                if (sessionNo == null || sessionNo.isBlank() || firstQueryValue(decoder, "token") != null) {
+                    ctx.close();
+                    return;
+                }
+                // 浏览器不能为 WebSocket 握手设置自定义认证头，改由首帧认证，避免票据进入 URL 日志。
+                ctx.channel().attr(PENDING_SESSION).set(sessionNo);
+                ctx.executor().schedule(() -> {
+                    if (ctx.channel().isActive() && channelManager.getSessionKey(ctx.channel()) == null) ctx.close();
+                }, 10, TimeUnit.SECONDS);
                 return;
             }
+            joinSession(ctx, params);
+        }
 
+        // 处理心跳超时
+        else if (evt instanceof IdleStateEvent) {
+            IdleStateEvent event = (IdleStateEvent) evt;
+            if (event.state() == IdleState.READER_IDLE) {
+                log.warn("读超时，关闭连接: channelId={}", ctx.channel().id().asShortText());
+                ctx.close();
+            } else if (event.state() == IdleState.WRITER_IDLE) {
+                log.warn("写超时: channelId={}", ctx.channel().id().asShortText());
+            } else if (event.state() == IdleState.ALL_IDLE) {
+                log.warn("读写超时，关闭连接: channelId={}", ctx.channel().id().asShortText());
+                ctx.close();
+            }
+        }
+
+        super.userEventTriggered(ctx, evt);
+    }
+
+    /** 完成票据验证后才将连接加入桌位广播组。 */
+    private void joinSession(ChannelHandlerContext ctx, HandshakeParams params) {
+            String sessionNo = params.sessionNo();
             TenantContext.setTenantId(params.tenantId());
             try {
                 // 查询会自动追加 tenant_id，不匹配的 tenantId 与 sessionNo 无法建立连接。
@@ -99,23 +132,6 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
             } finally {
                 TenantContext.clear();
             }
-        }
-
-        // 处理心跳超时
-        else if (evt instanceof IdleStateEvent) {
-            IdleStateEvent event = (IdleStateEvent) evt;
-            if (event.state() == IdleState.READER_IDLE) {
-                log.warn("读超时，关闭连接: channelId={}", ctx.channel().id().asShortText());
-                ctx.close();
-            } else if (event.state() == IdleState.WRITER_IDLE) {
-                log.warn("写超时: channelId={}", ctx.channel().id().asShortText());
-            } else if (event.state() == IdleState.ALL_IDLE) {
-                log.warn("读写超时，关闭连接: channelId={}", ctx.channel().id().asShortText());
-                ctx.close();
-            }
-        }
-
-        super.userEventTriggered(ctx, evt);
     }
 
     /**
@@ -135,6 +151,29 @@ public class NettyWebSocketHandler extends SimpleChannelInboundHandler<TextWebSo
             @SuppressWarnings("unchecked")
             Map<String, Object> messageMap = objectMapper.readValue(message, Map.class);
             String type = (String) messageMap.get("type");
+
+            if (sessionKey == null) {
+                String pendingSessionNo = ctx.channel().attr(PENDING_SESSION).getAndSet(null);
+                if (!"AUTH".equals(type) || pendingSessionNo == null) {
+                    ctx.close();
+                    return;
+                }
+                try {
+                    TableSessionTokenService.Claims claims = tableSessionTokenService.verify((String) messageMap.get("token"));
+                    if (!claims.sessionNo().equals(pendingSessionNo)) {
+                        ctx.close();
+                        return;
+                    }
+                    joinSession(ctx, new HandshakeParams(claims.tenantId(), pendingSessionNo));
+                    if (ctx.channel().isActive() && channelManager.getSessionKey(ctx.channel()) != null) {
+                        ctx.writeAndFlush(new TextWebSocketFrame(objectMapper.writeValueAsString(
+                                Map.of("type", "AUTH_OK", "sessionNo", pendingSessionNo))));
+                    }
+                } catch (RuntimeException e) {
+                    ctx.close();
+                }
+                return;
+            }
 
             // 心跳消息
             if (WsMessageTypeEnum.HEARTBEAT.getCode().equals(type)) {
