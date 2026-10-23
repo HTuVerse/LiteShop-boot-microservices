@@ -27,10 +27,15 @@
         FROM restaurant_order_item roi
         INNER JOIN restaurant_order ro ON roi.order_id = ro.id
         LEFT JOIN (
-            SELECT tenant_id, order_id,
-                   SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
-            FROM restaurant_order_item
-            GROUP BY tenant_id, order_id
+            SELECT items.tenant_id, items.order_id,
+                   SUM(CASE WHEN COALESCE(items.is_gift, 0) = 0 THEN items.line_payable_amount ELSE 0 END) AS itemPayableAmount
+            FROM restaurant_order filtered
+            INNER JOIN restaurant_order_item items ON items.order_id = filtered.id AND items.tenant_id = filtered.tenant_id
+            WHERE filtered.store_id = #{storeId}
+              AND filtered.payment_status IN (1, 2) AND filtered.status != 6
+              AND filtered.payment_time >= CONCAT(#{startDate}, ' 00:00:00')
+              AND filtered.payment_time &lt; DATE_ADD(#{endDate}, INTERVAL 1 DAY)
+            GROUP BY items.tenant_id, items.order_id
         ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
         WHERE ro.store_id = #{storeId}
           AND roi.dish_id = #{dishId}
@@ -211,10 +216,15 @@
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
                  LEFT JOIN (
-                    SELECT tenant_id, order_id,
-                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
-                    FROM restaurant_order_item
-                    GROUP BY tenant_id, order_id
+                    SELECT items.tenant_id, items.order_id,
+                           SUM(CASE WHEN COALESCE(items.is_gift, 0) = 0 THEN items.line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order filtered
+                    INNER JOIN restaurant_order_item items ON items.order_id = filtered.id AND items.tenant_id = filtered.tenant_id
+                    WHERE filtered.store_id = #{storeId}
+                      AND filtered.payment_status IN (1, 2) AND filtered.status != 6
+                      AND filtered.payment_time >= #{startTime}
+                      AND filtered.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                    GROUP BY items.tenant_id, items.order_id
                  ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
                  LEFT JOIN dish d ON roi.dish_id = d.id
                  LEFT JOIN dish_category dc ON roi.category_id = dc.id
@@ -257,10 +267,15 @@
                     FROM restaurant_order_item roi1
                     INNER JOIN restaurant_order ro1 ON roi1.order_id = ro1.id
                     LEFT JOIN (
-                        SELECT tenant_id, order_id,
-                               SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
-                        FROM restaurant_order_item
-                        GROUP BY tenant_id, order_id
+                        SELECT items.tenant_id, items.order_id,
+                               SUM(CASE WHEN COALESCE(items.is_gift, 0) = 0 THEN items.line_payable_amount ELSE 0 END) AS itemPayableAmount
+                        FROM restaurant_order filtered
+                        INNER JOIN restaurant_order_item items ON items.order_id = filtered.id AND items.tenant_id = filtered.tenant_id
+                        WHERE filtered.store_id = #{storeId}
+                          AND filtered.payment_status IN (1, 2) AND filtered.status != 6
+                          AND filtered.payment_time >= #{startTime}
+                          AND filtered.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                        GROUP BY items.tenant_id, items.order_id
                     ) oit1 ON oit1.tenant_id = ro1.tenant_id AND oit1.order_id = ro1.id
                     WHERE ro1.store_id = #{storeId}
                       AND ro1.payment_status IN (1, 2)
@@ -306,10 +321,15 @@
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
                  LEFT JOIN (
-                    SELECT tenant_id, order_id,
-                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
-                    FROM restaurant_order_item
-                    GROUP BY tenant_id, order_id
+                    SELECT items.tenant_id, items.order_id,
+                           SUM(CASE WHEN COALESCE(items.is_gift, 0) = 0 THEN items.line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order filtered
+                    INNER JOIN restaurant_order_item items ON items.order_id = filtered.id AND items.tenant_id = filtered.tenant_id
+                    WHERE filtered.store_id = #{storeId}
+                      AND filtered.payment_status IN (1, 2) AND filtered.status != 6
+                      AND filtered.payment_time >= #{startTime}
+                      AND filtered.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                    GROUP BY items.tenant_id, items.order_id
                  ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
                  LEFT JOIN dish_category dc ON roi.category_id = dc.id
         WHERE ro.store_id = #{storeId}
@@ -329,10 +349,15 @@
         FROM restaurant_order_item roi
                  INNER JOIN restaurant_order ro ON roi.order_id = ro.id
                  LEFT JOIN (
-                    SELECT tenant_id, order_id,
-                           SUM(CASE WHEN COALESCE(is_gift, 0) = 0 THEN line_payable_amount ELSE 0 END) AS itemPayableAmount
-                    FROM restaurant_order_item
-                    GROUP BY tenant_id, order_id
+                    SELECT items.tenant_id, items.order_id,
+                           SUM(CASE WHEN COALESCE(items.is_gift, 0) = 0 THEN items.line_payable_amount ELSE 0 END) AS itemPayableAmount
+                    FROM restaurant_order filtered
+                    INNER JOIN restaurant_order_item items ON items.order_id = filtered.id AND items.tenant_id = filtered.tenant_id
+                    WHERE filtered.store_id = #{storeId}
+                      AND filtered.payment_status IN (1, 2) AND filtered.status != 6
+                      AND filtered.payment_time >= #{startTime}
+                      AND filtered.payment_time &lt; DATE_ADD(#{endTime}, INTERVAL 1 SECOND)
+                    GROUP BY items.tenant_id, items.order_id
                  ) oit ON oit.tenant_id = ro.tenant_id AND oit.order_id = ro.id
         WHERE ro.store_id = #{storeId}
           AND ro.payment_status IN (1, 2)
