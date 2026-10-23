@@ -17,6 +17,8 @@ import org.hongtu.api.dto.MallPointsChangeDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
 import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.dto.UserBasicDTO;
+import org.hongtu.api.dto.UserContactDTO;
+import org.hongtu.api.dto.UserBalanceDTO;
 import org.hongtu.service.SysUserService;
 import org.hongtu.service.MemberOrderRewardService;
 import org.hongtu.service.SysTenantService;
@@ -86,8 +88,22 @@ public class InnerUserController {
      * 查询用户（替代原跨模块 SysUserService.getById / SysUserMapper.selectById）
      */
     @GetMapping("/{id}")
-    public Result<SysUser> getUserById(@PathVariable("id") Long id) {
-        return Result.success(sysUserService.getById(id));
+    public Result<UserContactDTO> getUserById(@PathVariable("id") Long id) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId, SysUser::getUsername, SysUser::getNickname, SysUser::getPhone)
+                .eq(SysUser::getId, id).last("LIMIT 1"));
+        return Result.success(user == null ? null : new UserContactDTO()
+                .setId(user.getId()).setUsername(user.getUsername())
+                .setNickname(user.getNickname()).setPhone(user.getPhone()));
+    }
+
+    @GetMapping("/{id}/balance")
+    public Result<UserBalanceDTO> getUserBalance(@PathVariable("id") Long id) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId, SysUser::getSurplusMoney)
+                .eq(SysUser::getId, id).last("LIMIT 1"));
+        return Result.success(user == null ? null : new UserBalanceDTO()
+                .setId(user.getId()).setSurplusMoney(user.getSurplusMoney()));
     }
 
     /** 仅返回会员价计算所需字段，避免无关用户字段造成跨服务反序列化失败。 */

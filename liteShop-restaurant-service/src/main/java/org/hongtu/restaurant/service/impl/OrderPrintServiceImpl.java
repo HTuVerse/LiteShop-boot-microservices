@@ -22,7 +22,7 @@ import org.hongtu.restaurant.utils.PrintContentBuilder;
 import org.hongtu.restaurant.utils.ReceiptScanCode;
 import org.hongtu.restaurant.VO.RestaurantOrderVO;
 import org.hongtu.utils.BeanCopyUtils;
-import org.hongtu.DTO.SysUser;
+import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
 import org.springframework.stereotype.Service;
@@ -261,7 +261,7 @@ public class OrderPrintServiceImpl implements OrderPrintService {
     private void fillCustomerForReceipt(RestaurantOrderVO orderVO) {
         if (orderVO.getUserId() == null || orderVO.getCustomerName() != null || orderVO.getCustomerPhone() != null) return;
         try {
-            SysUser customer = FeignResultUtil.unwrap(userFeignClient.getUserById(orderVO.getUserId()));
+            UserContactDTO customer = FeignResultUtil.unwrap(userFeignClient.getUserById(orderVO.getUserId()));
             if (customer == null) return;
             orderVO.setCustomerName(customer.getNickname() == null || customer.getNickname().isBlank()
                     ? customer.getUsername() : customer.getNickname());

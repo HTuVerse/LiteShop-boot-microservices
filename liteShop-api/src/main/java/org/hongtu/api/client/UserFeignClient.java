@@ -1,6 +1,5 @@
 package org.hongtu.api.client;
 
-import org.hongtu.DTO.SysUser;
 import org.hongtu.Result.Result;
 import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.MallPointsChangeDTO;
@@ -13,6 +12,8 @@ import org.hongtu.api.dto.AiPageDTO;
 import org.hongtu.api.dto.MemberPricingDTO;
 import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.dto.UserBasicDTO;
+import org.hongtu.api.dto.UserContactDTO;
+import org.hongtu.api.dto.UserBalanceDTO;
 import org.hongtu.api.dto.TenantResourceLibraryDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,7 +36,11 @@ public interface UserFeignClient {
      * 查询用户（替代原单体中跨模块注入 SysUserService.getById / SysUserMapper.selectById）
      */
     @GetMapping("/inner/user/{id}")
-    Result<SysUser> getUserById(@PathVariable("id") Long id);
+    Result<UserContactDTO> getUserById(@PathVariable("id") Long id);
+
+    /** 只供支付前余额提示；提交时必须再做原子扣减。 */
+    @GetMapping("/inner/user/{id}/balance")
+    Result<UserBalanceDTO> getUserBalance(@PathVariable("id") Long id);
 
     /** 查询会员定价所需的等级信息，不传输完整用户对象。 */
     @GetMapping("/inner/user/{id}/pricing")

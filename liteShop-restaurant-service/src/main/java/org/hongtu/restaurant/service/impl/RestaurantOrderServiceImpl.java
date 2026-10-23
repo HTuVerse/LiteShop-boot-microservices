@@ -11,7 +11,7 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.hongtu.Result.Result;
 import org.hongtu.DTO.PaymentNotifyResult;
-import org.hongtu.DTO.SysUser;
+import org.hongtu.api.dto.UserBalanceDTO;
 import org.hongtu.enums.BalanceResourceEnum;
 import org.hongtu.enums.BooleanEnum;
 import org.hongtu.exception.BusinessException;
@@ -926,7 +926,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
 
         // 3. 获取用户信息（Feign 调用 user-service）
         Long userId = StpUtil.getLoginIdAsLong();
-        SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
+        UserBalanceDTO user = FeignResultUtil.unwrap(userFeignClient.getUserBalance(userId));
         if (user == null) {
             throw new IllegalStateException("用户不存在");
         }
@@ -1713,9 +1713,9 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         PricingQuoteVO pricingQuote = quoteCashierItems(request.getStoreId(), request.getUserId(), request.getCartItems());
 
         // 1.5 若传了 userId 则为余额支付，先校验用户存在（Feign 调用 user-service）
-        SysUser user = null;
+        UserBalanceDTO user = null;
         if (request.getPaymentType()==PaymentTypeEnum.BANLANCE_PAY && request.getUserId()!=null) {
-            user = FeignResultUtil.unwrap(userFeignClient.getUserById(request.getUserId()));
+            user = FeignResultUtil.unwrap(userFeignClient.getUserBalance(request.getUserId()));
             if (user == null) {
                 throw new BusinessException("用户不存在");
             }
@@ -2044,7 +2044,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             if (request.getUserId() == null) {
                 throw new BusinessException("余额支付请先选择会员");
             }
-            SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(request.getUserId()));
+            UserBalanceDTO user = FeignResultUtil.unwrap(userFeignClient.getUserBalance(request.getUserId()));
             if (user == null) {
                 throw new BusinessException("用户不存在");
             }
@@ -3896,7 +3896,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     private String resolveOperatorName(Long operatorId) {
         if (operatorId == null) return null;
         try {
-            SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(operatorId));
+            UserContactDTO user = FeignResultUtil.unwrap(userFeignClient.getUserById(operatorId));
             if (user != null) return StrUtil.blankToDefault(user.getNickname(), user.getUsername());
         } catch (Exception e) {
             log.warn("操作人名称查询失败: operatorId={}", operatorId, e);

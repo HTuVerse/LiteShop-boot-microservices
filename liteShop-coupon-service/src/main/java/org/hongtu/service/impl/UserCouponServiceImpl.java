@@ -16,6 +16,7 @@ import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.api.error.MallErrorCodes;
+import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.DTO.*;
 import org.hongtu.Result.Result;
 import org.hongtu.VO.UserCouponVO;
@@ -294,7 +295,7 @@ public class UserCouponServiceImpl extends ServiceImpl<UserCouponMapper, UserCou
         }
         try {
             // 检查用户是否存在（微服务改造：经 Feign 调 user-service）
-            SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
+            UserContactDTO user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
             if (user == null) {
                 log.warn("发放优惠券失败：用户不存在，userId={}", userId);
                 return Result.error(MallErrorCodes.COUPON_USER_MISSING, "用户不存在或不属于当前租户，请从当前租户的用户列表选择");

@@ -4,7 +4,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import lombok.extern.slf4j.Slf4j;
 import lombok.RequiredArgsConstructor;
-import org.hongtu.DTO.SysUser;
+import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.announcement.dto.AnnouncementForm;
@@ -302,7 +302,7 @@ public class AnnouncementService {
         long userId = StpUtil.getLoginIdAsLong();
         String fallback = "用户 " + userId;
         try {
-            SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
+            UserContactDTO user = FeignResultUtil.unwrap(userFeignClient.getUserById(userId));
             if (user == null) return new PublisherIdentity(userId, fallback);
             String nickname = normalizeDisplayName(user.getNickname());
             if (nickname != null) return new PublisherIdentity(userId, nickname);

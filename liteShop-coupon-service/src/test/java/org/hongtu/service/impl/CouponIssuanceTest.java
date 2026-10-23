@@ -3,6 +3,7 @@ import org.hongtu.DAO.*;
 import org.hongtu.DTO.*;
 import org.hongtu.Result.Result;
 import org.hongtu.api.client.UserFeignClient;
+import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.controller.UserCouponController;
 import org.hongtu.enums.OnOrOffShelfEnum;
 import org.hongtu.service.UserCouponService;
@@ -30,7 +31,7 @@ class CouponIssuanceTest {
     @Test void partialPeriodDefaultsWithoutExceedingCouponExpiry() {
         var service=spy(new UserCouponServiceImpl()); var users=mock(UserFeignClient.class); var coupons=mock(CouponMapper.class);var issued=mock(UserCouponMapper.class);
         ReflectionTestUtils.setField(service,"userFeignClient",users);ReflectionTestUtils.setField(service,"couponMapper",coupons);ReflectionTestUtils.setField(service,"userCouponMapper",issued);
-        when(users.getUserById(5L)).thenReturn(Result.success(new SysUser()));
+        when(users.getUserById(5L)).thenReturn(Result.success(new UserContactDTO()));
         var coupon=new Coupon();coupon.setStatus(OnOrOffShelfEnum.ON_SHELF);coupon.setRemainCount(2);coupon.setEndTime(LocalDateTime.now().plusDays(1));
         when(coupons.selectById(42L)).thenReturn(coupon);when(coupons.decreaseStock(42L,1)).thenReturn(1);when(issued.selectCount(any())).thenReturn(0L);
         doReturn(true).when(service).save(any(UserCoupon.class));
@@ -42,9 +43,9 @@ class CouponIssuanceTest {
     @Test void missingUserAndInvalidPeriodNeverConsumeStock() {
         var service=new UserCouponServiceImpl();var users=mock(UserFeignClient.class);var coupons=mock(CouponMapper.class);
         ReflectionTestUtils.setField(service,"userFeignClient",users);ReflectionTestUtils.setField(service,"couponMapper",coupons);
-        when(users.getUserById(1L)).thenReturn(Result.success((SysUser)null));
+        when(users.getUserById(1L)).thenReturn(Result.success((UserContactDTO)null));
         assertNotEquals(200,service.sendCouponToUser(1L,42L,null,null).getCode());verifyNoInteractions(coupons);
-        when(users.getUserById(1L)).thenReturn(Result.success(new SysUser()));
+        when(users.getUserById(1L)).thenReturn(Result.success(new UserContactDTO()));
         var coupon=new Coupon();coupon.setStatus(OnOrOffShelfEnum.ON_SHELF);coupon.setRemainCount(2);
         when(coupons.selectById(42L)).thenReturn(coupon);
         assertNotEquals(200,service.sendCouponToUser(1L,42L,new Date(System.currentTimeMillis()+100000),new Date()).getCode());

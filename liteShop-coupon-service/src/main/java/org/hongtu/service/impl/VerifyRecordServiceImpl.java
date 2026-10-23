@@ -11,7 +11,7 @@ import org.hongtu.DAO.VerifyRecordMapper;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.DTO.Coupon;
-import org.hongtu.DTO.SysUser;
+import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.DTO.UserCoupon;
 import org.hongtu.DTO.VerifyRecord;
 import org.hongtu.Result.Result;
@@ -113,7 +113,7 @@ public class VerifyRecordServiceImpl extends ServiceImpl<VerifyRecordMapper, Ver
         // 查询优惠券详情
         Coupon coupon = couponMapper.selectById(userCoupon.getCouponId());
         // 查询用户信息（微服务改造：经 Feign 调 user-service）
-        SysUser user = FeignResultUtil.unwrap(userFeignClient.getUserById(userCoupon.getUserId()));
+        UserContactDTO user = FeignResultUtil.unwrap(userFeignClient.getUserById(userCoupon.getUserId()));
         // 构建返回结果
         VerifyResultVO resultVO = new VerifyResultVO();
         resultVO.setUserCouponId(userCoupon.getId());
