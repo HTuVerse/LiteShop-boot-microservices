@@ -9,3 +9,13 @@ app:
 wx:
   appid: ${WX_APP_ID}
   secret: ${WX_APP_SECRET}
+
+liteshop:
+  audit:
+    # 正式环境必须注入独立且稳定的密钥；当前版本不支持历史密钥在线轮换。
+    hmac-key: ${AUDIT_HMAC_KEY:liteshop-local-audit-key-change-before-production-20261024}
+    key-version: ${AUDIT_HMAC_KEY_VERSION:local-v1}
+    # 本地将用户提供的 MMDB 放在仓库 runtime 目录；部署环境使用绝对路径挂载。
+    geo-db-path: ${GEOIP_CITY_DB_PATH:runtime/GeoLite2-City.mmdb}
+    geo-db-version: ${GEOIP_CITY_DB_VERSION:20261023}
+    anchor-path: ${AUDIT_ANCHOR_PATH:runtime/audit-anchors.jsonl}

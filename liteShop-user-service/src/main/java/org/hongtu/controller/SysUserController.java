@@ -14,6 +14,10 @@ import org.hongtu.controller.request.UserProfileUpdateRequest;
 import org.hongtu.DTO.UserLevel;
 import org.hongtu.DAO.UserLevelMapper;
 import org.hongtu.Result.Result;
+import org.hongtu.audit.AuditContext;
+import org.hongtu.audit.AuditChanges;
+import org.hongtu.audit.AuditLoginRecorder;
+import org.hongtu.audit.AuditOperation;
 import org.hongtu.VO.CashierMemberVO;
 import org.hongtu.enums.StatusEnum;
 import org.hongtu.service.SysUserService;
@@ -35,6 +39,10 @@ public class SysUserController {
     SysUserService sysUserService;
     @Resource
     org.hongtu.service.AdminLoginSecurity adminLoginSecurity;
+    @Resource
+    AuditLoginRecorder auditLoginRecorder;
+    @Resource
+    AuditChanges auditChanges;
 
     @GetMapping("/admin/captcha")
     @SaIgnore
@@ -74,14 +82,13 @@ public class SysUserController {
                              @RequestParam("password") String password,
                              @RequestParam(required = false) String captchaId,
                              @RequestParam(required = false) String captchaCode) {
-        if (StrUtil.isBlank(account) || StrUtil.isBlank(password)) {
-            return Result.error("用户名/邮箱/手机号不能为空");
-        }
-        if (hongTuUtil.containsChinese(account)) {
-            return Result.error("用户名不能包含中文");
-        }
-        return adminLoginSecurity.authenticate(account, captchaId, captchaCode,
-                () -> sysUserService.adminLogin(account, password));
+        return auditLoginRecorder.execute(account, "LOGIN_PREAUTH", null, () -> {
+            if (StrUtil.isBlank(account) || StrUtil.isBlank(password))
+                return Result.error("用户名/邮箱/手机号不能为空");
+            if (hongTuUtil.containsChinese(account)) return Result.error("用户名不能包含中文");
+            return adminLoginSecurity.authenticate(account, captchaId, captchaCode,
+                    () -> sysUserService.adminLogin(account, password));
+        });
     }
 
     /**
@@ -91,13 +98,12 @@ public class SysUserController {
     @SaIgnore
     public Result verifyAdminTotp(@RequestParam("challengeTicket") String challengeTicket,
                                   @RequestParam("totpCode") String totpCode) {
-        if (StrUtil.isBlank(challengeTicket)) {
-            return Result.error("二次验证凭证不能为空");
-        }
-        if (StrUtil.isBlank(totpCode) || !totpCode.matches("\\d{6}")) {
-            return Result.error("请输入 6 位动态口令");
-        }
-        return sysUserService.verifyAdminTotp(challengeTicket, totpCode);
+        return auditLoginRecorder.execute(null, "MFA_VERIFY", null, () -> {
+            if (StrUtil.isBlank(challengeTicket)) return Result.error("二次验证凭证不能为空");
+            if (StrUtil.isBlank(totpCode) || !totpCode.matches("\\d{6}"))
+                return Result.error("请输入 6 位动态口令");
+            return sysUserService.verifyAdminTotp(challengeTicket, totpCode);
+        });
     }
 
     /**
@@ -108,10 +114,11 @@ public class SysUserController {
     public Result selectAdminTenant(@RequestParam("selectionTicket") String selectionTicket,
                                     @RequestParam("tenantId") Long tenantId,
                                     @RequestParam(value = "storeId", required = false) Long storeId) {
-        if (StrUtil.isBlank(selectionTicket) || tenantId == null || tenantId <= 0) {
-            return Result.error("登录凭证和商户不能为空");
-        }
-        return sysUserService.selectAdminTenant(selectionTicket, tenantId, storeId);
+        return auditLoginRecorder.execute(null, "TENANT_SELECT", tenantId, () -> {
+            if (StrUtil.isBlank(selectionTicket) || tenantId == null || tenantId <= 0)
+                return Result.error("登录凭证和商户不能为空");
+            return sysUserService.selectAdminTenant(selectionTicket, tenantId, storeId);
+        });
     }
 
     /** 返回本次身份验证允许进入的全部租户及门店工作空间。 */
@@ -122,18 +129,22 @@ public class SysUserController {
 
     /** 不退出账号，切换到已授权的租户或门店。跨租户时返回新的正式 Token。 */
     @PostMapping("/admin/switch-workspace")
+    @AuditOperation(module = "system:auth", type = "SWITCH_WORKSPACE", objectType = "TENANT", summary = "切换商户或门店工作空间", objectIdArgument = 0)
     public Result switchAdminWorkspace(@RequestParam("tenantId") Long tenantId,
                                        @RequestParam(value = "storeId", required = false) Long storeId) {
         if (tenantId == null || tenantId <= 0) {
             return Result.error("商户不能为空");
         }
-        return sysUserService.switchAdminWorkspace(tenantId, storeId);
+        Result result = sysUserService.switchAdminWorkspace(tenantId, storeId);
+        if (Result.CODE_SUCCESS.equals(result.getCode())) AuditContext.target(String.valueOf(tenantId), tenantId);
+        return result;
     }
 
     /**
      * 登出
      * */
     @PostMapping("/logout")
+    @AuditOperation(module = "system:auth", type = "LOGOUT", objectType = "ADMIN_SESSION", summary = "退出管理后台")
     public Result logout(){
         StpUtil.logout();
         return Result.success("登出成功");
@@ -160,17 +171,14 @@ public class SysUserController {
             @RequestParam String account, @RequestParam String verifyCode,
             @RequestParam(required = false) String captchaId,
             @RequestParam(required = false) String captchaCode) {
-        if (StrUtil.isBlank(account)) {
-            return Result.error("请将信息补充完整");
-        }
-        if (StrUtil.isBlank(verifyCode)) {
-            return Result.error("验证码不能为空");
-        }
-        if (!hongTuUtil.isPhone(account) && !hongTuUtil.isEmail(account)) {
-            return Result.error("请输入正确的手机号或邮箱");
-        }
-        return adminLoginSecurity.authenticate(account, captchaId, captchaCode,
-                () -> sysUserService.adminPhoneOrEmailVerifyCodeLogin(account, verifyCode));
+        return auditLoginRecorder.execute(account, "LOGIN_PREAUTH", null, () -> {
+            if (StrUtil.isBlank(account)) return Result.error("请将信息补充完整");
+            if (StrUtil.isBlank(verifyCode)) return Result.error("验证码不能为空");
+            if (!hongTuUtil.isPhone(account) && !hongTuUtil.isEmail(account))
+                return Result.error("请输入正确的手机号或邮箱");
+            return adminLoginSecurity.authenticate(account, captchaId, captchaCode,
+                    () -> sysUserService.adminPhoneOrEmailVerifyCodeLogin(account, verifyCode));
+        });
     }
 
     /**
@@ -305,6 +313,7 @@ public class SysUserController {
      * 管理员编辑用户信息
      */
     @PutMapping("/admin/edit")
+    @AuditOperation(module = "system:user", type = "UPDATE", objectType = "USER", summary = "修改用户资料", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result adminEditUser(@RequestBody AdminUserRequest request) {
         if (request == null || request.getId() == null) {
@@ -312,7 +321,14 @@ public class SysUserController {
         }
         SysUser sysUser = BeanCopyUtils.copyBean(request, SysUser.class);
         sysUser.setPassword(null);
-        return sysUserService.adminEditUser(sysUser);
+        SysUser before = sysUserService.getById(request.getId());
+        Result result = sysUserService.adminEditUser(sysUser);
+        if (Result.CODE_SUCCESS.equals(result.getCode())) {
+            SysUser after = sysUserService.getById(request.getId());
+            AuditContext.target(String.valueOf(request.getId()), after == null ? null : after.getTenantId());
+            auditChanges.capture(before, after, "username", "nickname", "status", "gender", "level");
+        }
+        return result;
     }
 
     /**
@@ -322,13 +338,18 @@ public class SysUserController {
      * @return 重置结果
      */
     @PostMapping("/admin/resetPassword")
+    @AuditOperation(module = "system:user", type = "RESET_PASSWORD", objectType = "USER", summary = "重置用户密码，密码内容不记录", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:reset-password"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result adminResetPassword(@RequestParam Long userId,
                                      @RequestParam String newPassword) {
         if (userId == null) {
             return Result.error("用户ID不能为空");
         }
-        return sysUserService.adminResetPassword(userId, newPassword);
+        SysUser user = sysUserService.getById(userId);
+        Result result = sysUserService.adminResetPassword(userId, newPassword);
+        if (Result.CODE_SUCCESS.equals(result.getCode()))
+            AuditContext.target(String.valueOf(userId), user == null ? null : user.getTenantId());
+        return result;
     }
 
     /**
@@ -348,18 +369,26 @@ public class SysUserController {
      * 删除用户
      */
     @DeleteMapping("/{id}")
+    @AuditOperation(module = "system:user", type = "DELETE", objectType = "USER", summary = "删除用户", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result deleteUser(@PathVariable Long id) {
         if (id == null) {
             return Result.error("用户ID不能为空");
         }
-        return sysUserService.deleteUser(id);
+        SysUser before = sysUserService.getById(id);
+        Result result = sysUserService.deleteUser(id);
+        if (Result.CODE_SUCCESS.equals(result.getCode())) {
+            AuditContext.target(String.valueOf(id), before == null ? null : before.getTenantId());
+            auditChanges.capture(before, null, "username", "nickname", "status");
+        }
+        return result;
     }
 
     /**
      * 添加用户
      */
     @PostMapping("/add")
+    @AuditOperation(module = "system:user", type = "CREATE", objectType = "USER", summary = "新增用户")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result addUser(@RequestBody AdminUserRequest request) {
         if (request == null) {
@@ -370,13 +399,17 @@ public class SysUserController {
         if (StrUtil.isBlank(sysUser.getUsername())) {
             return Result.error("用户名不能为空");
         }
-        return sysUserService.addUser(sysUser);
+        Result result = sysUserService.addUser(sysUser);
+        if (Result.CODE_SUCCESS.equals(result.getCode()) && sysUser.getId() != null)
+            AuditContext.target(String.valueOf(sysUser.getId()), sysUser.getTenantId());
+        return result;
     }
 
     /**
      * 管理员为用户充值余额
      */
     @PostMapping("/admin/recharge")
+    @AuditOperation(module = "system:user", type = "RECHARGE", objectType = "USER", summary = "管理员调整用户余额", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"system:user:recharge"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result rechargeBalance(@RequestParam Long userId, @RequestParam Integer amount) {
         if (userId == null) {
@@ -385,7 +418,13 @@ public class SysUserController {
         if (amount == null || amount <= 0) {
             return Result.error("充值金额必须大于0");
         }
-        return sysUserService.rechargeBalance(userId, amount);
+        SysUser user = sysUserService.getById(userId);
+        Result result = sysUserService.rechargeBalance(userId, amount);
+        if (Result.CODE_SUCCESS.equals(result.getCode())) {
+            AuditContext.target(String.valueOf(userId), user == null ? null : user.getTenantId());
+            AuditContext.summary("管理员为用户充值 " + amount + " 元");
+        }
+        return result;
     }
 
 

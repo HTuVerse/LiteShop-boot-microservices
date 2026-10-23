@@ -8,6 +8,9 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.hongtu.Result.Result;
+import org.hongtu.audit.AuditChanges;
+import org.hongtu.audit.AuditContext;
+import org.hongtu.audit.AuditOperation;
 import org.hongtu.restaurant.DTO.Dish;
 import org.hongtu.restaurant.VO.DishVO;
 import org.hongtu.restaurant.VO.StoreDishConfigRequest;
@@ -34,6 +37,8 @@ public class DishController {
 
     @Resource
     MenuChangeService menuChangeService;
+    @Resource
+    AuditChanges auditChanges;
 
     /**
      * 根据ID查询菜品详情
@@ -59,10 +64,12 @@ public class DishController {
      * @return 结果
      */
     @PostMapping("/add")
+    @AuditOperation(module = "restaurant:dish", type = "CREATE", objectType = "DISH", summary = "新增菜品")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:dish:add"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> addDish(@RequestBody Dish dish) {
         boolean result = dishService.addDish(dish);
         if (result) {
+            if (dish.getId() != null) AuditContext.target(String.valueOf(dish.getId()), null);
             return Result.success("添加菜品成功", result);
         } else {
             return Result.error("添加菜品失败");
@@ -75,10 +82,16 @@ public class DishController {
      * @return 结果
      */
     @PutMapping("/update")
+    @AuditOperation(module = "restaurant:dish", type = "UPDATE", objectType = "DISH", summary = "修改菜品", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:dish:edit"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> updateDish(@RequestBody Dish dish) {
+        Dish before = dish.getId() == null ? null : dishService.getById(dish.getId());
         boolean result = dishService.updateDish(dish);
         if (result) {
+            AuditContext.target(String.valueOf(dish.getId()), null);
+            auditChanges.capture(before, dishService.getById(dish.getId()), "dishCode", "dishName",
+                    "categoryId", "salePrice", "costPrice", "stock", "saleStatus", "masterStatus",
+                    "isRecommend", "isHot", "isNew");
             return Result.success("更新菜品成功", result);
         } else {
             return Result.error("更新菜品失败");
@@ -91,10 +104,15 @@ public class DishController {
      * @return 结果
      */
     @DeleteMapping("/delete/{id}")
+    @AuditOperation(module = "restaurant:dish", type = "DELETE", objectType = "DISH", summary = "删除菜品", objectIdArgument = 0)
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:dish:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> deleteDish(@PathVariable Long id) {
+        Dish before = dishService.getById(id);
         boolean result = dishService.deleteDish(id);
         if (result) {
+            AuditContext.target(String.valueOf(id), null);
+            auditChanges.capture(before, null, "dishCode", "dishName", "categoryId", "salePrice",
+                    "costPrice", "stock", "saleStatus");
             return Result.success("删除菜品成功", result);
         } else {
             return Result.error("删除菜品失败");
@@ -107,10 +125,14 @@ public class DishController {
      * @return 结果
      */
     @DeleteMapping("/batchDelete")
+    @AuditOperation(module = "restaurant:dish", type = "BATCH_DELETE", objectType = "DISH", summary = "批量删除菜品")
     @cn.dev33.satoken.annotation.SaCheckPermission(value = {"restaurant:dish:delete"}, mode = cn.dev33.satoken.annotation.SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<Boolean> batchDeleteDish(@RequestBody List<Long> ids) {
         boolean result = dishService.batchDeleteDish(ids);
         if (result) {
+            AuditContext.summary("批量删除 " + ids.size() + " 道菜品");
+            auditChanges.capture(Map.of("dishIds", ids.stream().limit(100).toList()),
+                    Map.of("dishIds", List.of()), "dishIds");
             return Result.success("批量删除菜品成功", result);
         } else {
             return Result.error("批量删除菜品失败");
@@ -192,6 +214,7 @@ public class DishController {
      * 更新总部菜品在指定门店的价格、库存和上下架状态。
      */
     @PutMapping("/store-config")
+    @AuditOperation(module = "restaurant:dish", type = "CONFIG_UPDATE", objectType = "STORE_DISH_CONFIG", summary = "提交门店菜品变更")
     @SaCheckPermission(value = {"restaurant:dish:edit"}, mode = SaMode.OR, orRole = "SUPER_ADMIN")
     public Result<MenuChangeSubmitVO> updateStoreConfig(@RequestBody StoreDishConfigRequest request) {
         return Result.success("门店菜品变更已提交",

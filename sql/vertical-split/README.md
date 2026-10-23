@@ -48,6 +48,8 @@
 
 积分商城需依次执行 `84_points_mall.sql`、`85_mall_mixed_payment.sql`、`88_mall_categories.sql`。88 号迁移新增租户自定义分类和商品分类字段；旧商品保持未分类，仍可在小程序“全部”中展示，后台编辑商品时可为其归类。
 
+系统操作审计日志上线前，先执行 `102_system_audit_outbox.sql` 在各服务库创建投递箱，再执行 `101_system_operation_audit.sql` 创建集中日志、校验链和后台权限。两份脚本均只新增表与授权，不重建业务表。由于投递箱覆盖消息库与积分商城库，应先完成 `26_message_announcements.sql` 和 `84_points_mall.sql`。密钥、GeoLite2 数据库与独立链头锚点的部署要求见 `../../docs/system-operation-audit.md`。
+
 已经部署过含图片、主题色、小程序普通链接前缀和二维码默认平台列的旧版 `tenant_miniapp_credential` 时，额外执行 `73_remove_miniapp_visual_config.sql` 删除这些列。新版 `06` 和 `72` 不创建这些列，不执行 `73`。
 
 前序脚本已在独立 MySQL 8.4 实例验证；新增的 48 号迁移需在目标环境执行后验收。新版 `01` 已包含账号初始化需要的多租户字段和门店授权表；新版 `02` 已包含连锁菜单、定价、加退菜及日汇总结构，空库不要再执行 `30`、`31`、`35`、`41`、`42` 等重复建表/加列迁移。

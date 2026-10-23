@@ -1402,6 +1402,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     private void configureWorkspaceSession(SaSession session, SysUser user, boolean superAdmin,
                                            StoreScope storeScope, Map<Long, Long> workspaceUsers) {
+        session.set(TenantConstants.SESSION_AUDIT_ACCOUNT, user.getUsername());
         if (user.getTenantId() == null) session.delete(TenantConstants.SESSION_TENANT_ID);
         else session.set(TenantConstants.SESSION_TENANT_ID, user.getTenantId());
         session.set(TenantConstants.SESSION_SUPER_ADMIN, superAdmin);

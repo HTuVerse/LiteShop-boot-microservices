@@ -5,6 +5,9 @@ import cn.dev33.satoken.annotation.SaMode;
 import cn.dev33.satoken.stp.StpUtil;
 import lombok.RequiredArgsConstructor;
 import org.hongtu.Result.Result;
+import org.hongtu.audit.AuditChanges;
+import org.hongtu.audit.AuditContext;
+import org.hongtu.audit.AuditOperation;
 import org.hongtu.api.dto.TenantPaymentAccountView;
 import org.hongtu.api.dto.TenantPaymentRuntimeDTO;
 import org.hongtu.config.service.TenantPaymentAccountService;
@@ -23,6 +26,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class TenantPaymentAccountController {
     private final TenantPaymentAccountService service;
+    private final AuditChanges auditChanges;
 
     /** 读取当前租户的微信和支付宝账户，密钥不回显。 */
     @SaCheckPermission(value = "config:payment-account", mode = SaMode.OR, orRole = "SUPER_ADMIN")
@@ -34,8 +38,14 @@ public class TenantPaymentAccountController {
     /** 保存当前租户的一个支付渠道。 */
     @SaCheckPermission(value = "config:payment-account", mode = SaMode.OR, orRole = "SUPER_ADMIN")
     @PutMapping("/config/payment-account")
+    @AuditOperation(module = "config:payment-account", type = "CONFIG_UPDATE", objectType = "PAYMENT_ACCOUNT", summary = "修改租户支付账户，凭据内容不记录")
     public Result<TenantPaymentAccountView> save(@RequestBody TenantPaymentAccountView account) {
-        return Result.success(service.save(account, StpUtil.getLoginIdAsLong()));
+        TenantPaymentAccountView before = service.listForEdit().stream()
+                .filter(row -> row.getChannel().equals(account.getChannel())).findFirst().orElse(null);
+        TenantPaymentAccountView after = service.save(account, StpUtil.getLoginIdAsLong());
+        AuditContext.target(account.getChannel(), null);
+        auditChanges.capture(before, after, "enabled", "appId", "mchId", "notifyUrl", "sandboxEnabled");
+        return Result.success(after);
     }
 
     /** 内部接口按租户和渠道读取解密后的支付参数。 */
