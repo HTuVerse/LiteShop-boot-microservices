@@ -105,7 +105,8 @@ public class UserActivityChanceController {
             @RequestParam Long activityId,
             @RequestParam Integer chances,
             @RequestParam Boolean allUsers,
-            @RequestParam(required = false) List<Long> userIds) {
+            @RequestParam(required = false) List<Long> userIds,
+            @RequestParam String requestKey) {
         // 参数校验
         if (activityId == null || activityId <= 0) {
             return Result.error("活动ID无效");
@@ -117,7 +118,7 @@ public class UserActivityChanceController {
             return Result.error("非全体用户模式下，用户ID列表不能为空");
         }
 
-        boolean success = userActivityChanceService.batchIncreaseChances(activityId, chances, allUsers, userIds);
+        boolean success = userActivityChanceService.batchIncreaseChances(activityId, chances, allUsers, userIds, requestKey);
         if (success) {
             return Result.success(true);
         } else {

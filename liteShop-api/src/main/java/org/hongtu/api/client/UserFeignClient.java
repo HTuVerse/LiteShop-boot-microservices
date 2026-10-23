@@ -51,6 +51,11 @@ public interface UserFeignClient {
     @GetMapping("/inner/user/ids")
     Result<List<Long>> getAllUserIds();
 
+    /** 只读取本租户的用户 ID，按主键游标分页，避免全量实体跨服务传输。 */
+    @GetMapping("/inner/user/ids/page")
+    Result<List<Long>> getUserIdPage(@RequestParam("afterId") Long afterId,
+                                     @RequestParam("limit") Integer limit);
+
     /**
      * 给用户增加积分（替代原 lottery 模块直接调 SysUserService.addUserPoints）
      */

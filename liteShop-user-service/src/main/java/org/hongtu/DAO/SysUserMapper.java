@@ -18,6 +18,10 @@ import org.hongtu.DTO.SysUser;
 @Mapper
 public interface SysUserMapper extends BaseMapper<SysUser> {
 
+    @Select("SELECT id FROM sys_user WHERE tenant_id = #{tenantId} AND id > #{afterId} ORDER BY id LIMIT #{limit}")
+    java.util.List<Long> selectIdPage(@Param("tenantId") Long tenantId, @Param("afterId") Long afterId,
+                                      @Param("limit") Integer limit);
+
     /** 锁定本租户用户积分行，保证积分流水前后余额准确。 */
     @Select("SELECT * FROM sys_user WHERE id = #{userId} AND tenant_id = #{tenantId} FOR UPDATE")
     SysUser lockMallPointsUser(@Param("tenantId") Long tenantId, @Param("userId") Long userId);

@@ -56,6 +56,7 @@ public interface UserActivityChanceService extends IService<UserActivityChance> 
      * @param userIds 用户ID列表（allUsers为false时有效）
      * @return 是否成功
      */
-    boolean batchIncreaseChances(Long activityId, Integer chances, Boolean allUsers, List<Long> userIds);
+    boolean batchIncreaseChances(Long activityId, Integer chances, Boolean allUsers,
+                                 List<Long> userIds, String requestKey);
 
 }

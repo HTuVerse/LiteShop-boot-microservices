@@ -125,11 +125,17 @@ public class InnerUserController {
      */
     @GetMapping("/ids")
     public Result<List<Long>> getAllUserIds() {
-        List<Long> ids = sysUserMapper.selectList(null)
-                .stream()
-                .map(SysUser::getId)
-                .toList();
-        return Result.success(ids);
+        // 旧接口保留兼容，但拒绝无界全表读取；新调用方使用游标接口。
+        return Result.error(410, "请使用 /inner/user/ids/page 游标接口");
+    }
+
+    @GetMapping("/ids/page")
+    public Result<List<Long>> getUserIdPage(@RequestParam(defaultValue = "0") Long afterId,
+                                             @RequestParam(defaultValue = "500") Integer limit) {
+        if (afterId == null || afterId < 0 || limit == null || limit < 1 || limit > 500) {
+            return Result.error(400, "分页参数无效");
+        }
+        return Result.success(sysUserMapper.selectIdPage(TenantContext.getTenantId(), afterId, limit));
     }
 
     /**

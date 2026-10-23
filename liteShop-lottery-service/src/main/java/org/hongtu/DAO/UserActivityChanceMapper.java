@@ -50,10 +50,10 @@ public interface UserActivityChanceMapper extends BaseMapper<UserActivityChance>
      * @param chances 增加的机会数量
      * @return 影响的行数
      */
-    @Insert("INSERT INTO user_activity_chance (user_id, activity_id, chances, create_time, update_time) " +
-            "VALUES (#{userId}, #{activityId}, #{chances}, NOW(), NOW()) " +
+    @Insert("INSERT INTO user_activity_chance (id, user_id, activity_id, chances, create_time, update_time) " +
+            "VALUES (#{id}, #{userId}, #{activityId}, #{chances}, NOW(), NOW()) " +
             "ON DUPLICATE KEY UPDATE chances = chances + #{chances}, update_time = NOW()")
-    int insertOrUpdateChances(@Param("userId") Long userId,
+    int insertOrUpdateChances(@Param("id") Long id, @Param("userId") Long userId,
                               @Param("activityId") Long activityId,
                               @Param("chances") Integer chances);
 
