@@ -22,10 +22,28 @@ Prometheus、exporter 与 Actuator 仅允许监控内网访问；不要经公网
 
 ## 部署顺序
 
-1. 复制 `inventory.example.yml`，填入真实主机、服务实例、数据库实例和通知接收人。
-2. 在每台 Linux 主机安装 node_exporter；每个数据库实例配置相应 exporter；在每个 Java 服务启用 Actuator Prometheus 端点。
-3. 将真实目标写入 `prometheus/targets/*.yml`，启动 Prometheus 与 Alertmanager。
-4. 验证 Prometheus Targets 全部为 UP，再配置告警接收器和 LiteShop 监控接口的 `PROMETHEUS_BASE_URL`。
-5. 模拟单个主机、服务和数据库目标离线，核对看板与告警。
+1. 复制 `inventory.example.yml`，记录生产拓扑用于验收。应用 IP 不需要写进 Prometheus 配置。
+2. 在每台 Linux 主机安装 node_exporter；每个数据库实例配置相应 exporter。项目已给 Java 服务接入 Actuator Prometheus 端点。
+3. 将 `prometheus/prometheus.example.yml` 复制成生产配置，只填写配置服务的**内网引导地址**。Prometheus 随后每 30 秒从 `/inner/config/monitor/discovery` 获取 Nacos 中的服务实例和承载主机。
+4. 给配置服务设置 `PROMETHEUS_BASE_URL` 和随机生成的 `MONITOR_DISCOVERY_TOKEN`；将同一令牌放在 Prometheus 的 `discovery.token` 文件中，限制文件读取权限。
+5. 对独立部署的 MySQL、Redis、RabbitMQ，以及没有业务服务的纯数据库主机，部署 exporter 后执行 `register_exporter.py`。脚本将它们注册为 Nacos 持久实例，之后新地址会自动进入采集列表；停止 exporter 仍能触发失联告警。
+6. 将 `prometheus/alertmanager.example.yml` 复制为正式配置，换成真实通知接收地址。验证 Targets 全部为 UP、平台管理员看板可见，并模拟单个主机、服务及数据库失联。
 
-Nacos 是业务服务注册中心。监控初期使用 Prometheus 文件发现目标；当实例动态扩缩容时，由部署流水线或 Nacos 适配器更新目标文件，避免把 Nacos 注册状态误当成实际可抓取状态。
+注册 exporter 示例（环境变量由部署系统注入，不要写入仓库）：
+
+```sh
+EXPORTER_KIND=mysql EXPORTER_HOST=10.0.0.12 EXPORTER_PORT=9104 \
+NACOS_SERVER_ADDR=http://10.0.0.10:8848 DB_CLUSTER=primary \
+python3 register_exporter.py
+```
+
+监控必须有一个固定引导地址：Prometheus 需要先找到配置服务，才能获得 Nacos 动态目标。仅凭应用注册信息无法猜到没有注册的独立数据库服务器；部署其 exporter 并执行注册脚本后，后续地址发现和状态更新自动完成。配置服务自身有固定的 bootstrap 抓取目标，避免发现接口宕机时所有目标悄然消失。
+
+Prometheus 和 Alertmanager 的安装方式可由部署环境选择，配置模板不要求应用和监控容器运行在同一机器。应用可使用 `/actuator/health` 和 `/actuator/prometheus`，监控内网须允许 Prometheus 连到对应服务端口；业务网关不转发 `/actuator/**`。
+
+验收重点：
+
+- 新增一个 Nacos 服务实例，30 秒内进入 Prometheus 目标列表和看板。
+- 关闭一个实例，目标异常或该服务缺席告警在规则持续时间后触发；其他实例仍正常。
+- 独立数据库 exporter 注册后，无需修改 Prometheus 的数据库目标列表即可采集。
+- 模拟配置服务、主机、MySQL exporter 断连，确认告警通知和看板状态。

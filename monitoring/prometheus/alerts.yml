@@ -17,17 +17,17 @@ groups:
           summary: "采集目标失联：{{ $labels.job }} / {{ $labels.instance }}"
       - alert: LiteShopServiceAbsent
         expr: |
-          absent(up{job="liteshop-app",service="liteShop-gateway"})
-          or absent(up{job="liteshop-app",service="liteShop-user-service"})
-          or absent(up{job="liteshop-app",service="liteShop-coupon-service"})
-          or absent(up{job="liteshop-app",service="liteShop-mall-service"})
-          or absent(up{job="liteshop-app",service="liteShop-lottery-service"})
-          or absent(up{job="liteshop-app",service="liteShop-restaurant-service"})
-          or absent(up{job="liteshop-app",service="liteShop-pay-service"})
-          or absent(up{job="liteshop-app",service="liteShop-message-service"})
-          or absent(up{job="liteshop-app",service="liteShop-file-service"})
-          or absent(up{job="liteshop-app",service="liteShop-config-service"})
-          or absent(up{job="liteshop-app",service="liteShop-ai-service"})
+          absent(up{job="liteshop-app",service="liteshop-gateway"})
+          or absent(up{job="liteshop-app",service="liteshop-user-service"})
+          or absent(up{job="liteshop-app",service="liteshop-coupon-service"})
+          or absent(up{job="liteshop-app",service="liteshop-mall-service"})
+          or absent(up{job="liteshop-app",service="liteshop-lottery-service"})
+          or absent(up{job="liteshop-app",service="liteshop-restaurant-service"})
+          or absent(up{job="liteshop-app",service="liteshop-pay-service"})
+          or absent(up{job="liteshop-app",service="liteshop-message-service"})
+          or absent(up{job="liteshop-app",service="liteshop-file-service"})
+          or absent(up{job="liteshop-app",service="liteshop-config-service"})
+          or absent(up{job="liteshop-app",service="liteshop-ai-service"})
         for: 3m
         labels:
           severity: critical
@@ -42,6 +42,13 @@ groups:
           severity: warning
         annotations:
           summary: "CPU 持续高于 85%：{{ $labels.instance }}"
+      - alert: LiteShopHostMemoryHigh
+        expr: 100 * (1 - node_memory_MemAvailable_bytes{job="liteshop-host"} / node_memory_MemTotal_bytes{job="liteshop-host"}) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "内存持续高于 90%：{{ $labels.instance }}"
       - alert: LiteShopHostDiskLow
         expr: 100 * node_filesystem_avail_bytes{job="liteshop-host",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="liteshop-host",fstype!~"tmpfs|overlay"} < 15
         for: 5m

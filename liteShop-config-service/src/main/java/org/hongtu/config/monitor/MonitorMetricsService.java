@@ -24,10 +24,10 @@ import java.util.Map;
 public class MonitorMetricsService {
     private static final List<String> KINDS = List.of("application", "host", "mysql", "redis", "rabbitmq");
     private static final List<String> EXPECTED_SERVICES = List.of(
-            "liteShop-gateway", "liteShop-user-service", "liteShop-coupon-service",
-            "liteShop-mall-service", "liteShop-lottery-service", "liteShop-restaurant-service",
-            "liteShop-pay-service", "liteShop-message-service", "liteShop-file-service",
-            "liteShop-config-service", "liteShop-ai-service");
+            "liteshop-gateway", "liteshop-user-service", "liteshop-coupon-service",
+            "liteshop-mall-service", "liteshop-lottery-service", "liteshop-restaurant-service",
+            "liteshop-pay-service", "liteshop-message-service", "liteshop-file-service",
+            "liteshop-config-service", "liteshop-ai-service");
     private final MonitorDiscoveryService discovery;
     private final ObjectMapper objectMapper;
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();

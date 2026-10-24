@@ -60,6 +60,8 @@ public class SaTokenConfigure implements WebMvcConfigurer {
             "/wallet/alipay-pay/notify/**",
             "/images/**",  // 图片资源路径
             "/favicon.ico",
+            "/actuator/health", // 仅监控内网访问，业务网关不转发
+            "/actuator/prometheus",
             "/inner/**"    // 服务间内部接口（外部访问已在网关层拦截）
     );
 

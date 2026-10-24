@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -37,7 +38,7 @@ public class MonitorDiscoveryService {
         Set<String> hosts = new LinkedHashSet<>();
         Set<String> registeredNodeHosts = new LinkedHashSet<>();
         for (String name : discoveryClient.getServices()) {
-            String normalized = name.toLowerCase();
+            String normalized = name.toLowerCase(Locale.ROOT);
             if (!normalized.startsWith(PREFIX)) continue;
             String exporterKind = exporterKind(normalized);
             boolean application = exporterKind == null &&
@@ -49,11 +50,12 @@ public class MonitorDiscoveryService {
                 if ((application && kind.equals("application")) || kind.equals(exporterKind)) {
                     Map<String, String> labels = new LinkedHashMap<>();
                     labels.put("environment", environment);
-                    labels.put("service", name);
+                    labels.put("service", normalized);
                     labels.put("host", instance.getHost());
                     if (exporterKind != null) {
                         // 数据库集群名从 exporter 的注册元数据读取，不把连接凭据放入标签。
-                        String cluster = instance.getMetadata().get("db_cluster");
+                        String cluster = instance.getMetadata() == null ? null :
+                                instance.getMetadata().get("db_cluster");
                         if (cluster != null && !cluster.isBlank()) labels.put("db_cluster", cluster);
                     }
                     groups.add(group(address(instance.getHost(), instance.getPort()), labels));
