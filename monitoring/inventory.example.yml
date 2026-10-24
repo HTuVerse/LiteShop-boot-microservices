@@ -1,0 +1,18 @@
+# 部署清单模板。复制到受控环境后填写真实地址；不要提交密码。
+environment: production
+hosts:
+  - name: app-01
+    address: REPLACE_WITH_PRIVATE_IP
+    services:
+      - name: liteShop-gateway
+        port: 8080
+      - name: liteShop-user-service
+        port: 9001
+mysql_instances:
+  - name: mysql-primary
+    address: REPLACE_WITH_PRIVATE_IP:3306
+    schemas: [liteshop_user, liteshop_restaurant]
+redis_instances: []
+rabbitmq_nodes: []
+alert_receivers:
+  - REPLACE_WITH_TEAM_CHANNEL
