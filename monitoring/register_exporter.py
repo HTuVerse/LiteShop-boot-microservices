@@ -60,6 +60,13 @@ def main() -> None:
     with urllib.request.urlopen(request, timeout=10) as response:
         if response.status != 200:
             raise RuntimeError(f"Nacos 注册失败：HTTP {response.status}")
+        try:
+            result = json.load(response)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise RuntimeError("Nacos 注册失败：响应不是有效 JSON") from error
+        if not isinstance(result, dict) or result.get("code") != 0 or result.get("data") is not True:
+            message = result.get("message", "未返回成功结果") if isinstance(result, dict) else "响应格式错误"
+            raise RuntimeError(f"Nacos 注册失败：{message}")
     print(f"已注册 {SERVICES[kind]}：{params['ip']}:{port}")
 
 

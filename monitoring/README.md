@@ -23,10 +23,10 @@ Prometheus、exporter 与 Actuator 仅允许监控内网访问；不要经公网
 ## 部署顺序
 
 1. 复制 `inventory.example.yml`，记录生产拓扑用于验收。应用 IP 不需要写进 Prometheus 配置。
-2. 在每台 Linux 主机安装 node_exporter；每个数据库实例配置相应 exporter。项目已给 Java 服务接入 Actuator Prometheus 端点。
+2. 在每台 Linux 主机安装 node_exporter，并用 `EXPORTER_KIND=host` 将每台主机注册为 Nacos 持久目标；每个数据库实例配置相应 exporter。项目已给 Java 服务接入 Actuator Prometheus 端点。
 3. 将 `prometheus/prometheus.example.yml` 复制为 `prometheus/prometheus.yml`，只填写配置服务的**内网引导地址**。Prometheus 随后每 30 秒从 `/inner/config/monitor/discovery` 获取 Nacos 中的服务实例和承载主机。
 4. 给配置服务设置 `PROMETHEUS_BASE_URL` 和随机生成的 `MONITOR_DISCOVERY_TOKEN`；将同一令牌放在 Prometheus 的 `discovery.token` 文件中，限制文件读取权限。
-5. 对独立部署的 MySQL、Redis、RabbitMQ，以及没有业务服务的纯数据库主机，部署 exporter 后执行 `register_exporter.py`。脚本将它们注册为 Nacos 持久实例，之后新地址会自动进入采集列表；停止 exporter 仍能触发失联告警。
+5. 对每个 MySQL、Redis、RabbitMQ 实例，部署 exporter 后执行 `register_exporter.py`。脚本将它们注册为 Nacos 持久实例，之后新地址会自动进入采集列表；停止 exporter 仍能触发失联告警。
 6. 将 `prometheus/alertmanager.example.yml` 复制为 `prometheus/alertmanager.yml`，换成真实通知接收地址。可用 `docker compose -f compose.yml up -d` 启动监控组件；跨机器访问时将 `MONITOR_BIND_ADDRESS` 设置为监控机的内网 IP。
 7. 在 `liteshop_user` 执行 `sql/vertical-split/103_platform_monitor_menu.sql` 并重新登录平台管理员账号。验证 Targets 全部为 UP、看板可见，并模拟单个主机、服务及数据库失联。
 
@@ -45,6 +45,8 @@ Prometheus 和 Alertmanager 的安装方式可由部署环境选择，配置模�
 验收重点：
 
 - 新增一个 Nacos 服务实例，30 秒内进入 Prometheus 目标列表和看板。
-- 关闭一个实例，目标异常或该服务缺席告警在规则持续时间后触发；其他实例仍正常。
+- 关闭某服务的全部实例，确认服务缺席告警在规则持续时间后触发。
+- 关闭单个应用副本并检查 Prometheus 目标变化：Nacos 临时实例被注销后，该副本会从自动发现列表移除，现有规则不能保证单副本失联告警。若需对固定副本数告警，部署时还需提供持久的预期实例清单或副本数指标。
+- 关闭一个已持久注册的 node_exporter 或数据库 exporter，确认目标失联告警触发。
 - 独立数据库 exporter 注册后，无需修改 Prometheus 的数据库目标列表即可采集。
 - 模拟配置服务、主机、MySQL exporter 断连，确认告警通知和看板状态。

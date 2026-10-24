@@ -114,13 +114,27 @@ public class MonitorMetricsService {
         String path = "/api/v1/query_range?query=" + encode(expression) + "&start=" + start +
                 "&end=" + end + "&step=" + step;
         JsonNode series = prometheus(path).path("data").path("result");
+        return Map.of("metric", metric, "kind", kind, "instance", instance,
+                "points", finitePoints(series));
+    }
+
+    /** 过滤 Prometheus 的非有限数值，避免把缺失指标画成正常的零值。 */
+    static List<Map<String, Object>> finitePoints(JsonNode series) {
         List<Map<String, Object>> points = new ArrayList<>();
         if (series.isArray() && !series.isEmpty()) {
             for (JsonNode value : series.get(0).path("values")) {
-                points.add(Map.of("time", value.path(0).asLong(), "value", value.path(1).asDouble(0)));
+                try {
+                    double sample = Double.parseDouble(value.path(1).asText());
+                    // Prometheus 可能返回 NaN/+Inf；跳过无效样本，避免曲线误显示为 0。
+                    if (Double.isFinite(sample)) {
+                        points.add(Map.of("time", value.path(0).asLong(), "value", sample));
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 保留其他有效样本，异常值不参与曲线展示。
+                }
             }
         }
-        return Map.of("metric", metric, "kind", kind, "instance", instance, "points", points);
+        return points;
     }
 
     /** 读取 Prometheus 中当前 firing/pending 的告警。 */
