@@ -9,6 +9,15 @@ spring:
     # liteShop-nacos-starter/src/main/resources/liteshop-nacos.yml
     import: "classpath:liteshop-nacos.yml"
 
+# 监控后端仅连接部署方指定的 Prometheus；发现令牌只通过环境变量注入。
+monitor:
+  environment: ${MONITOR_ENVIRONMENT:production}
+  node-exporter-port: ${MONITOR_NODE_EXPORTER_PORT:9100}
+  prometheus:
+    base-url: ${PROMETHEUS_BASE_URL:}
+  discovery:
+    token: ${MONITOR_DISCOVERY_TOKEN:}
+
 liteshop:
   credentials:
     # 首次保存 MinIO/OSS 等凭据前由进程环境注入；所有配置服务实例须使用同一固定值。

@@ -13,6 +13,12 @@ alerting:
         - targets: ['127.0.0.1:9093']
 
 scrape_configs:
+  # 发现接口自身必须使用固定引导目标，否则配置服务故障时会失去发现来源。
+  - job_name: liteshop-bootstrap
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008']
+
   - job_name: liteshop-app
     metrics_path: /actuator/prometheus
     http_sd_configs:

@@ -1,6 +1,13 @@
 groups:
   - name: liteshop-availability
     rules:
+      - alert: LiteShopDiscoveryDown
+        expr: up{job="liteshop-bootstrap"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "配置服务或监控发现接口所在机器失联"
       - alert: LiteShopTargetDown
         expr: up{job=~"liteshop-app|liteshop-host|liteshop-mysql|liteshop-redis|liteshop-rabbitmq"} == 0
         for: 2m
