@@ -1,0 +1,55 @@
+# 复制为 prometheus.yml。config-service 地址是唯一需要预先知道的引导地址；
+# 应用及承载主机通过它的 Nacos 发现接口自动取得。
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['127.0.0.1:9093']
+
+scrape_configs:
+  - job_name: liteshop-app
+    metrics_path: /actuator/prometheus
+    http_sd_configs:
+      - url: http://REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008/inner/config/monitor/discovery?kind=application
+        refresh_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: discovery.token
+
+  - job_name: liteshop-host
+    http_sd_configs:
+      - url: http://REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008/inner/config/monitor/discovery?kind=host
+        refresh_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: discovery.token
+
+  - job_name: liteshop-mysql
+    http_sd_configs:
+      - url: http://REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008/inner/config/monitor/discovery?kind=mysql
+        refresh_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: discovery.token
+
+  - job_name: liteshop-redis
+    http_sd_configs:
+      - url: http://REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008/inner/config/monitor/discovery?kind=redis
+        refresh_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: discovery.token
+
+  - job_name: liteshop-rabbitmq
+    http_sd_configs:
+      - url: http://REPLACE_CONFIG_SERVICE_PRIVATE_ADDRESS:9008/inner/config/monitor/discovery?kind=rabbitmq
+        refresh_interval: 30s
+        authorization:
+          type: Bearer
+          credentials_file: discovery.token

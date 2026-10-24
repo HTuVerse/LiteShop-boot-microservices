@@ -1,0 +1,12 @@
+# 复制为 alertmanager.yml 并替换通知地址；地址由部署环境提供。
+route:
+  receiver: team-webhook
+  group_by: [alertname, job, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: team-webhook
+    webhook_configs:
+      - url: https://REPLACE_WITH_ALERT_WEBHOOK
+        send_resolved: true

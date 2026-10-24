@@ -18,6 +18,15 @@
     </properties>
 
     <dependencies>
+        <!-- 所有业务服务统一暴露 JVM、HTTP、连接池等 Prometheus 指标。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- Web（各业务服务均为 Servlet Web 服务） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

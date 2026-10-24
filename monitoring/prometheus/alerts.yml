@@ -1,0 +1,44 @@
+groups:
+  - name: liteshop-availability
+    rules:
+      - alert: LiteShopTargetDown
+        expr: up{job=~"liteshop-app|liteshop-host|liteshop-mysql|liteshop-redis|liteshop-rabbitmq"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "采集目标失联：{{ $labels.job }} / {{ $labels.instance }}"
+      - alert: LiteShopServiceAbsent
+        expr: |
+          absent(up{job="liteshop-app",service="liteShop-gateway"})
+          or absent(up{job="liteshop-app",service="liteShop-user-service"})
+          or absent(up{job="liteshop-app",service="liteShop-coupon-service"})
+          or absent(up{job="liteshop-app",service="liteShop-mall-service"})
+          or absent(up{job="liteshop-app",service="liteShop-lottery-service"})
+          or absent(up{job="liteshop-app",service="liteShop-restaurant-service"})
+          or absent(up{job="liteshop-app",service="liteShop-pay-service"})
+          or absent(up{job="liteshop-app",service="liteShop-message-service"})
+          or absent(up{job="liteshop-app",service="liteShop-file-service"})
+          or absent(up{job="liteshop-app",service="liteShop-config-service"})
+          or absent(up{job="liteshop-app",service="liteShop-ai-service"})
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务全部实例已从发现列表消失：{{ $labels.service }}"
+  - name: liteshop-resources
+    rules:
+      - alert: LiteShopHostCpuHigh
+        expr: 100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{job="liteshop-host",mode="idle"}[5m]))) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU 持续高于 85%：{{ $labels.instance }}"
+      - alert: LiteShopHostDiskLow
+        expr: 100 * node_filesystem_avail_bytes{job="liteshop-host",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{job="liteshop-host",fstype!~"tmpfs|overlay"} < 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘剩余空间低于 15%：{{ $labels.instance }} / {{ $labels.mountpoint }}"

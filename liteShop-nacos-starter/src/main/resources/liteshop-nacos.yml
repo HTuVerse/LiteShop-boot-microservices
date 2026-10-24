@@ -32,3 +32,16 @@ spring:
       - "nacos:liteshop-shared.yml?group=${NACOS_CONFIG_GROUP:LITESHOP_GROUP}&refreshEnabled=true"
       # 服务专属配置，后导入者优先级更高，可覆盖公共配置
       - "nacos:${spring.application.name}.yml?group=${NACOS_CONFIG_GROUP:LITESHOP_GROUP}&refreshEnabled=true"
+
+# 采集端点必须通过内网访问；业务网关不转发 /actuator/**。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
