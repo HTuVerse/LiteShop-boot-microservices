@@ -63,6 +63,8 @@ public class AuditIntegrityService {
         List<Map<String, Object>> cursors = jdbc.query("SELECT last_sequence,last_hash "
                         + "FROM sys_operation_audit_chain WHERE tenant_scope_id=?",
                 (rs, row) -> Map.of("sequence", rs.getLong(1), "hash", rs.getString(2)), tenantScopeId);
+        if (sequence == 0 && cursors.isEmpty())
+            return result(tenantScopeId, false, 0, "该范围暂无审计日志，无法校验完整性");
         if (cursors.size() != 1 || !Long.valueOf(sequence).equals(cursors.getFirst().get("sequence"))
                 || !previous.equals(cursors.getFirst().get("hash")))
             return result(tenantScopeId, false, sequence, "链头游标与日志内容不一致");
