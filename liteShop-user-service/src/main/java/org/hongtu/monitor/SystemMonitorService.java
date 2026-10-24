@@ -6,6 +6,7 @@ import org.hongtu.DAO.SysUserMapper;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +19,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -93,10 +95,34 @@ public class SystemMonitorService {
         checkRead(client);
         String scope = queryScope(requestedTenant);
         long cutoff = System.currentTimeMillis() - ONLINE_WINDOW.toMillis();
-        Set<String> ids = redis.opsForZSet().rangeByScore(indexKey(client, scope), cutoff, Double.POSITIVE_INFINITY);
+        String index = indexKey(client, scope);
+        boolean filtered = keyword != null && !keyword.isBlank() || ip != null && !ip.isBlank();
+        // 无关键字时直接在 Redis 中分页，避免每次翻页都加载全部在线会话。
+        if (!filtered) {
+            Long count = redis.opsForZSet().count(index, cutoff, Double.POSITIVE_INFINITY);
+            Set<String> pageIds = redis.opsForZSet().reverseRangeByScore(index, cutoff,
+                    Double.POSITIVE_INFINITY, (long) (page - 1) * size, size);
+            List<Map<String, Object>> pageRows = onlineRows(pageIds, client, scope, null, null);
+            return Map.of("records", pageRows, "total", count == null ? 0 : count,
+                    "current", page, "size", size);
+        }
+        Set<String> ids = redis.opsForZSet().rangeByScore(index, cutoff, Double.POSITIVE_INFINITY);
+        List<Map<String, Object>> rows = onlineRows(ids, client, scope, keyword, ip);
+        rows.sort(Comparator.comparingLong((Map<String, Object> row) -> (Long) row.get("lastSeen")).reversed());
+        int from = (int) Math.min(rows.size(), (long) (page - 1) * size);
+        int to = Math.min(rows.size(), from + size);
+        return Map.of("records", rows.subList(from, to), "total", rows.size(),
+                "current", page, "size", size);
+    }
+
+    private List<Map<String, Object>> onlineRows(Collection<String> ids, String client, String scope,
+                                                  String keyword, String ip) {
         List<Map<String, Object>> rows = new ArrayList<>();
-        if (ids != null) for (String id : ids) {
-            Map<Object, Object> raw = redis.opsForHash().entries("system-monitor:session:" + id);
+        if (ids == null || ids.isEmpty()) return rows;
+        List<String> orderedIds = new ArrayList<>(ids);
+        List<Map<?, ?>> details = sessionDetails(orderedIds);
+        for (int index = 0; index < details.size(); index++) {
+            Map<?, ?> raw = details.get(index);
             if (raw.isEmpty() || !client.equals(raw.get("client"))) continue;
             long tenantId = parseLong(raw.get("tenantId"));
             if (!"all".equals(scope) && !scope.equals(Long.toString(tenantId))) continue;
@@ -107,7 +133,7 @@ public class SystemMonitorService {
                     && !account.contains(keyword.trim()) && !nickname.contains(keyword.trim())) continue;
             if (ip != null && !ip.isBlank() && !clientIp.contains(ip.trim())) continue;
             Map<String, Object> row = new HashMap<>();
-            row.put("id", id);
+            row.put("id", orderedIds.get(index));
             row.put("userId", parseLong(raw.get("userId")));
             row.put("tenantId", tenantId == 0 ? null : tenantId);
             row.put("account", account);
@@ -117,11 +143,7 @@ public class SystemMonitorService {
             row.put("lastSeen", parseLong(raw.get("lastSeen")));
             rows.add(row);
         }
-        rows.sort(Comparator.comparingLong((Map<String, Object> row) -> (Long) row.get("lastSeen")).reversed());
-        int from = Math.min(rows.size(), (page - 1) * size);
-        int to = Math.min(rows.size(), from + size);
-        return Map.of("records", rows.subList(from, to), "total", rows.size(),
-                "current", page, "size", size);
+        return rows;
     }
 
     /** 统计卡片、逐日趋势和二十四小时分布使用同一租户范围。 */
@@ -129,30 +151,41 @@ public class SystemMonitorService {
         checkRead(client);
         String scope = queryScope(requestedTenant);
         LocalDate today = LocalDate.now(ZONE);
+        List<String> dates = new ArrayList<>(7);
+        for (int i = 6; i >= 0; i--) dates.add(DAY.format(today.minusDays(i)));
+        // 七天的 PV、UV 和小时分布一次批量读取，避免图表接口产生大量网络往返。
+        List<Object> stats = redis.executePipelined((RedisCallback<Object>) connection -> {
+            for (String date : dates) {
+                connection.stringCommands().get(redis.getStringSerializer().serialize(
+                        counterKey(client, scope, date, "visits")));
+                connection.setCommands().sCard(redis.getStringSerializer().serialize(
+                        visitorKey(client, scope, date)));
+                for (int hour = 0; hour < 24; hour++) connection.stringCommands().get(
+                        redis.getStringSerializer().serialize(counterKey(client, scope, date,
+                                String.format("hour:%02d", hour))));
+            }
+            return null;
+        });
         List<Map<String, Object>> trend = new ArrayList<>();
         long sevenDayVisits = 0;
-        for (int i = 6; i >= 0; i--) {
-            String date = DAY.format(today.minusDays(i));
-            long visits = value(counterKey(client, scope, date, "visits"));
-            long visitors = size(visitorKey(client, scope, date));
+        long[] hourTotals = new long[24];
+        int position = 0;
+        for (String date : dates) {
+            long visits = parseLong(stats.get(position++));
+            long visitors = parseLong(stats.get(position++));
             trend.add(Map.of("date", date, "visits", visits, "visitors", visitors));
             sevenDayVisits += visits;
+            for (int hour = 0; hour < 24; hour++) hourTotals[hour] += parseLong(stats.get(position++));
         }
         List<Map<String, Object>> hours = new ArrayList<>();
         for (int hour = 0; hour < 24; hour++) {
-            long visits = 0;
-            for (int i = 0; i < 7; i++) {
-                String date = DAY.format(today.minusDays(i));
-                visits += value(counterKey(client, scope, date, String.format("hour:%02d", hour)));
-            }
-            hours.add(Map.of("hour", hour, "visits", visits));
+            hours.add(Map.of("hour", hour, "visits", hourTotals[hour]));
         }
         Set<String> activeUsers = new HashSet<>();
         long cutoff = System.currentTimeMillis() - ONLINE_WINDOW.toMillis();
         Set<String> ids = redis.opsForZSet().rangeByScore(indexKey(client, scope), cutoff, Double.POSITIVE_INFINITY);
         int sessions = 0;
-        if (ids != null) for (String id : ids) {
-            Map<Object, Object> detail = redis.opsForHash().entries("system-monitor:session:" + id);
+        for (Map<?, ?> detail : sessionDetails(ids)) {
             if (client.equals(detail.get("client")) && ("all".equals(scope)
                     || scope.equals(Objects.toString(detail.get("tenantId"), "")))) {
                 sessions++;
@@ -162,6 +195,19 @@ public class SystemMonitorService {
         return Map.of("onlineUsers", activeUsers.size(), "onlineSessions", sessions,
                 "todayVisits", trend.getLast().get("visits"), "sevenDayVisits", sevenDayVisits,
                 "trend", trend, "hours", hours);
+    }
+
+    /** 批量读取会话详情，减少列表查询和概览统计的 Redis 往返次数。 */
+    private List<Map<?, ?>> sessionDetails(Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        List<Object> values = redis.executePipelined((RedisCallback<Object>) connection -> {
+            for (String id : ids) connection.hashCommands().hGetAll(
+                    redis.getStringSerializer().serialize("system-monitor:session:" + id));
+            return null;
+        });
+        List<Map<?, ?>> details = new ArrayList<>(values.size());
+        for (Object value : values) details.add(value instanceof Map<?, ?> map ? map : Map.of());
+        return details;
     }
 
     private void checkClient(String client) {
@@ -217,16 +263,6 @@ public class SystemMonitorService {
 
     private String visitorKey(String client, String scope, String date) {
         return counterKey(client, scope, date, "users");
-    }
-
-    private long value(String key) {
-        String raw = redis.opsForValue().get(key);
-        return raw == null ? 0 : Long.parseLong(raw);
-    }
-
-    private long size(String key) {
-        Long count = redis.opsForSet().size(key);
-        return count == null ? 0 : count;
     }
 
     private long parseLong(Object value) {
