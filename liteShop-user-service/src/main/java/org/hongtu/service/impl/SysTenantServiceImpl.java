@@ -193,6 +193,8 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
         if (permissionCode == null) {
             return false;
         }
+        // 审计导出需要运营单独授权，新建租户也不能随 ADMIN 默认权限获得。
+        if ("system:audit:export".equals(permissionCode)) return false;
         if (("common:console".equals(permissionCode) || "common:profile".equals(permissionCode))
                 && java.util.Set.of("ADMIN", "STORE_ADMIN", "STORE_STAFF").contains(roleCode)) return true;
         return switch (roleCode) {
