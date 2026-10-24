@@ -43,7 +43,12 @@ public class AuditChanges {
         if (value instanceof Map<?, ?> map) return map.get(field);
         String getter = "get" + Character.toUpperCase(field.charAt(0)) + field.substring(1);
         try {
-            Method method = value.getClass().getMethod(getter);
+            Method method;
+            try {
+                method = value.getClass().getMethod(getter);
+            } catch (NoSuchMethodException ignored) {
+                method = value.getClass().getMethod("is" + getter.substring(3));
+            }
             Object result = method.invoke(value);
             if (result instanceof Enum<?> choice) return choice.name();
             if (result instanceof Number || result instanceof Boolean || result instanceof CharSequence)

@@ -109,9 +109,9 @@ public class AuditQueryService {
 
     private void appendLike(StringBuilder where, List<Object> args, String column, String value) {
         if (value == null || value.isBlank()) return;
-        where.append(" AND ").append(column).append(" LIKE ? ESCAPE '\\\\'");
-        args.add("%" + value.trim().replace("\\", "\\\\").replace("%", "\\%")
-                .replace("_", "\\_") + "%");
+        where.append(" AND ").append(column).append(" LIKE ? ESCAPE '!'");
+        args.add("%" + value.trim().replace("!", "!!").replace("%", "!%")
+                .replace("_", "!_") + "%");
     }
 
     private Map<String, Object> row(ResultSet rs, boolean detail) throws SQLException {

@@ -79,6 +79,8 @@ public class AuditAspect {
 
     @Around("@annotation(operation)")
     public Object around(ProceedingJoinPoint invocation, AuditOperation operation) throws Throwable {
+        // 退出接口同时服务顾客端，仅后台角色写入管理操作日志。
+        if ("LOGOUT".equals(operation.type()) && !adminSession()) return invocation.proceed();
         outbox.requireReady();
         Object[] arguments = invocation.getArgs();
         String objectId = argumentId(arguments, operation.objectIdArgument());
@@ -100,6 +102,15 @@ public class AuditAspect {
             return response;
         } finally {
             AuditContext.clear();
+        }
+    }
+
+    private boolean adminSession() {
+        try {
+            return StpUtil.isLogin() && StpUtil.getRoleList().stream()
+                    .anyMatch(role -> !"USER".equals(role));
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 
