@@ -1,7 +1,8 @@
 package org.hongtu.config.monitor;
 
+import com.alibaba.cloud.nacos.NacosDiscoveryProperties;
+import com.alibaba.nacos.api.exception.NacosException;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.discovery.DiscoveryClient;
 import org.springframework.stereotype.Service;
 
@@ -18,13 +19,16 @@ import java.util.Set;
 public class MonitorDiscoveryService {
     private static final String PREFIX = "liteshop-";
     private final DiscoveryClient discoveryClient;
+    private final NacosDiscoveryProperties nacosProperties;
     private final int nodeExporterPort;
     private final String environment;
 
     public MonitorDiscoveryService(DiscoveryClient discoveryClient,
+                                   NacosDiscoveryProperties nacosProperties,
                                    @Value("${monitor.node-exporter-port:9100}") int nodeExporterPort,
                                    @Value("${monitor.environment:production}") String environment) {
         this.discoveryClient = discoveryClient;
+        this.nacosProperties = nacosProperties;
         this.nodeExporterPort = nodeExporterPort;
         this.environment = environment;
     }
@@ -44,26 +48,25 @@ public class MonitorDiscoveryService {
             boolean application = exporterKind == null &&
                     (normalized.endsWith("-service") || normalized.endsWith("-gateway") || normalized.equals("liteshop-gateway"));
             if (!application && exporterKind == null) continue;
-            for (ServiceInstance instance : discoveryClient.getInstances(name)) {
-                if (instance.getHost() == null || instance.getHost().isBlank() || instance.getPort() <= 0) continue;
-                if (application) hosts.add(instance.getHost());
+            for (MonitorEndpoint instance : endpoints(name, exporterKind != null)) {
+                if (instance.host() == null || instance.host().isBlank() || instance.port() <= 0) continue;
+                if (application) hosts.add(instance.host());
                 if ((application && kind.equals("application")) || kind.equals(exporterKind)) {
                     Map<String, String> labels = new LinkedHashMap<>();
                     labels.put("environment", environment);
                     labels.put("service", normalized);
-                    labels.put("host", instance.getHost());
+                    labels.put("host", instance.host());
                     if (exporterKind != null) {
                         // 数据库集群名从 exporter 的注册元数据读取，不把连接凭据放入标签。
-                        String cluster = instance.getMetadata() == null ? null :
-                                instance.getMetadata().get("db_cluster");
+                        String cluster = instance.metadata().get("db_cluster");
                         if (cluster != null && !cluster.isBlank()) labels.put("db_cluster", cluster);
                     }
-                    groups.add(group(address(instance.getHost(), instance.getPort()), labels));
+                    groups.add(group(address(instance.host(), instance.port()), labels));
                 }
                 if (exporterKind != null && exporterKind.equals("host")) {
-                    registeredNodeHosts.add(instance.getHost());
+                    registeredNodeHosts.add(instance.host());
                 }
-                if (kind.equals("host") && exporterKind != null) hosts.add(instance.getHost());
+                if (kind.equals("host") && exporterKind != null) hosts.add(instance.host());
             }
         }
         if (kind.equals("host")) {
@@ -74,6 +77,29 @@ public class MonitorDiscoveryService {
             }
         }
         return groups;
+    }
+
+    private List<MonitorEndpoint> endpoints(String name, boolean exporter) {
+        if (!exporter) {
+            return discoveryClient.getInstances(name).stream()
+                    .map(instance -> new MonitorEndpoint(instance.getHost(), instance.getPort(), instance.getMetadata()))
+                    .toList();
+        }
+        try {
+            // 持久 exporter 即使被 Nacos 标为不健康，仍保留抓取目标让 up=0 触发告警。
+            return nacosProperties.namingServiceInstance()
+                    .getAllInstances(name, nacosProperties.getGroup()).stream()
+                    .map(instance -> new MonitorEndpoint(instance.getIp(), instance.getPort(), instance.getMetadata()))
+                    .toList();
+        } catch (NacosException exception) {
+            throw new IllegalStateException("无法读取 Nacos exporter 目标", exception);
+        }
+    }
+
+    private record MonitorEndpoint(String host, int port, Map<String, String> metadata) {
+        private MonitorEndpoint {
+            metadata = metadata == null ? Map.of() : metadata;
+        }
     }
 
     private static String exporterKind(String service) {

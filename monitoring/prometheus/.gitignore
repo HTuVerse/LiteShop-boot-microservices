@@ -1,0 +1,3 @@
+prometheus.yml
+alertmanager.yml
+discovery.token

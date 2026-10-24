@@ -10,7 +10,7 @@ rule_files:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ['127.0.0.1:9093']
+        - targets: ['alertmanager:9093']
 
 scrape_configs:
   # 发现接口自身必须使用固定引导目标，否则配置服务故障时会失去发现来源。
@@ -26,7 +26,7 @@ scrape_configs:
         refresh_interval: 30s
         authorization:
           type: Bearer
-          credentials_file: discovery.token
+          credentials_file: /etc/prometheus/discovery.token
 
   - job_name: liteshop-host
     http_sd_configs:
@@ -34,7 +34,7 @@ scrape_configs:
         refresh_interval: 30s
         authorization:
           type: Bearer
-          credentials_file: discovery.token
+          credentials_file: /etc/prometheus/discovery.token
 
   - job_name: liteshop-mysql
     http_sd_configs:
@@ -42,7 +42,7 @@ scrape_configs:
         refresh_interval: 30s
         authorization:
           type: Bearer
-          credentials_file: discovery.token
+          credentials_file: /etc/prometheus/discovery.token
 
   - job_name: liteshop-redis
     http_sd_configs:
@@ -50,7 +50,7 @@ scrape_configs:
         refresh_interval: 30s
         authorization:
           type: Bearer
-          credentials_file: discovery.token
+          credentials_file: /etc/prometheus/discovery.token
 
   - job_name: liteshop-rabbitmq
     http_sd_configs:
@@ -58,4 +58,4 @@ scrape_configs:
         refresh_interval: 30s
         authorization:
           type: Bearer
-          credentials_file: discovery.token
+          credentials_file: /etc/prometheus/discovery.token

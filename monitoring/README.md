@@ -24,10 +24,11 @@ Prometheus、exporter 与 Actuator 仅允许监控内网访问；不要经公网
 
 1. 复制 `inventory.example.yml`，记录生产拓扑用于验收。应用 IP 不需要写进 Prometheus 配置。
 2. 在每台 Linux 主机安装 node_exporter；每个数据库实例配置相应 exporter。项目已给 Java 服务接入 Actuator Prometheus 端点。
-3. 将 `prometheus/prometheus.example.yml` 复制成生产配置，只填写配置服务的**内网引导地址**。Prometheus 随后每 30 秒从 `/inner/config/monitor/discovery` 获取 Nacos 中的服务实例和承载主机。
+3. 将 `prometheus/prometheus.example.yml` 复制为 `prometheus/prometheus.yml`，只填写配置服务的**内网引导地址**。Prometheus 随后每 30 秒从 `/inner/config/monitor/discovery` 获取 Nacos 中的服务实例和承载主机。
 4. 给配置服务设置 `PROMETHEUS_BASE_URL` 和随机生成的 `MONITOR_DISCOVERY_TOKEN`；将同一令牌放在 Prometheus 的 `discovery.token` 文件中，限制文件读取权限。
 5. 对独立部署的 MySQL、Redis、RabbitMQ，以及没有业务服务的纯数据库主机，部署 exporter 后执行 `register_exporter.py`。脚本将它们注册为 Nacos 持久实例，之后新地址会自动进入采集列表；停止 exporter 仍能触发失联告警。
-6. 将 `prometheus/alertmanager.example.yml` 复制为正式配置，换成真实通知接收地址。验证 Targets 全部为 UP、平台管理员看板可见，并模拟单个主机、服务及数据库失联。
+6. 将 `prometheus/alertmanager.example.yml` 复制为 `prometheus/alertmanager.yml`，换成真实通知接收地址。可用 `docker compose -f compose.yml up -d` 启动监控组件；跨机器访问时将 `MONITOR_BIND_ADDRESS` 设置为监控机的内网 IP。
+7. 在 `liteshop_user` 执行 `sql/vertical-split/103_platform_monitor_menu.sql` 并重新登录平台管理员账号。验证 Targets 全部为 UP、看板可见，并模拟单个主机、服务及数据库失联。
 
 注册 exporter 示例（环境变量由部署系统注入，不要写入仓库）：
 
