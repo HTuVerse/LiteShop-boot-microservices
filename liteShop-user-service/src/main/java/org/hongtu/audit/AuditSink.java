@@ -41,7 +41,7 @@ public class AuditSink {
     }
 
     /** 消息重复投递时通过 event_id 幂等，不会增加校验链序号。 */
-    @RabbitListener(queues = AuditMessaging.QUEUE)
+    @RabbitListener(queues = {AuditMessaging.QUEUE, AuditMessaging.LEGACY_QUEUE})
     @Transactional
     public void receive(String serialized) throws Exception {
         AuditEvent event = mapper.readValue(serialized, AuditEvent.class);
