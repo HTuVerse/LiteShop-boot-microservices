@@ -44,7 +44,8 @@ public class AuditIntegrityService {
                         long current = rs.getLong("chain_sequence");
                         try {
                             if (current != sequence + 1 || !previous.equals(rs.getString("previous_hash"))
-                                    || !sink.sign(previous + "\n" + rs.getString("canonical_payload"))
+                                     || !sink.sign(previous + "\n" + rs.getString("canonical_payload"),
+                                             rs.getString("key_version"))
                                     .equals(rs.getString("entry_hash")))
                                 return result(tenantScopeId, false, current, "序号、前驱摘要或内容校验失败");
                             if (!columnsMatch(rs))
@@ -141,7 +142,8 @@ public class AuditIntegrityService {
                     continue;
                 }
                 String statement = Instant.now() + " " + scope + " "
-                        + verification.get("lastSequence") + " " + verification.get("lastHash");
+                        + verification.get("lastSequence") + " " + verification.get("lastHash")
+                        + " " + sink.activeKeyVersion();
                 String line = statement + " " + sink.sign(statement) + System.lineSeparator();
                 Files.writeString(path, line, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND);

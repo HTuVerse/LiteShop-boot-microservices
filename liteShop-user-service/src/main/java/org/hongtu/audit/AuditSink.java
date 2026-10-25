@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,16 +27,19 @@ public class AuditSink {
     private final ObjectMapper mapper;
     private final IdentifierGenerator ids;
     private final GeoCityLookup geo;
-
-    @Value("${liteshop.audit.hmac-key:}")
-    private String hmacKey;
-    @Value("${liteshop.audit.key-version:v1}")
-    private String keyVersion;
+    private final AuditKeyProperties keys;
 
     @PostConstruct
     public void requireKey() {
-        if (hmacKey == null || hmacKey.length() < 32)
+        if (keys.getHmacKey() == null || keys.getHmacKey().length() < 32
+                || keys.getKeyVersion() == null || keys.getKeyVersion().isBlank())
             throw new IllegalStateException("审计 HMAC 密钥未配置或长度不足 32 字符");
+        if (keys.getHistoricalKeys() == null)
+            throw new IllegalStateException("审计历史 HMAC 密钥配置无效");
+        keys.getHistoricalKeys().forEach((version, key) -> {
+            if (version == null || version.isBlank() || key == null || key.length() < 32)
+                throw new IllegalStateException("审计历史 HMAC 密钥配置无效: " + version);
+        });
     }
 
     /** 消息重复投递时通过 event_id 幂等，不会增加校验链序号。 */
@@ -81,7 +83,7 @@ public class AuditSink {
         snapshot.put("recordId", String.valueOf(recordId));
         snapshot.put("tenantScopeId", String.valueOf(scope));
         snapshot.put("chainSequence", sequence);
-        snapshot.put("keyVersion", keyVersion);
+        snapshot.put("keyVersion", keys.getKeyVersion());
         snapshot.put("receivedAt", receivedAt.toString());
         snapshot.put("event", safeEvent);
         snapshot.put("actorAccount", actorAccount);
@@ -105,15 +107,27 @@ public class AuditSink {
                 location.databaseVersion(), event.serviceName(), event.moduleCode(), event.operationType(),
                 event.objectType(), event.objectId(), event.summary(), event.result(), event.resultMessage(),
                 event.requestId(), event.requestPath(), safeDiff, canonical, sequence, previous, digest,
-                keyVersion);
+                keys.getKeyVersion());
         jdbc.update("UPDATE sys_operation_audit_chain SET last_sequence=?,last_hash=? "
                 + "WHERE tenant_scope_id=?", sequence, digest, scope);
     }
 
     /** 供定期完整性扫描复用，与写入时保持相同算法。 */
     public String sign(String input) throws Exception {
+        return sign(input, keys.getKeyVersion());
+    }
+
+    public String activeKeyVersion() {
+        return keys.getKeyVersion();
+    }
+
+    /** 校验旧记录时按写入时的版本选择密钥，密钥轮换不改变历史签名。 */
+    public String sign(String input, String version) throws Exception {
+        String key = keys.getKeyVersion().equals(version)
+                ? keys.getHmacKey() : keys.getHistoricalKeys().get(version);
+        if (key == null) throw new IllegalStateException("缺少审计签名密钥版本: " + version);
         Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(hmacKey.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
         return HexFormat.of().formatHex(mac.doFinal(input.getBytes(StandardCharsets.UTF_8)));
     }
 
