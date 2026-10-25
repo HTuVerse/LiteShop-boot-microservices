@@ -20,7 +20,6 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -36,6 +35,7 @@ public class SystemMonitorService {
     private static final Duration ONLINE_WINDOW = Duration.ofMinutes(5);
     private static final Duration DETAIL_TTL = Duration.ofMinutes(6);
     private static final Duration HISTORY_TTL = Duration.ofDays(9);
+    private static final int SESSION_SCAN_BATCH = 200;
     private static final DateTimeFormatter DAY = DateTimeFormatter.ISO_LOCAL_DATE;
     private final StringRedisTemplate redis;
     private final SysUserMapper users;
@@ -106,12 +106,23 @@ public class SystemMonitorService {
             return Map.of("records", pageRows, "total", count == null ? 0 : count,
                     "current", page, "size", size);
         }
-        Set<String> ids = redis.opsForZSet().rangeByScore(index, cutoff, Double.POSITIVE_INFINITY);
-        List<Map<String, Object>> rows = onlineRows(ids, client, scope, keyword, ip);
-        rows.sort(Comparator.comparingLong((Map<String, Object> row) -> (Long) row.get("lastSeen")).reversed());
-        int from = (int) Math.min(rows.size(), (long) (page - 1) * size);
-        int to = Math.min(rows.size(), from + size);
-        return Map.of("records", rows.subList(from, to), "total", rows.size(),
+        // 筛选仍需检查会话详情，但每批最多取 200 条，避免一次读取整个在线集合。
+        long requestedOffset = (page - 1L) * size;
+        long matched = 0;
+        List<Map<String, Object>> records = new ArrayList<>(size);
+        long scanned = 0;
+        while (true) {
+            Set<String> ids = redis.opsForZSet().reverseRangeByScore(index, cutoff,
+                    Double.POSITIVE_INFINITY, scanned, SESSION_SCAN_BATCH);
+            if (ids == null || ids.isEmpty()) break;
+            for (Map<String, Object> row : onlineRows(ids, client, scope, keyword, ip)) {
+                if (matched >= requestedOffset && records.size() < size) records.add(row);
+                matched++;
+            }
+            scanned += ids.size();
+            if (ids.size() < SESSION_SCAN_BATCH) break;
+        }
+        return Map.of("records", records, "total", matched,
                 "current", page, "size", size);
     }
 
@@ -183,14 +194,22 @@ public class SystemMonitorService {
         }
         Set<String> activeUsers = new HashSet<>();
         long cutoff = System.currentTimeMillis() - ONLINE_WINDOW.toMillis();
-        Set<String> ids = redis.opsForZSet().rangeByScore(indexKey(client, scope), cutoff, Double.POSITIVE_INFINITY);
-        int sessions = 0;
-        for (Map<?, ?> detail : sessionDetails(ids)) {
-            if (client.equals(detail.get("client")) && ("all".equals(scope)
-                    || scope.equals(Objects.toString(detail.get("tenantId"), "")))) {
-                sessions++;
-                activeUsers.add(Objects.toString(detail.get("userId"), ""));
+        String index = indexKey(client, scope);
+        long scanned = 0;
+        long sessions = 0;
+        while (true) {
+            Set<String> ids = redis.opsForZSet().reverseRangeByScore(index, cutoff,
+                    Double.POSITIVE_INFINITY, scanned, SESSION_SCAN_BATCH);
+            if (ids == null || ids.isEmpty()) break;
+            for (Map<?, ?> detail : sessionDetails(ids)) {
+                if (client.equals(detail.get("client")) && ("all".equals(scope)
+                        || scope.equals(Objects.toString(detail.get("tenantId"), "")))) {
+                    sessions++;
+                    activeUsers.add(Objects.toString(detail.get("userId"), ""));
+                }
             }
+            scanned += ids.size();
+            if (ids.size() < SESSION_SCAN_BATCH) break;
         }
         return Map.of("onlineUsers", activeUsers.size(), "onlineSessions", sessions,
                 "todayVisits", trend.getLast().get("visits"), "sevenDayVisits", sevenDayVisits,
