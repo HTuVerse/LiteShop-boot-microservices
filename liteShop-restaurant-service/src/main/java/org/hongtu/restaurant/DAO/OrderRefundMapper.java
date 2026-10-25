@@ -20,7 +20,13 @@ public interface OrderRefundMapper extends BaseMapper<OrderRefund> {
     int compareAndSetOpen(@Param("id") Long id, @Param("status") Integer status,
                           @Param("channelRefundId") String channelRefundId);
 
-    /** 渠道暂不可用时推迟此单，避免固定窗口中的失败单持续占满对账批次。 */
-    @Update("UPDATE order_refund SET updated_at = NOW() WHERE id = #{id} AND status IN (0, 1)")
-    int deferOpen(@Param("id") Long id);
+    /** 按旧重试次数比较更新，避免多实例同时对同一退款单累加重试。 */
+    @Update("""
+            UPDATE order_refund SET retry_count = #{retryCount}, next_retry_at = #{nextRetryAt},
+              review_required = #{reviewRequired}, last_error = #{lastError}, updated_at = NOW()
+            WHERE id = #{id} AND status IN (0, 1) AND retry_count = #{previousRetryCount}
+            """)
+    int recordRetry(@Param("id") Long id, @Param("previousRetryCount") int previousRetryCount,
+                    @Param("retryCount") int retryCount, @Param("nextRetryAt") java.time.LocalDateTime nextRetryAt,
+                    @Param("reviewRequired") boolean reviewRequired, @Param("lastError") String lastError);
 }

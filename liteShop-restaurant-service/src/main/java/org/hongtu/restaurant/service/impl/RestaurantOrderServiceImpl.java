@@ -3174,11 +3174,14 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     /** 补偿仍未完成的退款单。渠道成功后才提交业务。 */
     @Override
     public void reconcileOpenRefunds() {
+        LocalDateTime now = LocalDateTime.now();
         List<OrderRefund> open = TenantIgnore.get(() -> orderRefundMapper.selectList(
                 new LambdaQueryWrapper<OrderRefund>()
                         .in(OrderRefund::getStatus, RefundStatusEnum.REQUESTED, RefundStatusEnum.PROCESSING)
-                        .lt(OrderRefund::getUpdatedAt, LocalDateTime.now().minusMinutes(1))
-                        .orderByAsc(OrderRefund::getUpdatedAt)
+                        .eq(OrderRefund::getReviewRequired, false)
+                        .le(OrderRefund::getNextRetryAt, now)
+                        .lt(OrderRefund::getUpdatedAt, now.minusMinutes(1))
+                        .orderByAsc(OrderRefund::getNextRetryAt)
                         .last("LIMIT 20")));
         for (OrderRefund refund : open) {
             try {
@@ -3189,7 +3192,18 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             } catch (RuntimeException exception) {
                 log.warn("退款补偿失败: refundNo={}", refund.getRefundNo(), exception);
                 try {
-                    TenantScope.run(refund.getTenantId(), () -> orderRefundMapper.deferOpen(refund.getId()));
+                    int previous = refund.getRetryCount() == null ? 0 : refund.getRetryCount();
+                    int attempts = previous + 1;
+                    boolean review = attempts >= 10;
+                    long delaySeconds = Math.min(3600L, 60L << Math.min(previous, 6));
+                    String reason = exception.getMessage() == null ? exception.getClass().getSimpleName()
+                            : exception.getMessage();
+                    if (reason.length() > 480) reason = reason.substring(0, 480);
+                    String lastError = reason;
+                    TenantScope.run(refund.getTenantId(), () -> orderRefundMapper.recordRetry(
+                            refund.getId(), previous, attempts, LocalDateTime.now().plusSeconds(delaySeconds),
+                            review, lastError));
+                    if (review) log.error("退款自动对账已达重试上限，需人工核对: refundNo={}", refund.getRefundNo());
                 } catch (RuntimeException deferFailure) {
                     log.error("退款补偿延期失败: refundNo={}", refund.getRefundNo(), deferFailure);
                 }

@@ -39,6 +39,14 @@ public class OrderRefund {
     /** 发起退菜的操作人，供异步渠道回调审计。 */
     private Long operatorId;
     private String operatorName;
+    /** 渠道异常后的自动重试次数。 */
+    private Integer retryCount;
+    /** 下次允许对账的时间，避免渠道故障时持续请求。 */
+    private LocalDateTime nextRetryAt;
+    /** 超过自动重试阈值后转人工核对，异步回调仍可继续入账。 */
+    private Boolean reviewRequired;
+    /** 最近一次对账失败原因。 */
+    private String lastError;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
