@@ -15,6 +15,7 @@ import org.hongtu.api.dto.UserBasicDTO;
 import org.hongtu.api.dto.UserContactDTO;
 import org.hongtu.api.dto.UserBalanceDTO;
 import org.hongtu.api.dto.TenantResourceLibraryDTO;
+import org.hongtu.api.dto.StoreDirectoryDTO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -154,6 +155,10 @@ public interface UserFeignClient {
     /** 门店服务单向推送当前已提交数量，作为本地权益计数器基线。 */
     @PostMapping("/inner/saas/store-count/baseline")
     Result<Void> ensureStoreCountBaseline(@RequestParam("count") Long count);
+
+    /** 门店服务单向同步门店目录，用户服务据此在本地校验授权和展示名称。 */
+    @PostMapping("/inner/user/store-directory/sync")
+    Result<Void> syncStoreDirectory(@RequestBody List<StoreDirectoryDTO> stores);
 
     /** 业务撤销或删除资源时，幂等释放已占用配额。 */
     @PostMapping("/inner/saas/release")

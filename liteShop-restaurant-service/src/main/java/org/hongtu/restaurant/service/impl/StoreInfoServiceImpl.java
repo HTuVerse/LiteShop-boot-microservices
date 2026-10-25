@@ -13,6 +13,7 @@ import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.constant.SaasErrorCode;
 import org.hongtu.api.dto.EntitlementDecisionDTO;
 import org.hongtu.api.dto.EntitlementMutationDTO;
+import org.hongtu.api.dto.StoreDirectoryDTO;
 import org.hongtu.api.constant.SaasFeatureCode;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.restaurant.DTO.StoreInfo;
@@ -32,6 +33,8 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -122,6 +125,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         }
 
         if (!this.save(storeInfo)) throw new BusinessException(500, "新增门店失败");
+        localOutboxService.enqueueStoreDirectoryChange(directoryChange(storeInfo, true));
         resourceBindings.completeAfterCommit(imagePlan);
         return true;
     }
@@ -130,10 +134,13 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
      * 更新门店信息
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean updateStore(StoreInfo storeInfo) {
+        if (storeInfo == null || storeInfo.getId() == null) throw new BusinessException(400, "门店ID不能为空");
         storeDataScopeService.checkStoreAccess(storeInfo.getId());
         // 业务逻辑：检查门店是否存在
-        StoreInfo existingStore = this.getById(storeInfo.getId());
+        List<StoreInfo> locked = storeInfoMapper.lockStores(TenantContext.getTenantId(), List.of(storeInfo.getId()));
+        StoreInfo existingStore = locked.isEmpty() ? null : locked.getFirst();
         if (existingStore == null) {
             throw new RuntimeException("门店不存在");
         }
@@ -162,7 +169,11 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         storeInfo.setUpdatedAt(LocalDateTime.now());
 
         boolean updated = this.updateById(storeInfo);
-        if (updated) resourceBindings.completeAfterCommit(imagePlan);
+        if (updated) {
+            StoreInfo current = this.getById(storeInfo.getId());
+            localOutboxService.enqueueStoreDirectoryChange(directoryChange(current, true));
+            resourceBindings.completeAfterCommit(imagePlan);
+        }
         return updated;
     }
 
@@ -188,7 +199,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         for (Long id : normalizedIds) {
             storeDataScopeService.checkStoreAccess(id);
         }
-        List<StoreInfo> stores = this.listByIds(normalizedIds);
+        List<StoreInfo> stores = storeInfoMapper.lockStores(TenantContext.getTenantId(), normalizedIds);
         if (stores.size() != normalizedIds.size()) throw new BusinessException("部分门店不存在或不属于当前租户");
         Long referenced = storeInfoMapper.findReferencedStoreId(TenantContext.getTenantId(), normalizedIds);
         if (referenced != null)
@@ -198,10 +209,13 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
 
         if (storeInfoMapper.deleteStores(TenantContext.getTenantId(), normalizedIds) != normalizedIds.size())
             throw new BusinessException("门店状态已变化，请刷新后重试");
+        Map<Long, StoreInfo> deletedStores = stores.stream()
+                .collect(Collectors.toMap(StoreInfo::getId, store -> store));
         for (Long id : normalizedIds) {
             resourceBindings.clearAfterCommit("STORE", id, "storeImages");
             // 同一事务记下释放事件，提交后投递；失败由发件箱重试。
             localOutboxService.enqueueStoreQuotaRelease(id);
+            localOutboxService.enqueueStoreDirectoryChange(directoryChange(deletedStores.get(id), false));
         }
         return true;
     }
@@ -248,6 +262,15 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         if (baseline == null || !Result.CODE_SUCCESS.equals(baseline.getCode()))
             throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE,
                     "门店用量初始化失败，请稍后重试");
+    }
+
+    private StoreDirectoryDTO directoryChange(StoreInfo store, boolean active) {
+        StoreDirectoryDTO change = new StoreDirectoryDTO();
+        change.setStoreId(store.getId());
+        change.setStoreName(store.getStoreName());
+        change.setActive(active);
+        change.setSyncVersion(IdWorker.getId());
+        return change;
     }
 
     private EntitlementDecisionDTO invokeEntitlement(String idempotencyKey, BigDecimal amount) {

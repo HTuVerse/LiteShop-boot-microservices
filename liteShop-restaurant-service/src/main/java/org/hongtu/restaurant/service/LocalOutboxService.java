@@ -1,5 +1,7 @@
 package org.hongtu.restaurant.service;
 
+import org.hongtu.api.dto.StoreDirectoryDTO;
+
 /**
  * 把跨服务写操作记入已提交的发件箱，避免远程成功后本地事务回滚却没有补偿记录。
  */
@@ -16,6 +18,9 @@ public interface LocalOutboxService {
 
     /** 与门店删除同事务记录额度释放，提交后投递，失败自动重试。 */
     void enqueueStoreQuotaRelease(Long storeId);
+
+    /** 与门店变更同事务记录目录投影事件，提交后单向推送用户服务。 */
+    void enqueueStoreDirectoryChange(StoreDirectoryDTO store);
 
     /** 扫描超时的 SENT/PENDING 记录并补偿或重试。 */
     void reconcile();

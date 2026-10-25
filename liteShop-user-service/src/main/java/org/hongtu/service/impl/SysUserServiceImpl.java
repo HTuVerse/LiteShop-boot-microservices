@@ -34,8 +34,7 @@ import org.hongtu.service.SysUserStoreService;
 import org.hongtu.service.UserLevelService;
 import org.hongtu.security.AdminTargetPolicy;
 import org.hongtu.saas.service.SaasSubscriptionService;
-import org.hongtu.api.client.RestaurantFeignClient;
-import org.hongtu.api.dto.StoreSummaryDTO;
+import org.hongtu.service.StoreDirectoryService;
 import org.hongtu.utils.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -115,7 +114,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Resource
     private SysUserStoreService sysUserStoreService;
     @Resource
-    private RestaurantFeignClient restaurantFeignClient;
+    private StoreDirectoryService storeDirectoryService;
     @Resource
     private org.hongtu.service.AdminLoginSecurity adminLoginSecurity;
     @Resource
@@ -1480,19 +1479,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                         .orderByDesc(SysUserStore::getIsDefault)
                         .orderByAsc(SysUserStore::getStoreId));
                 if (links == null || links.isEmpty()) return List.of();
-                Map<Long, String> names = new HashMap<>();
-                if (restaurantFeignClient != null) {
-                    try {
-                        List<StoreSummaryDTO> summaries = org.hongtu.api.util.FeignResultUtil.unwrap(
-                                restaurantFeignClient.getStoreOptions(
-                                        links.stream().map(SysUserStore::getStoreId).toList()));
-                        if (summaries != null) {
-                            summaries.forEach(store -> names.put(store.getStoreId(), store.getStoreName()));
-                        }
-                    } catch (RuntimeException error) {
-                        log.warn("读取租户 {} 的门店名称失败，使用门店编号兜底", tenantId, error);
-                    }
-                }
+                Map<Long, String> names = storeDirectoryService.names(
+                        links.stream().map(SysUserStore::getStoreId).toList());
                 return links.stream().map(link -> new AdminStoreOptionVO(
                         link.getStoreId(), names.getOrDefault(link.getStoreId(), "门店 " + link.getStoreId()),
                         Integer.valueOf(1).equals(link.getIsDefault()))).toList();

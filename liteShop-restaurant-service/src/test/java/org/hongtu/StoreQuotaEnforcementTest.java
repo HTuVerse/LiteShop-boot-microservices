@@ -12,7 +12,10 @@ import org.hongtu.restaurant.DTO.StoreInfo;
 import org.hongtu.restaurant.service.StoreDataScopeService;
 import org.hongtu.restaurant.service.LocalOutboxService;
 import org.hongtu.restaurant.service.impl.StoreInfoServiceImpl;
+import org.hongtu.tenant.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -21,6 +24,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class StoreQuotaEnforcementTest {
+    @BeforeEach
+    void tenant() { TenantContext.setTenantId(1L); }
+
+    @AfterEach
+    void clearTenant() { TenantContext.clear(); }
+
     @BeforeAll
     static void metadata() {
         com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
@@ -92,7 +101,8 @@ class StoreQuotaEnforcementTest {
     @Test
     void deletingUnusedStoreQueuesQuotaReleaseAfterLocalDelete() {
         Fixture fixture = fixture();
-        doReturn(java.util.List.of(new StoreInfo().setId(9L))).when(fixture.service).listByIds(anyCollection());
+        when(fixture.mapper.lockStores(anyLong(), anyList()))
+                .thenReturn(java.util.List.of(new StoreInfo().setId(9L).setStoreName("测试门店")));
         when(fixture.mapper.deleteStores(anyLong(), anyList())).thenReturn(1);
 
         assertTrue(fixture.service.deleteStore(9L));

@@ -12,6 +12,7 @@ import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.MemberRewardSyncDTO;
 import org.hongtu.api.dto.EntitlementDecisionDTO;
 import org.hongtu.api.dto.EntitlementMutationDTO;
+import org.hongtu.api.dto.StoreDirectoryDTO;
 import org.hongtu.api.constant.SaasErrorCode;
 import org.hongtu.api.constant.SaasFeatureCode;
 import org.hongtu.api.util.FeignResultUtil;
@@ -184,6 +185,47 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
         }
     }
 
+    @Override
+    public void enqueueStoreDirectoryChange(StoreDirectoryDTO store) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive())
+            throw new IllegalStateException("门店目录同步必须与门店变更处于同一事务");
+        String eventId = "store:directory:" + store.getStoreId() + ":" + store.getSyncVersion();
+        LocalOutbox event = new LocalOutbox();
+        event.setEventId(eventId);
+        event.setEventType("STORE_DIRECTORY_SYNC");
+        event.setPayload(JSONUtil.toJsonStr(store));
+        event.setStatus("PENDING");
+        event.setAttempts(0);
+        event.setCreatedAt(LocalDateTime.now());
+        event.setUpdatedAt(LocalDateTime.now());
+        localOutboxMapper.insert(event);
+        Long tenantId = TenantContext.getTenantId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() {
+                try {
+                    TenantScope.run(tenantId, () -> deliverStoreDirectory(eventId));
+                } catch (RuntimeException exception) {
+                    log.error("门店目录同步等待对账: eventId={}", eventId, exception);
+                }
+            }
+        });
+    }
+
+    /** 用户服务按版本幂等接收，较旧事件晚到也不会覆盖新门店状态。 */
+    private void deliverStoreDirectory(String eventId) {
+        LocalOutbox event = find(eventId);
+        if (event == null || "DONE".equals(event.getStatus())) return;
+        try {
+            StoreDirectoryDTO store = JSONUtil.toBean(event.getPayload(), StoreDirectoryDTO.class);
+            FeignResultUtil.check(userFeignClient.syncStoreDirectory(List.of(store)));
+            saveStatus(null, eventId, null, "DONE", null);
+        } catch (RuntimeException exception) {
+            saveStatus(null, eventId, null, "PENDING", exception.getMessage());
+            log.error("门店目录同步失败，等待重试: eventId={}", eventId, exception);
+        }
+    }
+
     /** 始终读取订单最新实付金额，旧发件箱重试不会覆盖后续退款状态。 */
     private void deliverMemberReward(String eventId) {
         LocalOutbox event = find(eventId);
@@ -211,6 +253,15 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
 
     @Override
     public void reconcile() {
+        List<LocalOutbox> directoryChanges = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
+                .eq(LocalOutbox::getEventType, "STORE_DIRECTORY_SYNC")
+                .eq(LocalOutbox::getStatus, "PENDING")
+                .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
+                .last("LIMIT 100")));
+        for (LocalOutbox event : directoryChanges) {
+            if (event.getTenantId() != null)
+                TenantScope.run(event.getTenantId(), () -> deliverStoreDirectory(event.getEventId()));
+        }
         List<LocalOutbox> quotaReleases = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .eq(LocalOutbox::getEventType, "STORE_QUOTA_RELEASE")
                 .eq(LocalOutbox::getStatus, "PENDING")
@@ -231,7 +282,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
         }
         List<LocalOutbox> stuck = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .in(LocalOutbox::getStatus, "SENT", "PENDING", "UNKNOWN", "ROLLBACK")
-                .notIn(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC", "STORE_QUOTA_RELEASE")
+                .notIn(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC", "STORE_QUOTA_RELEASE", "STORE_DIRECTORY_SYNC")
                 .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
                 .orderByAsc(LocalOutbox::getUpdatedAt)
                 .last("LIMIT 100")));

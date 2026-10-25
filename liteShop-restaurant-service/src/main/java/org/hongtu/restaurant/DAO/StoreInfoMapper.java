@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Param;
 import org.hongtu.restaurant.DTO.StoreInfo;
 import org.hongtu.restaurant.DTO.TenantStoreCount;
+import org.hongtu.restaurant.DTO.StoreDirectoryRow;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 
 import java.util.List;
@@ -25,6 +26,21 @@ public interface StoreInfoMapper extends BaseMapper<StoreInfo> {
     @Select("SELECT tenant_id AS tenantId, COUNT(*) AS storeCount FROM store_info " +
             "WHERE tenant_id > #{afterTenantId} GROUP BY tenant_id ORDER BY tenant_id LIMIT 100")
     List<TenantStoreCount> countByTenantAfter(@Param("afterTenantId") Long afterTenantId);
+
+    /** 按主键顺序锁定门店，保证同一门店目录事件的版本与提交顺序一致。 */
+    @Select("""
+            <script>
+            SELECT * FROM store_info WHERE tenant_id = #{tenantId} AND id IN
+            <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            ORDER BY id FOR UPDATE
+            </script>
+            """)
+    List<StoreInfo> lockStores(@Param("tenantId") Long tenantId, @Param("ids") List<Long> ids);
+
+    /** 扫描存量门店，单向初始化用户服务的本地目录。 */
+    @Select("SELECT id, tenant_id AS tenantId, store_name AS storeName FROM store_info " +
+            "WHERE id > #{afterId} ORDER BY id LIMIT 100")
+    List<StoreDirectoryRow> listDirectoryAfterId(@Param("afterId") Long afterId);
 
     /** 批量检查门店是否仍被业务、配置或历史记录引用；有引用时禁止物理删除。 */
     @Select("""

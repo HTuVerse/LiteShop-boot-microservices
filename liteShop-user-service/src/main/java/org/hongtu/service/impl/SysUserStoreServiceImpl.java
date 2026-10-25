@@ -10,8 +10,7 @@ import org.hongtu.DAO.SysUserStoreMapper;
 import org.hongtu.DTO.SysUser;
 import org.hongtu.DTO.SysUserStore;
 import org.hongtu.Result.Result;
-import org.hongtu.api.client.RestaurantFeignClient;
-import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.service.StoreDirectoryService;
 import org.hongtu.service.SysUserStoreService;
 import org.hongtu.tenant.TenantConstants;
 import org.hongtu.tenant.TenantContext;
@@ -31,7 +30,7 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
     private SysUserMapper sysUserMapper;
 
     @Resource
-    private RestaurantFeignClient restaurantFeignClient;
+    private StoreDirectoryService storeDirectoryService;
 
     @Resource
     private TransactionTemplate transactionTemplate;
@@ -88,11 +87,11 @@ public class SysUserStoreServiceImpl extends ServiceImpl<SysUserStoreMapper, Sys
             return Result.error("默认门店必须包含在授权门店列表中");
         }
         if (!normalized.isEmpty()
-                && !Boolean.TRUE.equals(FeignResultUtil.unwrap(restaurantFeignClient.validateStoreIds(normalized)))) {
+                && !storeDirectoryService.allActive(normalized)) {
             return Result.error("授权门店不存在或不属于当前租户");
         }
 
-        // 跨服务校验在事务外完成，避免持有用户行锁等待餐厅服务。
+        // 在用户服务本地投影校验，避免授权时同步等待餐厅服务。
         return transactionTemplate.execute(status -> persistStoreAssignment(user, normalized, defaultStoreId));
     }
 
