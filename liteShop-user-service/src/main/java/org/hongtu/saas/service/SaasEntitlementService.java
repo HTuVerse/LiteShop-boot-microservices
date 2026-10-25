@@ -306,12 +306,25 @@ public class SaasEntitlementService implements EntitlementService {
     /** 释放必须关联原消费事件，沿用原计费周期且最多释放一次。 */
     @Transactional(rollbackFor = Exception.class)
     public void refundConsumption(Long tenantId, String consumeKey, String refundKey) {
+        refundConsumption(tenantId, null, consumeKey, refundKey);
+    }
+
+    /** 释放已消费额度；存量门店允许按已提交的删除事件释放历史基线。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void refundConsumption(Long tenantId, String featureCode, String consumeKey, String refundKey) {
         assertTenantAccess(tenantId);
         SaasUsageEvent consumed = events.selectOne(new LambdaQueryWrapper<SaasUsageEvent>()
                 .eq(SaasUsageEvent::getTenantId, tenantId)
                 .eq(SaasUsageEvent::getIdempotencyKey, consumeKey).last("FOR UPDATE"));
+        if (consumed == null && SaasFeatureKeys.STORE_COUNT.equals(featureCode)
+                && consumeKey != null && consumeKey.matches("store:create:[0-9]+")
+                && refundKey != null && refundKey.equals("store:delete:" + consumeKey.substring("store:create:".length()))) {
+            releaseLegacyStoreBaseline(tenantId, refundKey);
+            return;
+        }
         if (consumed == null || !"CONSUME".equals(consumed.getEventType())
-                || !"COMMITTED".equals(consumed.getStatus())) {
+                || !"COMMITTED".equals(consumed.getStatus())
+                || featureCode != null && !featureCode.equals(consumed.getFeatureCode())) {
             throw new BusinessException(409, "原消费记录不存在");
         }
         SaasUsageEvent existing = existingEvent(tenantId, refundKey);
@@ -326,6 +339,27 @@ public class SaasEntitlementService implements EntitlementService {
             throw new BusinessException(500, "功能 " + consumed.getFeatureCode() + " 额度退款失败");
         }
         events.update(new LambdaUpdateWrapper<SaasUsageEvent>().eq(SaasUsageEvent::getId, refunded.getId())
+                .set(SaasUsageEvent::getStatus, "COMMITTED"));
+    }
+
+    /** 存量门店曾只计入基线而没有消费事件，以删除键保证最多释放一次。 */
+    private void releaseLegacyStoreBaseline(Long tenantId, String refundKey) {
+        if (existingEvent(tenantId, refundKey) != null) return;
+        LocalDateTime periodStart = LocalDate.of(1970, 1, 1).atStartOfDay();
+        SaasUsageEvent event = new SaasUsageEvent().setTenantId(tenantId)
+                .setFeatureCode(SaasFeatureKeys.STORE_COUNT).setAmount(BigDecimal.ONE)
+                .setEventType("RELEASE").setIdempotencyKey(refundKey)
+                .setPeriodStart(periodStart).setStatus("PENDING")
+                .setCreateTime(LocalDateTime.now());
+        try {
+            events.insert(event);
+        } catch (DuplicateKeyException duplicate) {
+            if (existingEvent(tenantId, refundKey) != null) return;
+            throw duplicate;
+        }
+        if (counters.release(tenantId, SaasFeatureKeys.STORE_COUNT, periodStart, BigDecimal.ONE) != 1)
+            throw new BusinessException(500, "存量门店额度释放失败");
+        events.update(new LambdaUpdateWrapper<SaasUsageEvent>().eq(SaasUsageEvent::getId, event.getId())
                 .set(SaasUsageEvent::getStatus, "COMMITTED"));
     }
 

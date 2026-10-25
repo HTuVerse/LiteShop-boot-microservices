@@ -39,7 +39,8 @@ public class InnerSaasController {
                 || dto.getIdempotencyKey() == null || dto.getIdempotencyKey().isBlank()) {
             throw new org.hongtu.exception.BusinessException(400, "释放配额必须引用原消费事件");
         }
-        service.refundConsumption(TenantContext.getTenantId(), dto.getConsumeKey(), dto.getIdempotencyKey());
+        service.refundConsumption(TenantContext.getTenantId(), dto.getFeatureCode(),
+                dto.getConsumeKey(), dto.getIdempotencyKey());
         return Result.success(new EntitlementDecisionDTO().setAllowed(true));
     }
 

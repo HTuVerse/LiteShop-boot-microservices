@@ -5,10 +5,12 @@ import org.hongtu.Result.Result;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.constant.SaasErrorCode;
 import org.hongtu.api.dto.EntitlementDecisionDTO;
+import org.hongtu.api.util.ResourceBindingCoordinator;
 import org.hongtu.exception.BusinessException;
 import org.hongtu.restaurant.DAO.StoreInfoMapper;
 import org.hongtu.restaurant.DTO.StoreInfo;
 import org.hongtu.restaurant.service.StoreDataScopeService;
+import org.hongtu.restaurant.service.LocalOutboxService;
 import org.hongtu.restaurant.service.impl.StoreInfoServiceImpl;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -73,33 +75,30 @@ class StoreQuotaEnforcementTest {
     }
 
     @Test
-    void failedStoreInsertCompensatesReservedQuota() {
+    void failedStoreInsertLeavesReservationForDurableCompensation() {
         Fixture fixture = fixture();
         when(fixture.mapper.selectCount(any(Wrapper.class))).thenReturn(0L);
         when(fixture.user.consumeEntitlement(any())).thenReturn(allowed());
-        when(fixture.user.releaseEntitlement(any())).thenReturn(allowed());
         doReturn(false).when(fixture.service).save(any(StoreInfo.class));
 
         assertThrows(BusinessException.class,
                 () -> fixture.service.addStore(new StoreInfo().setStoreCode("S-002")));
 
-        verify(fixture.user).releaseEntitlement(argThat(request ->
-                request.getIdempotencyKey().startsWith("store:create:rollback:")));
+        verify(fixture.outbox).executeRemote(eq("STORE_QUOTA_RESERVE"),
+                startsWith("store:create:"), anyString(), any(Runnable.class));
+        verify(fixture.user, never()).releaseEntitlement(any());
     }
 
     @Test
-    void deletingStoreReleasesOneQuota() {
+    void deletingUnusedStoreQueuesQuotaReleaseAfterLocalDelete() {
         Fixture fixture = fixture();
-        doReturn(new StoreInfo().setId(9L)).when(fixture.service).getById(9L);
-        doReturn(true).when(fixture.service).removeById(9L);
-        when(fixture.user.releaseEntitlement(any())).thenReturn(allowed());
+        doReturn(java.util.List.of(new StoreInfo().setId(9L))).when(fixture.service).listByIds(anyCollection());
+        when(fixture.mapper.deleteStores(anyLong(), anyList())).thenReturn(1);
 
         assertTrue(fixture.service.deleteStore(9L));
 
-        verify(fixture.user).releaseEntitlement(argThat(request ->
-                "store:delete:9".equals(request.getIdempotencyKey())
-                        && "store:create:9".equals(request.getConsumeKey())
-                        && java.math.BigDecimal.ONE.compareTo(request.getAmount()) == 0));
+        verify(fixture.outbox).enqueueStoreQuotaRelease(9L);
+        verify(fixture.user, never()).releaseEntitlement(any());
     }
 
     private static Result<EntitlementDecisionDTO> allowed() {
@@ -111,12 +110,20 @@ class StoreQuotaEnforcementTest {
         StoreInfoMapper mapper = mock(StoreInfoMapper.class);
         StoreDataScopeService scope = mock(StoreDataScopeService.class);
         UserFeignClient user = mock(UserFeignClient.class);
+        LocalOutboxService outbox = mock(LocalOutboxService.class);
+        ResourceBindingCoordinator resources = mock(ResourceBindingCoordinator.class);
         ReflectionTestUtils.setField(service, "baseMapper", mapper);
         ReflectionTestUtils.setField(service, "storeInfoMapper", mapper);
         ReflectionTestUtils.setField(service, "storeDataScopeService", scope);
         ReflectionTestUtils.setField(service, "userFeignClient", user);
-        return new Fixture(service, mapper, user);
+        ReflectionTestUtils.setField(service, "localOutboxService", outbox);
+        ReflectionTestUtils.setField(service, "resourceBindings", resources);
+        when(user.ensureStoreCountBaseline(anyLong())).thenReturn(Result.success());
+        doAnswer(call -> { call.<Runnable>getArgument(3).run(); return null; })
+                .when(outbox).executeRemote(anyString(), anyString(), anyString(), any(Runnable.class));
+        return new Fixture(service, mapper, user, outbox);
     }
 
-    private record Fixture(StoreInfoServiceImpl service, StoreInfoMapper mapper, UserFeignClient user) {}
+    private record Fixture(StoreInfoServiceImpl service, StoreInfoMapper mapper,
+                           UserFeignClient user, LocalOutboxService outbox) {}
 }

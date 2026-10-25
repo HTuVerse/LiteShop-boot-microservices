@@ -10,7 +10,12 @@ import org.hongtu.api.client.CouponFeignClient;
 import org.hongtu.api.client.UserFeignClient;
 import org.hongtu.api.dto.BalanceChangeDTO;
 import org.hongtu.api.dto.MemberRewardSyncDTO;
+import org.hongtu.api.dto.EntitlementDecisionDTO;
+import org.hongtu.api.dto.EntitlementMutationDTO;
+import org.hongtu.api.constant.SaasErrorCode;
+import org.hongtu.api.constant.SaasFeatureCode;
 import org.hongtu.api.util.FeignResultUtil;
+import org.hongtu.exception.BusinessException;
 import org.hongtu.restaurant.DAO.LocalOutboxMapper;
 import org.hongtu.restaurant.DAO.RestaurantOrderMapper;
 import org.hongtu.restaurant.DTO.LocalOutbox;
@@ -72,12 +77,21 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             throw new IllegalStateException("当前事务无法记录跨服务调用结果");
         }
         AtomicBoolean remoteAccepted = new AtomicBoolean();
+        AtomicBoolean remoteRejected = new AtomicBoolean();
         if (transactionActive) {
-            registerTransactionDecision(eventId, remoteAccepted);
+            registerTransactionDecision(eventId, remoteAccepted, remoteRejected);
         }
         try {
             remoteCall.run();
         } catch (RuntimeException exception) {
+            if ("STORE_QUOTA_RESERVE".equals(eventType) && exception instanceof BusinessException rejected
+                    && (Integer.valueOf(SaasErrorCode.FEATURE_DISABLED).equals(rejected.getCode())
+                    || Integer.valueOf(SaasErrorCode.QUOTA_EXCEEDED).equals(rejected.getCode()))) {
+                // 权益服务明确拒绝占额，远端没有消费流水，不需要补偿。
+                saveStatus(eventType, eventId, payload, "COMPENSATED", exception.getMessage());
+                remoteRejected.set(true);
+                throw exception;
+            }
             // Feign 超时无法证明远端失败，继续对账而不能终止事件。
             saveStatus(eventType, eventId, payload, transactionActive ? "UNKNOWN" : "ROLLBACK", exception.getMessage());
             throw exception;
@@ -122,6 +136,54 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
         }
     }
 
+    @Override
+    public void enqueueStoreQuotaRelease(Long storeId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive())
+            throw new IllegalStateException("门店配额释放必须与门店删除处于同一事务");
+        String eventId = "store:delete:" + storeId;
+        LocalOutbox event = new LocalOutbox();
+        event.setEventId(eventId);
+        event.setEventType("STORE_QUOTA_RELEASE");
+        event.setPayload(JSONUtil.createObj().set("storeId", storeId).toString());
+        event.setStatus("PENDING");
+        event.setAttempts(0);
+        event.setCreatedAt(LocalDateTime.now());
+        event.setUpdatedAt(LocalDateTime.now());
+        localOutboxMapper.insert(event);
+        Long tenantId = TenantContext.getTenantId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() {
+                try {
+                    TenantScope.run(tenantId, () -> deliverStoreQuotaRelease(eventId));
+                } catch (RuntimeException exception) {
+                    // 删除已经提交，发件箱仍为 PENDING，由定时对账继续释放。
+                    log.error("门店删除已提交，配额释放等待对账: eventId={}", eventId, exception);
+                }
+            }
+        });
+    }
+
+    /** 本地删除提交后才释放远端配额；重复投递依靠释放键幂等。 */
+    private void deliverStoreQuotaRelease(String eventId) {
+        LocalOutbox event = find(eventId);
+        if (event == null || "DONE".equals(event.getStatus())) return;
+        try {
+            Long storeId = JSONUtil.parseObj(event.getPayload()).getLong("storeId");
+            EntitlementMutationDTO request = new EntitlementMutationDTO();
+            request.setFeatureCode(SaasFeatureCode.STORE_COUNT);
+            request.setAmount(BigDecimal.ONE);
+            request.setConsumeKey("store:create:" + storeId);
+            request.setIdempotencyKey(eventId);
+            EntitlementDecisionDTO decision = FeignResultUtil.unwrap(userFeignClient.releaseEntitlement(request));
+            if (decision == null || !decision.isAllowed()) throw new IllegalStateException("门店额度释放未确认");
+            saveStatus(null, eventId, null, "DONE", null);
+        } catch (RuntimeException exception) {
+            saveStatus(null, eventId, null, "PENDING", exception.getMessage());
+            log.error("门店额度释放失败，等待重试: eventId={}", eventId, exception);
+        }
+    }
+
     /** 始终读取订单最新实付金额，旧发件箱重试不会覆盖后续退款状态。 */
     private void deliverMemberReward(String eventId) {
         LocalOutbox event = find(eventId);
@@ -149,6 +211,15 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
 
     @Override
     public void reconcile() {
+        List<LocalOutbox> quotaReleases = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
+                .eq(LocalOutbox::getEventType, "STORE_QUOTA_RELEASE")
+                .eq(LocalOutbox::getStatus, "PENDING")
+                .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
+                .last("LIMIT 100")));
+        for (LocalOutbox event : quotaReleases) {
+            if (event.getTenantId() != null)
+                TenantScope.run(event.getTenantId(), () -> deliverStoreQuotaRelease(event.getEventId()));
+        }
         List<LocalOutbox> rewards = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .eq(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
                 .eq(LocalOutbox::getStatus, "PENDING")
@@ -160,7 +231,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
         }
         List<LocalOutbox> stuck = TenantIgnore.get(() -> localOutboxMapper.selectList(new LambdaQueryWrapper<LocalOutbox>()
                 .in(LocalOutbox::getStatus, "SENT", "PENDING", "UNKNOWN", "ROLLBACK")
-                .ne(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC")
+                .notIn(LocalOutbox::getEventType, "MEMBER_REWARD_SYNC", "STORE_QUOTA_RELEASE")
                 .lt(LocalOutbox::getUpdatedAt, LocalDateTime.now().minusSeconds(60))
                 .orderByAsc(LocalOutbox::getUpdatedAt)
                 .last("LIMIT 100")));
@@ -219,6 +290,15 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
             } else if ("BALANCE_CHANGE".equals(event.getEventType())) {
                 compensateBalance(event, payload);
                 return;
+            } else if ("STORE_QUOTA_RESERVE".equals(event.getEventType())) {
+                Long storeId = payload.getLong("storeId");
+                EntitlementMutationDTO request = new EntitlementMutationDTO();
+                request.setFeatureCode(SaasFeatureCode.STORE_COUNT);
+                request.setAmount(BigDecimal.ONE);
+                request.setConsumeKey("store:create:" + storeId);
+                request.setIdempotencyKey("store:create:rollback:" + storeId);
+                EntitlementDecisionDTO decision = FeignResultUtil.unwrap(userFeignClient.releaseEntitlement(request));
+                if (decision == null || !decision.isAllowed()) throw new IllegalStateException("门店占额补偿未确认");
             } else {
                 saveStatus(event.getEventType(), event.getEventId(), event.getPayload(), "NEEDS_REVIEW", "没有自动补偿策略");
                 return;
@@ -286,7 +366,8 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
                 .build();
     }
 
-    private void registerTransactionDecision(String eventId, AtomicBoolean remoteAccepted) {
+    private void registerTransactionDecision(String eventId, AtomicBoolean remoteAccepted,
+                                             AtomicBoolean remoteRejected) {
         Long tenantId = TenantContext.getTenantId();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -302,7 +383,7 @@ public class LocalOutboxServiceImpl implements LocalOutboxService {
 
             @Override
             public void afterCompletion(int status) {
-                if (status != TransactionSynchronization.STATUS_ROLLED_BACK) return;
+                if (status != TransactionSynchronization.STATUS_ROLLED_BACK || remoteRejected.get()) return;
                 try {
                     TenantScope.run(tenantId, () -> saveStatus(null, eventId, null, "ROLLBACK", null));
                 } catch (RuntimeException exception) {

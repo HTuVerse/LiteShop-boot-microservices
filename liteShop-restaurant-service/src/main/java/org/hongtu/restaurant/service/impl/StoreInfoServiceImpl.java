@@ -1,5 +1,6 @@
 package org.hongtu.restaurant.service.impl;
 
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
@@ -19,6 +20,8 @@ import org.hongtu.restaurant.DAO.StoreInfoMapper;
 import org.hongtu.restaurant.enums.storeStatusEnum;
 import org.hongtu.restaurant.service.StoreInfoService;
 import org.hongtu.restaurant.service.StoreDataScopeService;
+import org.hongtu.restaurant.service.LocalOutboxService;
+import org.hongtu.tenant.TenantContext;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,6 +54,8 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
     private UserFeignClient userFeignClient;
     @Resource
     private ResourceBindingCoordinator resourceBindings;
+    @Resource
+    private LocalOutboxService localOutboxService;
 
     /**
      * 分页查询门店列表
@@ -101,10 +106,11 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         storeInfo.setStoreImages(resourceBindings.resolvedMulti(imagePlan, storeInfo.getStoreImages()));
         String reservationKey = "store:create:" + storeInfo.getId();
         // 门店数量由所属服务单向推送，权益服务不再同步反查餐厅服务。
-        Result<Void> baseline = userFeignClient.ensureStoreCountBaseline(baseMapper.selectCount(new LambdaQueryWrapper<StoreInfo>()));
-        if (baseline == null || !Result.CODE_SUCCESS.equals(baseline.getCode()))
-            throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE, "门店用量初始化失败，请稍后重试");
-        reserveQuota(reservationKey, BigDecimal.ONE);
+        ensureStoreCountBaseline();
+        // 占额先写独立发件箱；门店事务回滚时由对账任务按消费键释放额度。
+        localOutboxService.executeRemote("STORE_QUOTA_RESERVE", reservationKey,
+                JSONUtil.createObj().set("storeId", storeInfo.getId()).toString(),
+                () -> reserveQuota(reservationKey, BigDecimal.ONE));
 
         // 设置创建时间和更新时间
         storeInfo.setCreatedAt(LocalDateTime.now());
@@ -115,16 +121,9 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
             storeInfo.setStatus(storeStatusEnum.ONBUSINESS);
         }
 
-        try {
-            if (!this.save(storeInfo)) {
-                throw new BusinessException(500, "新增门店失败");
-            }
-            resourceBindings.completeAfterCommit(imagePlan);
-            return true;
-        } catch (RuntimeException error) {
-            compensateQuota("store:create:" + storeInfo.getId(), "store:create:rollback:" + storeInfo.getId(), error);
-            throw error;
-        }
+        if (!this.save(storeInfo)) throw new BusinessException(500, "新增门店失败");
+        resourceBindings.completeAfterCommit(imagePlan);
+        return true;
     }
 
     /**
@@ -173,21 +172,8 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean deleteStore(Long id) {
-        storeDataScopeService.checkStoreAccess(id);
-        // 业务逻辑：检查门店是否存在
-        StoreInfo storeInfo = this.getById(id);
-        if (storeInfo == null) {
-            throw new RuntimeException("门店不存在");
-        }
-
-        // 业务逻辑：检查门店下是否有关联数据（如桌台信息等）
-        // 这里可以根据实际业务需求添加检查逻辑
-        // 例如：检查是否有未完成的订单等
-
-        boolean removed = this.removeById(id);
-        if (removed) resourceBindings.clearAfterCommit("STORE", id, "storeImages");
-        if (removed) releaseQuota("store:create:" + id, "store:delete:" + id);
-        return removed;
+        if (id == null) throw new BusinessException(400, "门店ID不能为空");
+        return deleteStoresBatch(List.of(id));
     }
 
     /**
@@ -198,24 +184,26 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
     public boolean deleteStoresBatch(List<Long> ids) {
         List<Long> normalizedIds = ids == null ? List.of() : ids.stream().filter(java.util.Objects::nonNull).distinct().toList();
         if (normalizedIds.isEmpty()) throw new BusinessException(400, "门店ID列表不能为空");
-        // 业务逻辑：检查每个门店是否可以删除
+        if (normalizedIds.size() > 100) throw new BusinessException(400, "单次最多删除100家门店");
         for (Long id : normalizedIds) {
             storeDataScopeService.checkStoreAccess(id);
-            StoreInfo storeInfo = this.getById(id);
-            if (storeInfo == null) {
-                throw new RuntimeException("门店ID:" + id + " 不存在");
-            }
-            // 可以添加更多业务校验
         }
+        List<StoreInfo> stores = this.listByIds(normalizedIds);
+        if (stores.size() != normalizedIds.size()) throw new BusinessException("部分门店不存在或不属于当前租户");
+        Long referenced = storeInfoMapper.findReferencedStoreId(TenantContext.getTenantId(), normalizedIds);
+        if (referenced != null)
+            throw new BusinessException("门店ID:" + referenced + " 存在关联业务数据，请设置为停业，不能直接删除");
+        // 存量门店可能只有基线、没有逐店消费事件；删除前确保释放有对应计数。
+        ensureStoreCountBaseline();
 
-        boolean removed = this.removeByIds(normalizedIds);
-        if (removed) {
-            for (Long id : normalizedIds) {
-                resourceBindings.clearAfterCommit("STORE", id, "storeImages");
-                releaseQuota("store:create:" + id, "store:delete:" + id);
-            }
+        if (storeInfoMapper.deleteStores(TenantContext.getTenantId(), normalizedIds) != normalizedIds.size())
+            throw new BusinessException("门店状态已变化，请刷新后重试");
+        for (Long id : normalizedIds) {
+            resourceBindings.clearAfterCommit("STORE", id, "storeImages");
+            // 同一事务记下释放事件，提交后投递；失败由发件箱重试。
+            localOutboxService.enqueueStoreQuotaRelease(id);
         }
-        return removed;
+        return true;
     }
 
     /**
@@ -239,7 +227,7 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
     }
 
     private void reserveQuota(String idempotencyKey, BigDecimal amount) {
-        EntitlementDecisionDTO decision = invokeEntitlement(true, idempotencyKey, amount);
+        EntitlementDecisionDTO decision = invokeEntitlement(idempotencyKey, amount);
         if (!decision.isAllowed()) {
             String reason = decision.getReason() == null ? "" : decision.getReason();
             String message = switch (reason) {
@@ -254,41 +242,22 @@ public class StoreInfoServiceImpl extends ServiceImpl<StoreInfoMapper, StoreInfo
         }
     }
 
-    private void releaseQuota(String consumeKey, String refundKey) {
-        EntitlementMutationDTO request = new EntitlementMutationDTO();
-        request.setFeatureCode(SaasFeatureCode.STORE_COUNT);
-        request.setAmount(BigDecimal.ONE);
-        request.setConsumeKey(consumeKey);
-        request.setIdempotencyKey(refundKey);
-        Result<EntitlementDecisionDTO> response;
-        try {
-            response = userFeignClient.releaseEntitlement(request);
-        } catch (RuntimeException error) {
+    private void ensureStoreCountBaseline() {
+        Result<Void> baseline = userFeignClient.ensureStoreCountBaseline(
+                baseMapper.selectCount(new LambdaQueryWrapper<StoreInfo>()));
+        if (baseline == null || !Result.CODE_SUCCESS.equals(baseline.getCode()))
             throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE,
-                    "套餐权益服务暂不可用，为防止超额本次操作已拒绝，请稍后重试", error);
-        }
-        if (response == null || !Result.CODE_SUCCESS.equals(response.getCode()) || response.getData() == null
-                || !response.getData().isAllowed()) {
-            throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE, "门店额度释放失败");
-        }
+                    "门店用量初始化失败，请稍后重试");
     }
 
-    private void compensateQuota(String consumeKey, String refundKey, RuntimeException original) {
-        try {
-            releaseQuota(consumeKey, refundKey);
-        } catch (RuntimeException compensationFailure) {
-            original.addSuppressed(compensationFailure);
-        }
-    }
-
-    private EntitlementDecisionDTO invokeEntitlement(boolean consume, String idempotencyKey, BigDecimal amount) {
+    private EntitlementDecisionDTO invokeEntitlement(String idempotencyKey, BigDecimal amount) {
         EntitlementMutationDTO request = new EntitlementMutationDTO();
         request.setFeatureCode(SaasFeatureCode.STORE_COUNT);
         request.setAmount(amount);
         request.setIdempotencyKey(idempotencyKey);
         final Result<EntitlementDecisionDTO> response;
         try {
-            response = consume ? userFeignClient.consumeEntitlement(request) : userFeignClient.releaseEntitlement(request);
+            response = userFeignClient.consumeEntitlement(request);
         } catch (RuntimeException error) {
             throw new BusinessException(SaasErrorCode.ENTITLEMENT_SERVICE_UNAVAILABLE,
                     "套餐权益服务暂不可用，为防止超额本次操作已拒绝，请稍后重试", error);
