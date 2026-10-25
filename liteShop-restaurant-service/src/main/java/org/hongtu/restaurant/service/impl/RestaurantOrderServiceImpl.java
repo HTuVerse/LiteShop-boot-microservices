@@ -5,6 +5,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
@@ -792,13 +793,14 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
         if (order.getPaymentType() == PaymentTypeEnum.BANLANCE_PAY
                 && order.getPaymentStatus() == PaymentStatusEnum.CREATING) {
-            Long payer = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(order.getOrderNo()));
+            String expenseKey = balanceExpenseKey(order);
+            Long payer = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(expenseKey));
             if (payer == null) {
                 if (order.getUpdatedAt() == null
                         || !order.getUpdatedAt().isBefore(LocalDateTime.now().minusMinutes(2))) return false;
                 // 用户服务栅栏与扣款事务串行：无流水则封闭订单号，迟到请求无法再扣款。
                 boolean aborted = Boolean.TRUE.equals(FeignResultUtil.unwrap(
-                        userFeignClient.abortPendingBalanceExpense(order.getOrderNo())));
+                        userFeignClient.abortPendingBalanceExpense(expenseKey)));
                 if (aborted) {
                     independentTx.execute(status -> this.update(new LambdaUpdateWrapper<RestaurantOrder>()
                             .eq(RestaurantOrder::getId, orderId)
@@ -806,16 +808,17 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                             .eq(RestaurantOrder::getPaymentType, PaymentTypeEnum.BANLANCE_PAY)
                             .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.UNPAID)
                             .set(RestaurantOrder::getPaymentType, null)
+                            .set(RestaurantOrder::getPaymentNo, null)
                             .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now())));
                     return false;
                 }
-                payer = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(order.getOrderNo()));
+                payer = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(expenseKey));
                 if (payer == null) throw new IllegalStateException("余额支付栅栏显示已扣款但未找到流水");
             }
             if (!payer.equals(order.getUserId()))
                 throw new BusinessException("余额支付流水付款人与订单会员不一致");
             BigDecimal amount = CashierAmountGuard.requireServerPayable(order.getActualAmount(), order.getTotalAmount());
-            return capturePayment(orderId, "BALANCE_" + order.getOrderNo(), PaymentTypeEnum.BANLANCE_PAY, amount);
+            return capturePayment(orderId, "BALANCE_" + expenseKey, PaymentTypeEnum.BANLANCE_PAY, amount);
         }
         ChannelPayment channel = order.getPaymentType() == PaymentTypeEnum.WECHAT
                 ? queryWeChatPaymentStatus(order.getTenantId(), order.getOrderNo())
@@ -977,14 +980,22 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         return voPage;
     }
 
+    /** 兼容旧订单直接以订单号记账的流水，新订单从支付流水号读取尝试键。 */
+    private String balanceExpenseKey(RestaurantOrder order) {
+        String paymentNo = order.getPaymentNo();
+        return paymentNo != null && paymentNo.startsWith("BALANCE_")
+                ? paymentNo.substring("BALANCE_".length()) : order.getOrderNo();
+    }
+
     /**
-     * 余额支付
+     * 余额支付。
      * @param orderId 订单ID
      * @return 支付是否成功
      */
     @Override
     public boolean payByBalance(Long orderId) {
         Long userId = StpUtil.getLoginIdAsLong();
+        String attemptSuffix = Long.toString(IdWorker.getId());
         // 短事务预留订单，远程扣款期间不持有订单行锁。
         RestaurantOrder order = independentTx.execute(status -> {
             RestaurantOrder locked = lockOrderForMutation(orderId);
@@ -1007,31 +1018,36 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                     .eq(RestaurantOrder::getPaymentStatus, locked.getPaymentStatus())
                     .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.CREATING)
                     .set(RestaurantOrder::getPaymentType, PaymentTypeEnum.BANLANCE_PAY)
+                    .set(RestaurantOrder::getPaymentNo, "BALANCE_" + locked.getOrderNo() + "-" + attemptSuffix)
                     .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now()));
             if (!reserved) throw new BusinessException("订单支付状态已变化，请刷新后重试");
             return locked;
         });
+        // 每次支付使用独立幂等键；旧尝试封闭后不影响会员重新支付同一订单。
+        String expenseKey = order.getOrderNo() + "-" + attemptSuffix;
         BigDecimal payAmount = CashierAmountGuard.requireServerPayable(order.getActualAmount(), order.getTotalAmount());
         try {
             // 用户服务按订单号幂等扣款，超时后由对账任务查询流水并继续入账。
             FeignResultUtil.check(userFeignClient.changeBalance(BalanceChangeDTO.builder()
-                    .userId(userId).amount(payAmount).type(4).orderNo(order.getOrderNo())
+                    .userId(userId).amount(payAmount).type(4).orderNo(expenseKey)
                     .operateUserId(userId).build()));
         } catch (BusinessException rejected) {
             // 即使明确拒绝，也先在用户库封闭订单号，避免并发或迟到扣款。
             boolean aborted = Boolean.TRUE.equals(FeignResultUtil.unwrap(
-                    userFeignClient.abortPendingBalanceExpense(order.getOrderNo())));
+                    userFeignClient.abortPendingBalanceExpense(expenseKey)));
             if (aborted) independentTx.execute(status -> this.update(new LambdaUpdateWrapper<RestaurantOrder>()
                     .eq(RestaurantOrder::getId, orderId)
                     .eq(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.CREATING)
                     .eq(RestaurantOrder::getPaymentType, PaymentTypeEnum.BANLANCE_PAY)
+                    .eq(RestaurantOrder::getPaymentNo, "BALANCE_" + expenseKey)
                     .set(RestaurantOrder::getPaymentStatus, PaymentStatusEnum.UNPAID)
                     .set(RestaurantOrder::getPaymentType, null)
+                    .set(RestaurantOrder::getPaymentNo, null)
                     .set(RestaurantOrder::getUpdatedAt, LocalDateTime.now())));
             throw rejected;
         }
         // 入账失败时保留 CREATING，定时任务凭用户余额流水继续处理，避免误退款或重复扣款。
-        capturePayment(orderId, "BALANCE_" + order.getOrderNo(), PaymentTypeEnum.BANLANCE_PAY, payAmount);
+        capturePayment(orderId, "BALANCE_" + expenseKey, PaymentTypeEnum.BANLANCE_PAY, payAmount);
         log.info("余额支付成功, 订单ID: {}, 用户ID: {}, 支付金额: {}", orderId, userId, payAmount);
         return true;
     }
@@ -3669,14 +3685,15 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         }
         if (state == ChannelRefundState.BALANCE) {
             RestaurantOrder order = lockOrderForMutation(refund.getOrderId());
-            Long payerUserId = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(order.getOrderNo()));
+            String expenseKey = balanceExpenseKey(order);
+            Long payerUserId = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(expenseKey));
             if (payerUserId == null) {
                 throw new BusinessException("未找到原余额支付流水，无法确认退款对象");
             }
             Long operatorId = StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : payerUserId;
             changeBalanceDurable(order.getId(), BalanceChangeDTO.builder()
                     .userId(payerUserId).amount(refund.getAmount()).type(3)
-                    .orderNo(refund.getRefundNo()).sourceOrderNo(order.getOrderNo())
+                    .orderNo(refund.getRefundNo()).sourceOrderNo(expenseKey)
                     .operateUserId(operatorId).build());
         }
         if (orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.SUCCEEDED.getCode(), refund.getChannelRefundId()) != 1) {
