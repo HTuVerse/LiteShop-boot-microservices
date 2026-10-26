@@ -144,6 +144,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Resource
     private RefundChannelClient refundChannelClient;
     @Resource
+    private RestaurantOrderQueryService orderQueryService;
+    @Resource
     private OrderRefundItemMapper orderRefundItemMapper;
     @Resource
     private PlatformTransactionManager transactionManager;
@@ -553,34 +555,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                                                 Long storeId, Long tableId, Long userId,
                                                 Integer orderType, Integer status,
                                                 Integer paymentStatus, String phoneNumber) {
-        // 手机号筛选以会员归属为准；没有匹配会员时不能退化成无筛选的全量列表。
-        if (StrUtil.isNotBlank(phoneNumber)) {
-            Long matchedUserId = FeignResultUtil.unwrap(userFeignClient.findUserIdByPhone(phoneNumber.trim()));
-            if (matchedUserId == null || (userId != null && !userId.equals(matchedUserId))) {
-                return new Page<>(currentPage, pageSize);
-            }
-            userId = matchedUserId;
-        }
-        // 1. 分页查询订单主表
-        Page<RestaurantOrder> page = new Page<>(currentPage, pageSize);
-        LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
-
-        // 条件查询
-        wrapper.eq(storeId != null, RestaurantOrder::getStoreId, storeId)
-                .eq(tableId != null, RestaurantOrder::getTableId, tableId)
-                .eq(userId != null, RestaurantOrder::getUserId, userId)
-                .eq(orderType != null, RestaurantOrder::getOrderType, SceneTypeEnum.getByCode(orderType))
-                .eq(status != null, RestaurantOrder::getStatus, OrderStatusEnum.getByCode(status))
-                .eq(paymentStatus != null, RestaurantOrder::getPaymentStatus, PaymentStatusEnum.getByCode(paymentStatus))
-                .orderByDesc(RestaurantOrder::getCreatedAt);
-
-        Page<RestaurantOrder> orderPage = this.page(page, wrapper);
-
-        // 2. 转换为VO并查询订单明细
-        Page<RestaurantOrderVO> voPage = new Page<>(currentPage, pageSize);
-        voPage.setTotal(orderPage.getTotal());
-        voPage.setRecords(restaurantOrderConverter.toVOList(orderPage.getRecords()));
-        return voPage;
+        return orderQueryService.page(currentPage, pageSize, storeId, tableId, userId,
+                orderType, status, paymentStatus, phoneNumber);
     }
 
 
@@ -942,48 +918,7 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
      */
     @Override
     public Page<RestaurantOrderVO> getOrdersByUserId(Long userId,String sessionNo,Integer SceneType, Integer currentPage, Integer pageSize) {
-        // 1. 分页查询订单列表
-        Page<RestaurantOrder> page = new Page<>(currentPage, pageSize);
-        LambdaQueryWrapper<RestaurantOrder> wrapper = new LambdaQueryWrapper<>();
-//        wrapper.eq(RestaurantOrder::getUserId, userId);
-
-        // 【核心逻辑】OR查询：userId的订单 或 sessionNo的订单
-        // 1. 会话进行中（有sessionNo）：可以看到会话中的共享订单
-        // 2. 历史订单：可以看到自己作为开桌者的订单
-        if (!StrUtil.isBlank(sessionNo)) {
-            // 有sessionNo：查询 (userId的订单) OR (sessionNo的订单)
-            wrapper.and(w -> w
-                    .eq(RestaurantOrder::getUserId, userId)
-                    .or()
-                    .eq(RestaurantOrder::getSessionNo, sessionNo)
-                    .ge(RestaurantOrder::getCreatedAt, LocalDateTime.now().minusMonths(1))
-            );
-        } else {
-            // 无sessionNo：只查询userId的订单（历史订单），默认仅查询近一个月的订单
-            wrapper.eq(RestaurantOrder::getUserId, userId);
-            wrapper.ge(RestaurantOrder::getCreatedAt, LocalDateTime.now().minusMonths(1));
-        }
-        // 根据 sceneType 设置查询条件
-        if (SceneType != null) {
-            if (SceneType == 2) {
-                // 当 sceneType 为 2 时，只查询 orderType 为 2 的数据
-                wrapper.eq(RestaurantOrder::getOrderType, SceneTypeEnum.getByCode(2));
-            } else if (SceneType == 0 || SceneType == 1) {
-                // 当 sceneType 为 0 或 1 时，查询 orderType 为 0 和 1 的数据
-                wrapper.in(RestaurantOrder::getOrderType,
-                        SceneTypeEnum.getByCode(0),
-                        SceneTypeEnum.getByCode(1));
-            }
-        }
-
-        wrapper.orderByDesc(RestaurantOrder::getCreatedAt);
-        Page<RestaurantOrder> orderPage = this.page(page, wrapper);
-
-        // 2. 转换为VO并查询订单明细
-        Page<RestaurantOrderVO> voPage = new Page<>(currentPage, pageSize);
-        voPage.setTotal(orderPage.getTotal());
-        voPage.setRecords(restaurantOrderConverter.toVOList(orderPage.getRecords()));
-        return voPage;
+        return orderQueryService.pageForUser(userId, sessionNo, SceneType, currentPage, pageSize);
     }
 
     /** 兼容旧订单直接以订单号记账的流水，新订单从支付流水号读取尝试键。 */
