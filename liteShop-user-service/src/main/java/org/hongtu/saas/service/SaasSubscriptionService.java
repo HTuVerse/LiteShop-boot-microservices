@@ -75,7 +75,8 @@ public class SaasSubscriptionService {
     @Transactional(rollbackFor = Exception.class)
     public SaasTenantSubscription assign(Long tenantId, SaasTenantSubscription request) {
         catalog.requirePlatform();
-        if (tenantId == null || tenants.selectById(tenantId) == null) throw new BusinessException(404, "租户不存在");
+        if (tenantId == null || tenants.selectOne(new LambdaQueryWrapper<SysTenant>()
+                .eq(SysTenant::getId, tenantId).last("FOR UPDATE")) == null) throw new BusinessException(404, "租户不存在");
         if (request == null || request.getPlanVersionId() == null) throw new BusinessException(400, "请选择套餐版本");
         requirePublishedVersion(request.getPlanVersionId());
         String status = request.getStatus() == null ? "ACTIVE" : request.getStatus();
@@ -109,6 +110,15 @@ public class SaasSubscriptionService {
         };
         if (periodEnd == null) throw new BusinessException(400, "自定义计费周期必须填写结束时间");
         SaasTenantSubscription previous = currentSubscription(tenantId);
+        if (previous == null) {
+            // 暂停订阅不产生权益，但恢复时仍需保留未到期的已购加购。
+            previous = subscriptions.selectList(new LambdaQueryWrapper<SaasTenantSubscription>()
+                            .eq(SaasTenantSubscription::getTenantId, tenantId)
+                            .eq(SaasTenantSubscription::getStatus, "SUSPENDED")
+                            .orderByDesc(SaasTenantSubscription::getCreateTime)
+                            .orderByDesc(SaasTenantSubscription::getId).last("LIMIT 1"))
+                    .stream().findFirst().orElse(null);
+        }
         List<SaasSubscriptionAddon> remainingAddons = previous == null ? List.of() : activeAddons(tenantId, previous.getId(), now);
         subscriptions.update(new LambdaUpdateWrapper<SaasTenantSubscription>()
                 .eq(SaasTenantSubscription::getTenantId, tenantId).in(SaasTenantSubscription::getStatus, LIVE_STATUSES)
@@ -168,6 +178,8 @@ public class SaasSubscriptionService {
     @Transactional(rollbackFor = Exception.class)
     public SaasSubscriptionAddon addAddon(Long tenantId, SaasSubscriptionAddon request) {
         catalog.requirePlatform();
+        if (tenantId == null || tenants.selectOne(new LambdaQueryWrapper<SysTenant>()
+                .eq(SysTenant::getId, tenantId).last("FOR UPDATE")) == null) throw new BusinessException(404, "租户不存在");
         SaasTenantSubscription subscription = currentSubscription(tenantId);
         if (subscription == null) throw new BusinessException(409, "租户当前没有有效订阅");
         if (request == null || request.getAddonId() == null) throw new BusinessException(400, "请选择加购项");
@@ -177,13 +189,13 @@ public class SaasSubscriptionService {
         if (addon == null || !Integer.valueOf(1).equals(addon.getStatus())) throw new BusinessException(400, "加购项不存在或已停用");
         int quantity = request.getQuantity() == null ? 1 : request.getQuantity();
         LocalDateTime now = LocalDateTime.now();
-        int purchased = subscriptionAddons.selectList(new LambdaQueryWrapper<SaasSubscriptionAddon>()
+        long purchased = subscriptionAddons.selectList(new LambdaQueryWrapper<SaasSubscriptionAddon>()
                         .eq(SaasSubscriptionAddon::getTenantId, tenantId)
                         .eq(SaasSubscriptionAddon::getSubscriptionId, subscription.getId())
                         .eq(SaasSubscriptionAddon::getAddonId, addon.getId())
                         .eq(SaasSubscriptionAddon::getStatus, "ACTIVE")
                         .and(w -> w.isNull(SaasSubscriptionAddon::getEndAt).or().gt(SaasSubscriptionAddon::getEndAt, now)))
-                .stream().mapToInt(row -> row.getQuantity() == null ? 0 : row.getQuantity()).sum();
+                .stream().mapToLong(row -> row.getQuantity() == null ? 0 : row.getQuantity()).sum();
         if (quantity < 1 || purchased + quantity > addon.getMaxQuantity()) throw new BusinessException(400, "加购累计数量超出允许范围");
         LocalDateTime startAt = request.getStartAt() == null ? now : request.getStartAt();
         LocalDateTime endAt = request.getEndAt() == null ? subscription.getCurrentPeriodEnd() : request.getEndAt();
