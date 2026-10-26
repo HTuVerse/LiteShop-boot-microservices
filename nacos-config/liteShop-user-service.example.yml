@@ -12,7 +12,7 @@ wx:
 
 liteshop:
   audit:
-    # 正式环境必须注入独立且稳定的密钥；当前版本不支持历史密钥在线轮换。
+    # 正式环境注入独立密钥；轮换时配置新的 key-version，并在 historical-keys 中保留旧版本密钥。
     hmac-key: ${AUDIT_HMAC_KEY:liteshop-local-audit-key-change-before-production-20261024}
     key-version: ${AUDIT_HMAC_KEY_VERSION:local-v1}
     # 本地将用户提供的 MMDB 放在仓库 runtime 目录；部署环境使用绝对路径挂载。

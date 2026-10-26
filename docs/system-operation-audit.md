@@ -3,7 +3,7 @@
 ## 启用顺序
 
 1. 在现有多租户结构和 `26_message_announcements.sql`、`84_points_mall.sql` 等业务库迁移完成后，先执行 `sql/vertical-split/102_system_audit_outbox.sql`，再执行 `101_system_operation_audit.sql`。
-2. 为用户服务配置独立、随机且至少 32 字符的 `AUDIT_HMAC_KEY`。正式环境不可使用示例配置的开发默认值；同一套历史日志的校验密钥须长期妥善保存。当前版本只验证当前密钥，不支持在线轮换。
+2. 为用户服务配置独立、随机且至少 32 字符的 `AUDIT_HMAC_KEY`。正式环境不可使用示例配置的开发默认值；同一套历史日志的校验密钥须长期妥善保存。轮换时配置新 `key-version`，并按 [审计签名密钥轮换](audit-key-rotation.md) 保留历史版本密钥。
 3. 将 GeoLite2 City MMDB 放在用户服务可读取的位置，并配置 `GEOIP_CITY_DB_PATH` 与 `GEOIP_CITY_DB_VERSION`。仓库中的 `runtime/GeoLite2-City.mmdb` 仅供本地联调，已被 Git 忽略。客户端地址由现有 `IpUtil` 的可信代理配置解析。
 4. 配置 RabbitMQ 的持久队列和 publisher confirm，依次部署用户服务、网关及各业务服务。业务服务的本地投递箱在代理确认接收后标记已投递，集中用户服务通过 `event_id` 幂等落库。
 5. 将 `liteshop.audit.anchor-path` 产生的每日签名链头同步到独立的不可改写存储。仅放在同一服务器上的文件无法防御拥有该服务器写权限的攻击者。数据库账号应限制审计表的直接更新和删除权限，审计查询接口没有修改或删除能力。
