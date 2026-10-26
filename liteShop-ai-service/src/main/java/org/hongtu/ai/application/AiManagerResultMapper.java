@@ -330,6 +330,8 @@ final class AiManagerResultMapper {
         if (chart.categories() != null) {
             for (String category : chart.categories()) categories.add(clip(text(category), MAX_CATEGORY));
         }
+        if (categories.isEmpty() || categories.size() > MAX_CATEGORY
+                || series.stream().anyMatch(item -> item.data().size() != categories.size())) return null;
         return new AiDashboardChart(type, categories, series, text(chart.unit()));
     }
 
@@ -504,27 +506,12 @@ final class AiManagerResultMapper {
                                                            String requestedMetricCode,
                                                            Map<String, Object> scope) {
         AiMetricDefinition metric = AiMetricCatalog.find(text(requestedMetricCode));
-        if (metric == null) metric = AiMetricCatalog.find(metricCode(title + " " + detail));
         String scopeType = scope == null ? "" : String.valueOf(scope.getOrDefault("scopeType", ""));
         String sourcePage = AiMetricCatalog.sourcePage(metric, scopeType);
         return new AiManagerResponse.Evidence(level, title, detail,
                 metric == null ? null : metric.code(), metric == null ? title : metric.name(),
                 null, metric == null ? null : metric.unit(), null, null, null, null, null,
                 sourceUpdatedAt(scope), sourcePage);
-    }
-
-    private static String metricCode(String text) {
-        if (text.contains("销售下降") || text.contains("销售环比")) return "sales_drop_rate";
-        if (text.contains("取消")) return "cancel_rate";
-        if (text.contains("优惠") || text.contains("折扣")) return "discount_cost_rate";
-        if (text.contains("库存") || text.contains("缺货") || text.contains("售罄")) return "low_stock_dishes";
-        if (text.contains("复购")) return "repeat_rate";
-        if (text.contains("客单价")) return "average_order_value";
-        if (text.contains("毛利")) return "gross_profit_rate";
-        if (text.contains("菜品") || text.contains("销量")) return "dish_sales";
-        if (text.contains("销售") || text.contains("营业额")) return "sales_amount";
-        if (text.contains("订单")) return "order_count";
-        return null;
     }
 
     private static LocalDateTime sourceUpdatedAt(Map<String, Object> scope) {

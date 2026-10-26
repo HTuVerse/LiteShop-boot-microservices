@@ -64,7 +64,12 @@ class AiManagerServiceTest {
         models = mock(AiRuntimeModelService.class);
         quota = mock(AiManagerQuotaService.class);
         workspace = mock(AiWorkspaceService.class);
-        when(workspace.openSession(any())).thenReturn(new AiAdvisorSessionDTO().setId(1L));
+        when(workspace.openSession(any())).thenAnswer(call -> {
+            AiManagerRequest request = call.getArgument(0);
+            return new AiAdvisorSessionDTO().setId(1L)
+                    .setScopeType(request.getScopeType()).setStoreId(request.getStoreId());
+        });
+        when(quota.diagnosisRecords(anyString(), any(), anyString())).thenReturn(List.of());
         when(quota.reserve(anyString(), any())).thenReturn(new AiGenerationDTO().setAcquired(true));
         when(restaurant.getAiManagerScope()).thenReturn(Result.success(Map.of(
                 "tenantViewAvailable", true,
@@ -205,7 +210,7 @@ class AiManagerServiceTest {
     }
 
     @Test
-    void dashboardUsesToolsAndMapsCardsWithEnrichedMetricMetadata() {
+    void dashboardRejectsNumbersThatNoToolActuallyReturned() {
         ChatModel model = usableModel();
         when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("test-model").build());
         when(model.call(any(Prompt.class))).thenReturn(textResponse("""
@@ -230,27 +235,9 @@ class AiManagerServiceTest {
         assertEquals(request.getRequestId(), submission.requestId());
         assertEquals("PROCESSING", submission.status());
 
-        // 同步执行的后台任务已把结果落库，从 quota.complete 捕获映射后的响应。
-        var responseCaptor = ArgumentCaptor.forClass(AiManagerResponse.class);
-        verify(quota).complete(eq(request.getRequestId()), responseCaptor.capture(), any());
-        var response = responseCaptor.getValue();
-
-        assertEquals("DIAGNOSIS_DASHBOARD", response.type());
-        assertNotNull(response.dashboard());
-        assertEquals("晚餐承压", response.dashboard().headline());
-        // 空图表卡无正文时被丢弃，只剩风险卡和折线图卡。
-        assertEquals(2, response.dashboard().cards().size());
-        var riskCard = response.dashboard().cards().getFirst();
-        assertEquals("RISK", riskCard.type());
-        assertEquals("sales_drop_rate", riskCard.metricCode());
-        assertEquals("销售下降率", riskCard.metricName());
-        assertEquals("/dashboard/restaurantAnalyze", riskCard.sourcePage());
-        var chartCard = response.dashboard().cards().get(1);
-        assertEquals("LINE", chartCard.chart().chartType());
-        assertEquals(2, chartCard.chart().series().getFirst().data().size());
-        // 风险卡转化为可下钻证据，图表卡不进入证据列表。
-        assertEquals(1, response.evidence().size());
-        assertEquals("WARNING", response.evidence().getFirst().level());
+        // 模型未调用工具却返回数字时，后台任务记为失败，不保存伪造的诊断。
+        verify(quota, never()).complete(eq(request.getRequestId()), any(), any());
+        verify(quota).fail(eq(request.getRequestId()), anyString(), anyString(), anyBoolean());
         verify(restaurant, never()).getAiManagerContext(any());
         var prompt = ArgumentCaptor.forClass(Prompt.class);
         verify(model).call(prompt.capture());

@@ -152,6 +152,19 @@ public class AiManagerService {
         request.setTimeRange(timeRange);
         scopeGuard.validate(scopeType, storeId);
 
+        // 同一用户、范围和经营周期的短时间重复点击复用已生成或进行中的诊断。
+        var reusable = quota.diagnosisRecords(scopeType, storeId, timeRange).stream()
+                .filter(item -> java.util.Objects.equals(item.getCreatedBy(), request.getCreatedBy()))
+                .filter(item -> java.util.Objects.equals(item.getPeriodKey(), quota.periodKey(timeRange)))
+                .filter(item -> item.getCreatedAt() != null
+                        && item.getCreatedAt().isAfter(java.time.LocalDateTime.now().minusMinutes(5)))
+                .filter(item -> "PROCESSING".equals(item.getStatus()) || "SUCCEEDED".equals(item.getStatus()))
+                .findFirst();
+        if (reusable.isPresent()) {
+            var previous = reusable.get();
+            return new AiDashboardSubmission(previous.getRequestId(), previous.getStatus());
+        }
+
         // chargeQuota 传 false：仍做请求幂等记录，但不消耗 AI 调用次数，额度用尽也可继续诊断。
         AiGenerationDTO reservation = quota.reserve("DIAGNOSIS_DASHBOARD", request, false);
         if (!reservation.isAcquired()) {
@@ -210,7 +223,12 @@ public class AiManagerService {
         String scopeType = upper(request.getScopeType(), "TENANT");
         scopeGuard.validate(scopeType, request.getStoreId());
         var session = workspace.openSession(request);
+        if (!scopeType.equals(session.getScopeType())
+                || ("STORE".equals(scopeType) && !java.util.Objects.equals(request.getStoreId(), session.getStoreId()))) {
+            throw new BusinessException(400, "当前会话的经营范围已变化，请新建会话后提问");
+        }
         request.setSessionId(session.getId());
+        request.setHistory(verifiedHistory(session.getId(), request.getCreatedBy(), request.getRequestId()));
         AiManagerResponse result = complete("CHAT", request, null, "chat", ChatAnswerResult.class,
                 AiManagerResultMapper::chat, true, true);
         return new AiAdvisorReply(request.getRequestId(), session, result);
@@ -302,7 +320,9 @@ public class AiManagerService {
         AiGenerationDTO reservation = preReserved ? new AiGenerationDTO().setAcquired(true)
                 : chargeQuota ? quota.reserve(type, request) : quota.reserve(type, request, false);
         if (!reservation.isAcquired()) return quota.cached(reservation);
+        long startedAt = System.nanoTime();
         try {
+            AiDashboardFactRegistry toolFacts = useTools ? new AiDashboardFactRegistry(objectMapper) : null;
             Map<String, Object> source = useTools
                     ? chatScope(scopeType, storeId, timeRange)
                     : businessData.context(new AiManagerDataRequest(scopeType, storeId, timeRange, dataMode));
@@ -341,7 +361,7 @@ public class AiManagerService {
                             .options(ToolCallingChatOptions.builder()
                                     .maxTokens(lenient ? 8192 : 4096)
                                     .toolCallbacks(ToolCallbacks.from(readTools))
-                                    .toolContext(toolContext(scopeType, storeId, timeRange)));
+                                    .toolContext(toolContext(scopeType, storeId, timeRange, toolFacts)));
                 } else {
                     spec = spec.options(managerOptions());
                 }
@@ -383,8 +403,21 @@ public class AiManagerService {
                     "dataCutoffAt", "dataPeriods")) {
                 if (source.containsKey(key)) scope.put(key, source.get(key));
             }
+            if (toolFacts != null) {
+                scope.putAll(toolFacts.scopeMetadata());
+                scope.put("dataAvailable", toolFacts.hasNumericData());
+            }
+            if (toolFacts != null && parsed instanceof AiDashboardResult dashboard) {
+                toolFacts.validateDashboard(dashboard);
+            }
+            if (toolFacts != null && parsed instanceof ChatAnswerResult answer) {
+                toolFacts.validateChat(answer);
+            }
             AiManagerResponse result = mapper.apply(parsed, scope);
             quota.complete(request.getRequestId(), result, modelResponse);
+            log.info("AI 店长生成完成，请求：{}，类型：{}，有效工具结果：{}，耗时毫秒：{}",
+                    request.getRequestId(), type, toolFacts == null ? 0 : toolFacts.recordedToolResults(),
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt));
             return result;
         } catch (RuntimeException error) {
             try {
@@ -413,15 +446,16 @@ public class AiManagerService {
         scope.put("storeId", storeId);
         scope.put("timeRange", timeRange);
         scope.put("note", "指标只能通过工具获取");
-        scope.put("dataPeriods", "由经营问题决定；未指定时优先综合今日、近7天、本月与近30天菜品");
         return scope;
     }
 
-    private Map<String, Object> toolContext(String scopeType, Long storeId, String timeRange) {
+    private Map<String, Object> toolContext(String scopeType, Long storeId, String timeRange,
+                                            AiDashboardFactRegistry toolFacts) {
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("scopeType", scopeType);
         if (storeId != null) context.put("storeId", storeId);
         context.put("timeRange", timeRange);
+        if (toolFacts != null) context.put("toolFacts", toolFacts);
         return context;
     }
 
@@ -434,6 +468,38 @@ public class AiManagerService {
             else if ("user".equals(item.role())) messages.add(new UserMessage(item.content()));
         }
         return messages;
+    }
+
+    /** 对话历史只从当前用户已持久化的会话读取，忽略请求体中可伪造的历史。 */
+    private List<AiManagerRequest.ConversationMessage> verifiedHistory(Long sessionId, Long userId,
+                                                                        String requestId) {
+        var saved = workspace.messages(sessionId, userId);
+        var rounds = saved == null ? List.<org.hongtu.api.dto.AiAdvisorMessageDTO>of()
+                : saved.stream().filter(round -> "SUCCEEDED".equals(round.getStatus()))
+                        .filter(round -> !java.util.Objects.equals(round.getRequestId(), requestId)).toList();
+        if (rounds == null || rounds.isEmpty()) return List.of();
+        List<AiManagerRequest.ConversationMessage> history = new ArrayList<>();
+        int start = Math.max(0, rounds.size() - 3);
+        for (int index = start; index < rounds.size(); index++) {
+            var round = rounds.get(index);
+            if (round.getResponseJson() == null) continue;
+            try {
+                AiManagerResponse answer = objectMapper.readValue(round.getResponseJson(), AiManagerResponse.class);
+                if (round.getQuestion() != null && !round.getQuestion().isBlank()) {
+                    history.add(new AiManagerRequest.ConversationMessage("user", clipHistory(round.getQuestion())));
+                }
+                if (answer.content() != null && !answer.content().isBlank()) {
+                    history.add(new AiManagerRequest.ConversationMessage("assistant", clipHistory(answer.content())));
+                }
+            } catch (RuntimeException ignored) {
+                // 损坏的旧回答不参与后续提问。
+            }
+        }
+        return history;
+    }
+
+    private String clipHistory(String value) {
+        return value.length() > 1000 ? value.substring(0, 1000) : value;
     }
 
     private String upper(String value, String fallback) {

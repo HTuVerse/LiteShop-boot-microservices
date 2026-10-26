@@ -42,8 +42,14 @@ public class AiManagerQuotaService {
         if (request == null || request.getRequestId() == null || request.getRequestId().isBlank()) {
             throw new BusinessException(400, "缺少 AI 请求ID");
         }
+        // CHAT 历史由服务端实时恢复，重试时可能增长；幂等键只包含本轮稳定参数。
+        Object hashPayload = "CHAT".equals(operation) ? java.util.Arrays.asList(
+                request.getRequestId(), request.getCreatedBy(), request.getScopeType(),
+                request.getStoreId() == null ? "" : request.getStoreId(), request.getTimeRange(),
+                request.getSessionId(), request.getMessage(),
+                request.getReferenceRequestId() == null ? "" : request.getReferenceRequestId()) : request;
         AiGenerationDTO dto = new AiGenerationDTO().setRequestId(request.getRequestId())
-                .setOperation(operation).setRequestHash(hash(operation + ":" + json.writeValueAsString(request)))
+                .setOperation(operation).setRequestHash(hash(operation + ":" + json.writeValueAsString(hashPayload)))
                 .setCreatedBy(request.getCreatedBy()).setScopeType(upper(request.getScopeType(), "TENANT"))
                 .setStoreId("STORE".equals(upper(request.getScopeType(), "TENANT")) ? request.getStoreId() : null)
                 .setTimeRange(upper(request.getTimeRange(), "TODAY"))
@@ -110,7 +116,7 @@ public class AiManagerQuotaService {
         }
     }
 
-    private String periodKey(String timeRange) {
+    public String periodKey(String timeRange) {
         LocalDate today = LocalDate.now();
         return switch (timeRange) {
             case "YESTERDAY" -> today.minusDays(1).toString();

@@ -1,5 +1,6 @@
 package org.hongtu.ai.tool;
 
+import org.hongtu.ai.application.AiDashboardFactRegistry;
 import org.hongtu.ai.application.AiManagerScopeGuard;
 import org.hongtu.ai.application.AiMetricCatalog;
 import org.hongtu.ai.client.AiBusinessDataClient;
@@ -13,6 +14,7 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -148,7 +150,7 @@ public class AiManagerReadTools {
                 new AiManagerDataRequest(scope.scopeType(), scope.storeId(), scope.timeRange(), dataMode));
         Map<String, Object> result = new LinkedHashMap<>(context);
         result.put("metricCatalog", AiMetricCatalog.all());
-        return bound(objectMapper.writeValueAsString(result));
+        return serializeResult(result, dataMode, scope, toolContext);
     }
 
     /**
@@ -169,6 +171,24 @@ public class AiManagerReadTools {
             if (context.containsKey(field)) result.put(field, context.get(field));
         }
         result.put("metricCatalog", AiMetricCatalog.all());
+        return serializeResult(result, dataMode, scope, toolContext);
+    }
+
+    /** 仅对实际交给模型的有界结果登记事实，供诊断结果核验。 */
+    private String serializeResult(Map<String, Object> result, String toolName, ResolvedScope scope,
+                                   ToolContext toolContext) {
+        String json = objectMapper.writeValueAsString(result);
+        // sourceId 会增加返回长度，预留空间，避免登记了模型实际看不到的数据。
+        if (json.length() > MAX_RESULT_CHARS - 100) {
+            return "数据量超出单次工具返回上限，请缩小范围后再问。";
+        }
+        Object candidate = toolContext == null || toolContext.getContext() == null
+                ? null : toolContext.getContext().get("toolFacts");
+        if (candidate instanceof AiDashboardFactRegistry facts) {
+            String sourceId = facts.record(toolName, scope.scopeType(), scope.storeId(),
+                    scope.timeRange(), json, LocalDateTime.now());
+            if (sourceId != null) result.put("sourceId", sourceId);
+        }
         return bound(objectMapper.writeValueAsString(result));
     }
 

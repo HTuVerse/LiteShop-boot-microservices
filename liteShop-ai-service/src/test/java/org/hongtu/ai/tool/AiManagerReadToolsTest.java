@@ -77,7 +77,7 @@ class AiManagerReadToolsTest {
         values.put("scopeType", "STORE");
         values.put("storeId", 12L);
         values.put("timeRange", "WEEK");
-        values.put("dashboardFacts", facts);
+        values.put("toolFacts", facts);
 
         String response = tools.getSalesOverview(null, null, new ToolContext(values));
         String sourceId = JsonMapper.builder().build().readTree(response).get("sourceId").asText();
