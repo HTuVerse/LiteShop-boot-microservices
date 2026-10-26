@@ -43,6 +43,8 @@ import org.hongtu.api.dto.PaymentCreateResult;
 import org.hongtu.api.util.FeignResultUtil;
 import org.hongtu.restaurant.payment.ScanPayOutcome;
 import org.hongtu.restaurant.payment.PaymentTransitionPolicy;
+import org.hongtu.restaurant.payment.RefundChannelClient;
+import org.hongtu.restaurant.payment.RefundChannelState;
 import org.hongtu.tenant.TenantContext;
 import org.hongtu.tenant.TenantIgnore;
 import org.springframework.beans.factory.annotation.Value;
@@ -139,6 +141,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     private OrderRefundMapper orderRefundMapper;
     @Resource
     private OrderRefundReconciler orderRefundReconciler;
+    @Resource
+    private RefundChannelClient refundChannelClient;
     @Resource
     private OrderRefundItemMapper orderRefundItemMapper;
     @Resource
@@ -3165,8 +3169,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (refund.getStatus() == RefundStatusEnum.SUCCEEDED) {
             return refundResult(refund, refund.getAmount());
         }
-        ChannelRefundState state = callRefundChannel(refund);
-        RefundDishVO result = independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+        RefundChannelState state = callRefundChannel(refund);
+        RefundDishVO result = independentTx.execute(status -> applyRefundResult(refund, state));
         if (RefundStatusEnum.FAILED.getDesc().equals(result.getRefundStatus())) {
             throw new BusinessException("渠道退款失败，请稍后使用同一退菜请求重试");
         }
@@ -3177,8 +3181,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
     @Override
     public void reconcileOpenRefunds() {
         orderRefundReconciler.reconcile(refund -> TenantScope.run(refund.getTenantId(), () -> {
-            ChannelRefundState state = callRefundChannel(refund);
-            independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+            RefundChannelState state = callRefundChannel(refund);
+            independentTx.execute(status -> applyRefundResult(refund, state));
         }));
     }
 
@@ -3199,12 +3203,11 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             if (parsed.getRefundAmount() != null) {
                 CashierAmountGuard.requireClientAmountMatches(parsed.getRefundAmount(), refund.getAmount());
             }
-            ChannelRefundState state = channelRefundState(parsed.getStatus());
+            RefundChannelState state = RefundChannelState.fromProviderStatus(parsed.getStatus());
             if (StrUtil.isNotBlank(parsed.getChannelRefundId())) {
                 refund.setChannelRefundId(parsed.getChannelRefundId());
-                orderRefundMapper.updateById(refund);
             }
-            independentTx.execute(status -> applyRefundResult(refund.getId(), state));
+            independentTx.execute(status -> applyRefundResult(refund, state));
         });
     }
 
@@ -3370,8 +3373,8 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
             }
             if (outcome != null && outcome.lateRefund != null
                     && outcome.lateRefund.getStatus() != RefundStatusEnum.SUCCEEDED) {
-                ChannelRefundState state = callRefundChannel(outcome.lateRefund);
-                independentTx.execute(status -> applyRefundResult(outcome.lateRefund.getId(), state));
+                RefundChannelState state = callRefundChannel(outcome.lateRefund);
+                independentTx.execute(status -> applyRefundResult(outcome.lateRefund, state));
             }
             return true;
         } catch (StockCaptureException exception) {
@@ -3581,74 +3584,12 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
                 .collect(Collectors.toMap(OrderRefundItem::getOrderItemId, OrderRefundItem::getQuantity, Integer::sum));
     }
 
-    private ChannelRefundState callRefundChannel(OrderRefund refund) {
-        RestaurantOrder order = this.getById(refund.getOrderId());
-        if (order == null) {
-            return ChannelRefundState.FAILED;
-        }
-        boolean captured = order.getPaymentStatus() == PaymentStatusEnum.PAID
-                || order.getPaymentStatus() == PaymentStatusEnum.PARTIAL_REFUND
-                || order.getPaymentStatus() == PaymentStatusEnum.TIMEOUT
-                || order.getPaymentStatus() == PaymentStatusEnum.CLOSED
-                || order.getPaymentStatus() == PaymentStatusEnum.PAID_PENDING;
-        PaymentTypeEnum paymentType = refund.getChannel();
-        if (!captured || paymentType == PaymentTypeEnum.CASH || paymentType == PaymentTypeEnum.BANK_CARD
-                || paymentType == PaymentTypeEnum.OFFLINE_PAY || paymentType == PaymentTypeEnum.COUPON_PAY) {
-            return ChannelRefundState.SUCCESS;
-        }
-        if (paymentType == PaymentTypeEnum.BANLANCE_PAY) {
-            return ChannelRefundState.BALANCE;
-        }
-        if (paymentType == PaymentTypeEnum.WECHAT) {
-            return callWeChatRefund(order, refund);
-        }
-        if (paymentType == PaymentTypeEnum.ALIPAY) {
-            return callAlipayRefund(order, refund);
-        }
-        throw new BusinessException("当前支付方式尚未接入退款，禁止修改本地支付状态");
+    private RefundChannelState callRefundChannel(OrderRefund refund) {
+        return refundChannelClient.request(this.getById(refund.getOrderId()), refund);
     }
 
-    private ChannelRefundState callWeChatRefund(RestaurantOrder order, OrderRefund refund) {
-        Map<String, Object> trade = FeignResultUtil.unwrap(
-                payFeignClient.queryWeChatTrade(order.getTenantId(), order.getOrderNo()));
-        if (!Boolean.TRUE.equals(trade.get("success")) || !"SUCCESS".equals(String.valueOf(trade.get("tradeState")))) {
-            throw new BusinessException("微信支付原交易状态异常，无法退款");
-        }
-        Object total = trade.get("total");
-        if (!(total instanceof Number totalNumber)) {
-            throw new BusinessException("微信支付原交易金额缺失，无法退款");
-        }
-        Map<String, Object> current = FeignResultUtil.unwrap(
-                payFeignClient.queryWeChatRefund(order.getTenantId(), refund.getRefundNo()));
-        if (!Boolean.TRUE.equals(current.get("success"))) {
-            current = FeignResultUtil.unwrap(payFeignClient.refundRestaurantWeChatTrade(
-                    order.getTenantId(), order.getOrderNo(), refund.getRefundNo(), toCentString(refund.getAmount()),
-                    String.valueOf(totalNumber.longValue()), StrUtil.blankToDefault(refund.getReason(), "订单退菜退款")));
-        }
-        if (!Boolean.TRUE.equals(current.get("success"))) {
-            return ChannelRefundState.FAILED;
-        }
-        if (current.get("refundId") != null) {
-            refund.setChannelRefundId(String.valueOf(current.get("refundId")));
-        }
-        return channelRefundState(String.valueOf(current.get("status")));
-    }
-
-    private ChannelRefundState callAlipayRefund(RestaurantOrder order, OrderRefund refund) {
-        Map<String, Object> current = FeignResultUtil.unwrap(payFeignClient.refundAlipayTrade(
-                order.getTenantId(), order.getOrderNo(), refund.getRefundNo(),
-                refund.getAmount().setScale(2, RoundingMode.UNNECESSARY).toPlainString(),
-                StrUtil.blankToDefault(refund.getReason(), "订单退菜退款")));
-        if (!Boolean.TRUE.equals(current.get("success"))) {
-            return ChannelRefundState.FAILED;
-        }
-        if (current.get("tradeNo") != null) {
-            refund.setChannelRefundId(String.valueOf(current.get("tradeNo")));
-        }
-        return ChannelRefundState.SUCCESS;
-    }
-
-    private RefundDishVO applyRefundResult(Long refundId, ChannelRefundState state) {
+    private RefundDishVO applyRefundResult(OrderRefund supplied, RefundChannelState state) {
+        Long refundId = supplied.getId();
         OrderRefund refund = orderRefundMapper.selectById(refundId);
         if (refund == null) {
             throw new BusinessException("退款单不存在");
@@ -3656,19 +3597,25 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         if (refund.getStatus() == RefundStatusEnum.SUCCEEDED) {
             return refundResult(refund, refund.getAmount());
         }
-        if (state == ChannelRefundState.PROCESSING) {
+        if (supplied.getChannelRefundId() != null) {
+            if (refund.getChannelRefundId() != null
+                    && !refund.getChannelRefundId().equals(supplied.getChannelRefundId()))
+                throw new BusinessException("退款渠道流水号冲突，请人工核对");
+            refund.setChannelRefundId(supplied.getChannelRefundId());
+        }
+        if (state == RefundChannelState.PROCESSING) {
             orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.PROCESSING.getCode(), refund.getChannelRefundId());
             RefundDishVO processing = refundResult(refund, null);
             processing.setRefundStatus(RefundStatusEnum.PROCESSING.getDesc());
             return processing;
         }
-        if (state == ChannelRefundState.FAILED) {
+        if (state == RefundChannelState.FAILED) {
             orderRefundMapper.compareAndSetOpen(refundId, RefundStatusEnum.FAILED.getCode(), refund.getChannelRefundId());
             RefundDishVO failed = refundResult(refund, null);
             failed.setRefundStatus(RefundStatusEnum.FAILED.getDesc());
             return failed;
         }
-        if (state == ChannelRefundState.BALANCE) {
+        if (state == RefundChannelState.BALANCE) {
             RestaurantOrder order = lockOrderForMutation(refund.getOrderId());
             String expenseKey = balanceExpenseKey(order);
             Long payerUserId = FeignResultUtil.unwrap(userFeignClient.balanceExpensePayer(expenseKey));
@@ -3792,20 +3739,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         return result;
     }
 
-    private ChannelRefundState channelRefundState(String status) {
-        if ("SUCCESS".equals(status)) {
-            return ChannelRefundState.SUCCESS;
-        }
-        if ("PROCESSING".equals(status)) {
-            return ChannelRefundState.PROCESSING;
-        }
-        return ChannelRefundState.FAILED;
-    }
-
-    private enum ChannelRefundState {
-        SUCCESS, PROCESSING, FAILED, BALANCE
-    }
-
     private static final class StockCaptureException extends RuntimeException {
         private static final long serialVersionUID = 1L;
     }
@@ -3815,11 +3748,6 @@ public class RestaurantOrderServiceImpl extends ServiceImpl<RestaurantOrderMappe
         String source = order.getTenantId() + ":" + order.getId() + ":" + request.getIdempotencyKey();
         return "RF" + UUID.nameUUIDFromBytes(source.getBytes(StandardCharsets.UTF_8))
                 .toString().replace("-", "");
-    }
-
-    /** 微信支付金额使用分，转换时不允许静默舍入。 */
-    private String toCentString(BigDecimal amount) {
-        return amount.movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).toPlainString();
     }
 
     /** 匿名支付回调仅按全局唯一订单号定位一次，定位后立即恢复订单租户上下文。 */
