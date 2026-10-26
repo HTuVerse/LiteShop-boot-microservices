@@ -26,6 +26,7 @@ public class SaasSubscriptionService {
     @Resource private SaasCatalogService catalog;
     @Resource private SysTenantMapper tenants;
     @Resource private SaasPlanVersionMapper versions;
+    @Resource private SaasPlanMapper plans;
     @Resource private SaasTenantSubscriptionMapper subscriptions;
     @Resource private SaasAddonMapper addons;
     @Resource private SaasAddonEntitlementMapper addonEntitlements;
@@ -82,7 +83,11 @@ public class SaasSubscriptionService {
         if (!Set.of("TRIALING", "ACTIVE", "PAST_DUE", "GRACE", "SUSPENDED").contains(status)) throw new BusinessException(400, "订阅状态不正确");
         String billingCycle = request.getBillingCycle() == null ? "MONTHLY" : request.getBillingCycle().trim().toUpperCase();
         if (!Set.of("MONTHLY", "YEARLY", "CUSTOM").contains(billingCycle)) throw new BusinessException(400, "计费周期只能是 MONTHLY、YEARLY 或 CUSTOM");
+        if (Integer.valueOf(1).equals(request.getAutoRenew())) throw new BusinessException(400, "自动续费尚未开通，请使用手动续费");
         LocalDateTime now = LocalDateTime.now();
+        // 当前接口立即替换订阅；未来生效必须另设调度流程，不能提前取消正在使用的套餐。
+        if (request.getStartAt() != null && request.getStartAt().isAfter(now)) throw new BusinessException(400, "暂不支持预约生效的套餐分配");
+        if (request.getCurrentPeriodStart() != null && request.getCurrentPeriodStart().isAfter(now)) throw new BusinessException(400, "周期开始时间不能晚于当前时间");
         // 试用、宽限期订阅必须显式给出结束时间，且不能是过去时间；
         // 否则 isEffective 会判定订阅未生效，造成“分配成功却无任何权益”的静默问题。
         if ("TRIALING".equals(status)) {
@@ -96,11 +101,15 @@ public class SaasSubscriptionService {
             }
         }
         LocalDateTime periodStart = request.getCurrentPeriodStart() == null ? now : request.getCurrentPeriodStart();
-        LocalDateTime periodEnd = request.getCurrentPeriodEnd();
-        if (periodEnd == null) {
-            if ("CUSTOM".equals(billingCycle)) throw new BusinessException(400, "自定义计费周期必须填写结束时间");
-            periodEnd = "YEARLY".equals(billingCycle) ? periodStart.plusYears(1) : periodStart.plusMonths(1);
-        }
+        // 月付和年付由服务端按周期计算，避免前端残留的日期使年付只开通一个月。
+        LocalDateTime periodEnd = switch (billingCycle) {
+            case "YEARLY" -> periodStart.plusYears(1);
+            case "MONTHLY" -> periodStart.plusMonths(1);
+            default -> request.getCurrentPeriodEnd();
+        };
+        if (periodEnd == null) throw new BusinessException(400, "自定义计费周期必须填写结束时间");
+        SaasTenantSubscription previous = currentSubscription(tenantId);
+        List<SaasSubscriptionAddon> remainingAddons = previous == null ? List.of() : activeAddons(tenantId, previous.getId(), now);
         subscriptions.update(new LambdaUpdateWrapper<SaasTenantSubscription>()
                 .eq(SaasTenantSubscription::getTenantId, tenantId).in(SaasTenantSubscription::getStatus, LIVE_STATUSES)
                 .set(SaasTenantSubscription::getStatus, "CANCELED").set(SaasTenantSubscription::getCancelAt, now)
@@ -114,6 +123,19 @@ public class SaasSubscriptionService {
                 .setExternalSubscriptionId(request.getExternalSubscriptionId()).setCreateTime(now).setUpdateTime(now);
         if (!row.getCurrentPeriodEnd().isAfter(row.getCurrentPeriodStart())) throw new BusinessException(400, "计费周期结束时间必须晚于开始时间");
         subscriptions.insert(row);
+        // 换套餐时复制剩余加购权益快照，保留原购买记录和原到期日，避免已购权益即时消失或被延长。
+        for (SaasSubscriptionAddon purchase : remainingAddons) {
+            LocalDateTime oldEnd = purchase.getEndAt() == null ? previous.getCurrentPeriodEnd() : purchase.getEndAt();
+            if (oldEnd != null && !oldEnd.isAfter(now)) continue;
+            subscriptionAddons.update(new LambdaUpdateWrapper<SaasSubscriptionAddon>()
+                    .eq(SaasSubscriptionAddon::getId, purchase.getId())
+                    .set(SaasSubscriptionAddon::getStatus, "CANCELED")
+                    .set(SaasSubscriptionAddon::getEndAt, now).set(SaasSubscriptionAddon::getUpdateTime, now));
+            subscriptionAddons.insert(new SaasSubscriptionAddon().setTenantId(tenantId).setSubscriptionId(row.getId())
+                    .setAddonId(purchase.getAddonId()).setQuantity(purchase.getQuantity()).setStatus("ACTIVE")
+                    .setStartAt(now).setEndAt(oldEnd).setEntitlementSnapshot(purchase.getEntitlementSnapshot())
+                    .setCreateTime(now).setUpdateTime(now));
+        }
         LocalDateTime accessEnd = switch (status) {
             case "TRIALING" -> row.getTrialEndAt() == null ? row.getCurrentPeriodEnd() : row.getTrialEndAt();
             case "GRACE", "PAST_DUE" -> row.getGraceEndAt() == null ? row.getCurrentPeriodEnd() : row.getGraceEndAt();
@@ -132,6 +154,8 @@ public class SaasSubscriptionService {
         if (version == null || !"PUBLISHED".equals(version.getStatus())) {
             throw new BusinessException(400, "只能订阅已发布的套餐版本");
         }
+        SaasPlan plan = plans.selectById(version.getPlanId());
+        if (plan == null || !Integer.valueOf(1).equals(plan.getStatus())) throw new BusinessException(400, "套餐已停用，不能分配新订阅");
         return version;
     }
 
@@ -147,14 +171,26 @@ public class SaasSubscriptionService {
         SaasTenantSubscription subscription = currentSubscription(tenantId);
         if (subscription == null) throw new BusinessException(409, "租户当前没有有效订阅");
         if (request == null || request.getAddonId() == null) throw new BusinessException(400, "请选择加购项");
-        SaasAddon addon = addons.selectById(request.getAddonId());
+        // 锁定加购项，串行检查同一加购项的租户累计数量，防止并发请求同时越过上限。
+        SaasAddon addon = addons.selectOne(new LambdaQueryWrapper<SaasAddon>()
+                .eq(SaasAddon::getId, request.getAddonId()).last("FOR UPDATE"));
         if (addon == null || !Integer.valueOf(1).equals(addon.getStatus())) throw new BusinessException(400, "加购项不存在或已停用");
         int quantity = request.getQuantity() == null ? 1 : request.getQuantity();
-        if (quantity < 1 || quantity > addon.getMaxQuantity()) throw new BusinessException(400, "加购数量超出允许范围");
         LocalDateTime now = LocalDateTime.now();
+        int purchased = subscriptionAddons.selectList(new LambdaQueryWrapper<SaasSubscriptionAddon>()
+                        .eq(SaasSubscriptionAddon::getTenantId, tenantId)
+                        .eq(SaasSubscriptionAddon::getSubscriptionId, subscription.getId())
+                        .eq(SaasSubscriptionAddon::getAddonId, addon.getId())
+                        .eq(SaasSubscriptionAddon::getStatus, "ACTIVE")
+                        .and(w -> w.isNull(SaasSubscriptionAddon::getEndAt).or().gt(SaasSubscriptionAddon::getEndAt, now)))
+                .stream().mapToInt(row -> row.getQuantity() == null ? 0 : row.getQuantity()).sum();
+        if (quantity < 1 || purchased + quantity > addon.getMaxQuantity()) throw new BusinessException(400, "加购累计数量超出允许范围");
+        LocalDateTime startAt = request.getStartAt() == null ? now : request.getStartAt();
+        LocalDateTime endAt = request.getEndAt() == null ? subscription.getCurrentPeriodEnd() : request.getEndAt();
+        if (endAt != null && !endAt.isAfter(startAt)) throw new BusinessException(400, "加购结束时间必须晚于开始时间");
         SaasSubscriptionAddon row = new SaasSubscriptionAddon().setTenantId(tenantId).setSubscriptionId(subscription.getId())
                 .setAddonId(addon.getId()).setQuantity(quantity).setStatus("ACTIVE")
-                .setStartAt(request.getStartAt() == null ? now : request.getStartAt()).setEndAt(request.getEndAt())
+                .setStartAt(startAt).setEndAt(endAt)
                 .setExternalItemId(request.getExternalItemId()).setEntitlementSnapshot(addonSnapshot(addon.getId()))
                 .setCreateTime(now).setUpdateTime(now);
         subscriptionAddons.insert(row);
@@ -179,8 +215,9 @@ public class SaasSubscriptionService {
     public SaasTenantEntitlementOverride saveOverride(Long tenantId, SaasTenantEntitlementOverride row) {
         catalog.requirePlatform();
         if (tenants.selectById(tenantId) == null) throw new BusinessException(404, "租户不存在");
-        if (row == null || row.getFeatureId() == null || features.selectById(row.getFeatureId()) == null) throw new BusinessException(400, "功能不存在");
+        if (row == null || row.getFeatureId() == null) throw new BusinessException(400, "功能不存在");
         SaasFeature feature = features.selectById(row.getFeatureId());
+        if (feature == null || !Integer.valueOf(1).equals(feature.getStatus())) throw new BusinessException(400, "功能不存在或已停用");
         catalog.requireSellableFeature(feature);
         if (!Set.of("ENABLE", "DISABLE", "ADD", "SET").contains(row.getOperation())) throw new BusinessException(400, "权益调整操作不正确");
         catalog.validateOperation(feature, row.getOperation(), row.getQuotaValue(), row.getTextValue(), "租户权益调整");
@@ -213,7 +250,8 @@ public class SaasSubscriptionService {
                 .eq(SaasTenantEntitlementOverride::getTenantId, tenantId)
                 .and(w -> w.isNull(SaasTenantEntitlementOverride::getEffectiveFrom).or().le(SaasTenantEntitlementOverride::getEffectiveFrom, now))
                 .and(w -> w.isNull(SaasTenantEntitlementOverride::getEffectiveTo).or().ge(SaasTenantEntitlementOverride::getEffectiveTo, now))
-                .orderByAsc(SaasTenantEntitlementOverride::getCreateTime));
+                .orderByAsc(SaasTenantEntitlementOverride::getCreateTime)
+                .orderByAsc(SaasTenantEntitlementOverride::getId));
     }
 
     private Long loginId() {

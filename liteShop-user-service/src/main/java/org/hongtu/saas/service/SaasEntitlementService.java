@@ -101,14 +101,20 @@ public class SaasEntitlementService implements EntitlementService {
         features.selectList(new LambdaQueryWrapper<SaasFeature>().eq(SaasFeature::getStatus, 1).orderByAsc(SaasFeature::getFeatureCode))
                 .forEach(feature -> featureById.put(feature.getId(), feature));
 
-        // System Default 是最低优先级；无订阅时也返回目录，前端可据此展示升级入口。
+        // System Default 是最低优先级；无订阅时保留目录，但不能把默认额度展示成已开通权益。
         featureById.values().forEach(feature -> result.getFeatures().put(feature.getFeatureCode(), item(feature)));
 
         SaasTenantSubscription subscription = subscriptions.currentSubscription(tenantId);
-        if (subscription == null) { attachUsage(result, null, requireRealtimeUsage); return result; }
+        if (subscription == null) {
+            result.getFeatures().values().forEach(item -> item.setEnabled(false));
+            attachUsage(result, null, requireRealtimeUsage);
+            return result;
+        }
         SaasPlanVersion version = versions.selectById(subscription.getPlanVersionId());
         SaasPlan plan = version == null ? null : plans.selectById(version.getPlanId());
-        if (version == null || plan == null || !Integer.valueOf(1).equals(plan.getStatus())) {
+        // 套餐下架只阻止新订阅，已售版本在原订阅周期内仍须兑现。
+        if (version == null || plan == null) {
+            result.getFeatures().values().forEach(item -> item.setEnabled(false));
             attachUsage(result, subscription, requireRealtimeUsage);
             return result;
         }

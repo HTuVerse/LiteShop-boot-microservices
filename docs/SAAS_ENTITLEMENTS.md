@@ -32,7 +32,7 @@ mvn -pl liteShop-user-service spring-boot:run -DskipTests
 最终权益按以下顺序计算：
 
 1. 已发布套餐版本的增值权益。
-2. 当前订阅下处于有效期内的加购快照；`quantity` 会乘以单份额度。
+2. 当前订阅下处于有效期内的加购快照；`quantity` 会乘以单份额度。每个加购项的 `max_quantity` 限制租户在当前订阅内的累计有效数量。
 3. 租户特殊调整，按创建时间依次执行 `ENABLE`、`DISABLE`、`ADD` 或 `SET`。
 
 `NULL` 不表示“不限量”。不限量必须显式设置 `unlimited=1`，未配置功能默认不可用。
@@ -119,9 +119,9 @@ MVP 暂不缓存最终用量结果，避免门店数和剩余额度出现陈旧�
 
 ## 订阅生命周期
 
-当前实现识别 `TRIALING`、`ACTIVE`、`PAST_DUE`、`GRACE`、`SUSPENDED`、`CANCELED` 和 `EXPIRED`。分配新套餐会关闭旧的有效订阅，并同步 `sys_tenant.expire_time`，兼容已有租户入口校验。
+当前实现识别 `TRIALING`、`ACTIVE`、`PAST_DUE`、`GRACE`、`SUSPENDED`、`CANCELED` 和 `EXPIRED`。分配新套餐会关闭旧的有效订阅，并同步 `sys_tenant.expire_time`，兼容已有租户入口校验。套餐停用只阻止新分配，已订阅租户保留原周期权益。换套餐时，仍有效的加购按原到期时间复制到新订阅，旧记录转为已取消；未填写加购结束时间时，以购买时所在订阅的周期结束时间为准。
 
-订阅额外记录 `billing_cycle=MONTHLY/YEARLY/CUSTOM` 和 `auto_renew`。`PAST_DUE` 只能在明确的 `grace_end_at` 前继续使用；`SUSPENDED/CANCELED/EXPIRED` 不产生有效权益。自动续费、支付回调、账单和发票属于第二阶段，第一版由平台管理员确认收款后变更订阅即可。
+订阅额外记录 `billing_cycle=MONTHLY/YEARLY/CUSTOM` 和 `auto_renew`，但当前不允许开启自动续费。`PAST_DUE` 只能在明确的 `grace_end_at` 前继续使用；`SUSPENDED/CANCELED/EXPIRED` 不产生有效权益。当前接口仅支持立即生效的套餐分配。自动续费、支付回调、账单和发票属于第二阶段，第一版由平台管理员确认收款后变更订阅即可。
 
 降级不会删除已有业务数据。业务端应根据 `check` 结果阻止新增，正常情况下继续允许读取和删除，直到用量重新低于上限。当前门店删除需要同步释放原子计数；权益服务故障时 MVP 会保守拒绝删除，第二阶段可通过本地 Outbox 异步释放来消除这项可用性取舍。
 
