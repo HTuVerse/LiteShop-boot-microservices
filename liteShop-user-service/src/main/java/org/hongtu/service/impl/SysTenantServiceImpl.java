@@ -31,6 +31,7 @@ import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 @Service
 public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant> implements SysTenantService {
@@ -73,7 +74,15 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
                         .like(SysTenant::getTenantName, keyword))
                 .eq(status != null, SysTenant::getStatus, status)
                 .orderByDesc(SysTenant::getCreateTime);
-        return Result.success(page(page, wrapper));
+        Page<SysTenant> result = page(page, wrapper);
+        Set<Long> effectiveIds = subscriptions.effectiveTenantIds(
+                result.getRecords().stream().map(SysTenant::getId).toList());
+        LocalDateTime now = LocalDateTime.now();
+        result.getRecords().forEach(tenant -> tenant.setAccessAvailable(
+                Integer.valueOf(1).equals(tenant.getStatus())
+                        && (tenant.getExpireTime() == null || tenant.getExpireTime().isAfter(now))
+                        && effectiveIds.contains(tenant.getId())));
+        return Result.success(result);
     }
 
     @Override

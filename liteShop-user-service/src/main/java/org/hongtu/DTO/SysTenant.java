@@ -1,6 +1,7 @@
 package org.hongtu.DTO;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonFormat;
@@ -22,6 +23,10 @@ public class SysTenant implements Serializable {
     private String contactName;
     private String contactPhone;
     private Integer status;
+
+    /** 当前是否可进入商户工作空间，仅供列表展示，不持久化。 */
+    @TableField(exist = false)
+    private Boolean accessAvailable;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime expireTime;

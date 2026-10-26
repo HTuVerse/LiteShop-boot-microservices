@@ -14,9 +14,11 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class SaasSubscriptionService {
@@ -49,6 +51,17 @@ public class SaasSubscriptionService {
     /** 当前租户是否拥有可进入业务后台的有效套餐。 */
     public boolean hasEffectiveSubscription(Long tenantId) {
         return currentSubscription(tenantId) != null;
+    }
+
+    /** 批量判断商户的有效订阅，供商户列表展示可进入状态。 */
+    public Set<Long> effectiveTenantIds(Collection<Long> tenantIds) {
+        if (tenantIds == null || tenantIds.isEmpty()) return Set.of();
+        LocalDateTime now = LocalDateTime.now();
+        return subscriptions.selectList(new LambdaQueryWrapper<SaasTenantSubscription>()
+                        .in(SaasTenantSubscription::getTenantId, tenantIds)
+                        .in(SaasTenantSubscription::getStatus, LIVE_STATUSES))
+                .stream().filter(row -> isEffective(row, now))
+                .map(SaasTenantSubscription::getTenantId).collect(Collectors.toSet());
     }
 
     public boolean isEffective(SaasTenantSubscription row, LocalDateTime now) {
