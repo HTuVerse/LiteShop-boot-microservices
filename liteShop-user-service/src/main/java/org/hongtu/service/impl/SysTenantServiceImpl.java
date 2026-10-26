@@ -126,11 +126,16 @@ public class SysTenantServiceImpl extends ServiceImpl<SysTenantMapper, SysTenant
                 .ne(SysTenant::getId, tenant.getId()).count() > 0) {
             return Result.error("租户编码已存在");
         }
-        tenant.setCreateTime(existing.getCreateTime());
-        // 到期时间由套餐订阅统一维护，编辑商户资料不能绕过订阅生命周期。
-        tenant.setExpireTime(existing.getExpireTime());
-        tenant.setUpdateTime(LocalDateTime.now());
-        return updateById(tenant) ? Result.success("更新租户成功", tenant) : Result.error("更新租户失败");
+        // 资料编辑只更新资料字段；状态由专用接口处理，服务到期时间由套餐订阅维护。
+        boolean updated = lambdaUpdate().eq(SysTenant::getId, tenant.getId())
+                .set(SysTenant::getTenantCode, tenant.getTenantCode())
+                .set(SysTenant::getTenantName, tenant.getTenantName())
+                .set(SysTenant::getContactName, tenant.getContactName())
+                .set(SysTenant::getContactPhone, tenant.getContactPhone())
+                .set(SysTenant::getRemark, tenant.getRemark())
+                .set(SysTenant::getUpdateTime, LocalDateTime.now())
+                .update();
+        return updated ? Result.success("更新租户成功", getById(tenant.getId())) : Result.error("更新租户失败");
     }
 
     @Override
