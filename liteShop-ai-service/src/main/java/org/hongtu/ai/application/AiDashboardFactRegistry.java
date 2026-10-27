@@ -98,6 +98,7 @@ public final class AiDashboardFactRegistry {
         for (AiDashboardCard card : dashboard.cards()) {
             if (card == null) continue;
             if (card.value() != null && !card.value().isBlank()) requireRecorded(number(card.value()));
+            if (card.changeRate() != null) requireRecorded(card.changeRate());
             if (card.chart() != null && card.chart().series() != null) {
                 card.chart().series().stream().filter(java.util.Objects::nonNull)
                         .filter(series -> series.data() != null)

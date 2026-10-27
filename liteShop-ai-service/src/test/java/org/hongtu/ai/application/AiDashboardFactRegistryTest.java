@@ -54,6 +54,17 @@ class AiDashboardFactRegistryTest {
     }
 
     @Test
+    void rejectsChangeRateMissingFromCurrentToolFacts() {
+        var facts = new AiDashboardFactRegistry(JsonMapper.builder().build());
+        facts.record("getSalesOverview", "STORE", 12L, "WEEK",
+                "{\"sales\":100,\"changeRate\":12.5}", LocalDateTime.of(2026, 10, 13, 9, 30));
+        var card = new AiDashboardCard("sales", "METRIC", "INFO", 1, "SM", "销售额", "",
+                null, null, "100", "元", new BigDecimal("13.5"), null, List.of(), null, null);
+        assertThrows(BusinessException.class, () -> facts.validateDashboard(
+                new AiDashboardResult("趋势", "数据", List.of(card))));
+    }
+
+    @Test
     void rejectsInventedRankingValueInChat() {
         var facts = new AiDashboardFactRegistry(JsonMapper.builder().build());
         facts.record("getSalesOverview", "STORE", 12L, "WEEK", "{\"sales\":100}",
