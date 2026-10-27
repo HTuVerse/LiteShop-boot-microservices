@@ -145,10 +145,12 @@ public class InnerAiManagerController {
     private Map<String, Object> tenantDiagnosisContext() {
         LocalDate today = LocalDate.now();
         Map<String, Object> result = baseContext("TENANT", "AUTO");
-        result.put("dataCutoffAt", java.time.LocalDateTime.now());
         result.put("dataPeriods", "今日、最近7天、本月至今、近30天菜品");
-        result.put("today", Map.of(
-                "overview", tenantAnalysisService.overview(customTenantQuery(today, today, 10))));
+        var todayOverview = tenantAnalysisService.overview(customTenantQuery(today, today, 10));
+        if (todayOverview.getDataUpdatedAt() != null) {
+            result.put("dataCutoffAt", todayOverview.getDataUpdatedAt());
+        }
+        result.put("today", Map.of("overview", todayOverview));
         TenantAnalysisQuery recent7Days = customTenantQuery(today.minusDays(6), today, 10);
         result.put("recent7Days", Map.of(
                 "overview", tenantAnalysisService.overview(recent7Days),
@@ -168,7 +170,6 @@ public class InnerAiManagerController {
         Map<String, Object> result = baseContext("STORE", "AUTO");
         result.put("storeId", storeId);
         result.put("storeName", store.getStoreName());
-        result.put("dataCutoffAt", java.time.LocalDateTime.now());
         result.put("dataPeriods", "今日、最近7天、本月至今、近30天菜品");
 
         Map<String, Object> todayData = new LinkedHashMap<>();
@@ -197,7 +198,9 @@ public class InnerAiManagerController {
         Map<String, Object> result = baseContext("TENANT", timeRange);
         result.put("dataPeriods", "DISH".equals(dataMode) ? "近30天菜品" : periodLabel(timeRange));
         if (!"DISH".equals(dataMode)) {
-            result.put("overview", tenantAnalysisService.overview(current));
+            var overview = tenantAnalysisService.overview(current);
+            result.put("overview", overview);
+            if (overview.getDataUpdatedAt() != null) result.put("dataCutoffAt", overview.getDataUpdatedAt());
             result.put("storeRanking", tenantAnalysisService.storeRanking(current));
         }
         if (!"BRIEFING".equals(dataMode)) {
@@ -241,7 +244,6 @@ public class InnerAiManagerController {
         result.put("scopeType", scopeType);
         result.put("timeRange", timeRange);
         result.put("generatedAt", java.time.LocalDateTime.now());
-        result.put("dataCutoffAt", java.time.LocalDateTime.now());
         return result;
     }
 

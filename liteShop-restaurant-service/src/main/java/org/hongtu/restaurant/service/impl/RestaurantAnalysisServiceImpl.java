@@ -51,7 +51,6 @@ public class RestaurantAnalysisServiceImpl implements RestaurantAnalysisService 
         result.put("dataGaps", List.of("实际盘点损耗尚未接入，当前仅展示退菜代理指标",
                 "出餐时长和顾客评价尚无可靠结构化时间戳", "排班工时与天气数据尚未接入"));
         result.put("dataPeriods", "会员近180天、库存实时、经营效率与营销近30天");
-        result.put("dataCutoffAt", LocalDateTime.now());
         return result;
     }
 
